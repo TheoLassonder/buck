@@ -17,7 +17,12 @@
 package com.facebook.buck.python;
 
 import com.facebook.buck.cxx.CxxPlatform;
+import com.facebook.buck.parser.NoSuchBuildTargetException;
 
 public interface PythonPackagable {
-  PythonPackageComponents getPythonPackageComponents(CxxPlatform cxxPlatform);
+
+  PythonPackageComponents getPythonPackageComponents(
+      PythonPlatform pythonPlatform,
+      CxxPlatform cxxPlatform) throws NoSuchBuildTargetException;
+
 }

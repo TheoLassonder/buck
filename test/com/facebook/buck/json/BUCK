@@ -1,16 +1,1 @@
-java_test(
-  name = 'json',
-  srcs = glob(['*.java']),
-  source_under_test = [
-    '//src/com/facebook/buck/json:json',
-    '//src/com/facebook/buck/json:raw_parser',
-  ],
-  deps = [
-    '//third-party/java/guava:guava',
-    '//third-party/java/hamcrest:hamcrest',
-    '//third-party/java/junit:junit',
-    '//src/com/facebook/buck/json:json',
-    '//src/com/facebook/buck/json:raw_parser',
-    '//third-party/java/gson:gson',
-  ],
-)
+standard_java_test()

@@ -16,38 +16,40 @@
 
 package com.facebook.buck.cli;
 
-import static org.easymock.EasyMock.capture;
-import static org.easymock.EasyMock.newCapture;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 
 import com.facebook.buck.android.AndroidPlatformTarget;
+import com.facebook.buck.artifact_cache.ArtifactCache;
 import com.facebook.buck.event.BuckEventBusFactory;
 import com.facebook.buck.httpserver.WebServer;
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.FakeJavaPackageFinder;
-import com.facebook.buck.java.intellij.Project;
+import com.facebook.buck.jvm.java.FakeJavaPackageFinder;
+import com.facebook.buck.jvm.java.intellij.Project;
 import com.facebook.buck.parser.Parser;
-import com.facebook.buck.rules.ArtifactCache;
-import com.facebook.buck.rules.Repository;
-import com.facebook.buck.rules.TestRepositoryBuilder;
+import com.facebook.buck.rules.ActionGraphCache;
+import com.facebook.buck.rules.Cell;
+import com.facebook.buck.rules.TestCellBuilder;
+import com.facebook.buck.step.ExecutionContext;
+import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.facebook.buck.testutil.TestConsole;
 import com.facebook.buck.timing.DefaultClock;
-import com.facebook.buck.util.BuckConstant;
-import com.facebook.buck.util.NullFileHashCache;
+import com.facebook.buck.util.ObjectMappers;
 import com.facebook.buck.util.ProcessManager;
+import com.facebook.buck.util.cache.NullFileHashCache;
 import com.facebook.buck.util.environment.Platform;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Optional;
 import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.util.concurrent.ListeningExecutorService;
 
-import org.easymock.Capture;
 import org.easymock.EasyMockSupport;
 import org.junit.Test;
 import org.kohsuke.args4j.CmdLineException;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.nio.file.Path;
+import java.util.HashMap;
 
 /**
  * Unit test for {@link CleanCommand}.
@@ -56,52 +58,43 @@ public class CleanCommandTest extends EasyMockSupport {
 
   private ProjectFilesystem projectFilesystem;
 
-  // TODO(mbolin): When it is possible to inject a mock object for stderr,
+  // TODO(bolinfest): When it is possible to inject a mock object for stderr,
   // create a test that runs `buck clean unexpectedarg` and verify that the
   // exit code is 1 and that the appropriate error message is printed.
 
   @Test
   public void testCleanCommandNoArguments()
       throws CmdLineException, IOException, InterruptedException {
-    // Set up mocks.
     CommandRunnerParams params = createCommandRunnerParams();
-    Capture<Path> binDir = newCapture();
-    projectFilesystem.deleteRecursivelyIfExists(capture(binDir));
-    Capture<Path> genDir = newCapture();
-    projectFilesystem.deleteRecursivelyIfExists(capture(genDir));
 
-    replayAll();
+    projectFilesystem.mkdirs(projectFilesystem.getBuckPaths().getScratchDir());
+    projectFilesystem.mkdirs(projectFilesystem.getBuckPaths().getGenDir());
 
     // Simulate `buck clean`.
     CleanCommand cleanCommand = createCommandFromArgs();
     int exitCode = cleanCommand.run(params);
     assertEquals(0, exitCode);
-    assertEquals(BuckConstant.SCRATCH_PATH, binDir.getValue());
-    assertEquals(BuckConstant.GEN_PATH, genDir.getValue());
 
-    verifyAll();
+    assertFalse(projectFilesystem.exists(projectFilesystem.getBuckPaths().getScratchDir()));
+    assertFalse(projectFilesystem.exists(projectFilesystem.getBuckPaths().getGenDir()));
   }
 
   @Test
   public void testCleanCommandWithProjectArgument()
       throws CmdLineException, IOException, InterruptedException {
-    // Set up mocks.
     CommandRunnerParams params = createCommandRunnerParams();
-    Capture<Path> androidGenDir = newCapture();
-    projectFilesystem.deleteRecursivelyIfExists(capture(androidGenDir));
-    Capture<Path> annotationDir = newCapture();
-    projectFilesystem.deleteRecursivelyIfExists(capture(annotationDir));
 
-    replayAll();
+    // Set up mocks.
+    projectFilesystem.mkdirs(Project.getAndroidGenPath(projectFilesystem));
+    projectFilesystem.mkdirs(projectFilesystem.getBuckPaths().getAnnotationDir());
 
     // Simulate `buck clean --project`.
     CleanCommand cleanCommand = createCommandFromArgs("--project");
     int exitCode = cleanCommand.run(params);
     assertEquals(0, exitCode);
-    assertEquals(Project.ANDROID_GEN_PATH, androidGenDir.getValue());
-    assertEquals(BuckConstant.ANNOTATION_PATH, annotationDir.getValue());
 
-    verifyAll();
+    assertFalse(projectFilesystem.exists(Project.getAndroidGenPath(projectFilesystem)));
+    assertFalse(projectFilesystem.exists(projectFilesystem.getBuckPaths().getAnnotationDir()));
   }
 
   private CleanCommand createCommandFromArgs(String... args) throws CmdLineException {
@@ -111,27 +104,32 @@ public class CleanCommandTest extends EasyMockSupport {
   }
 
   private CommandRunnerParams createCommandRunnerParams() throws InterruptedException, IOException {
-    projectFilesystem = createMock(ProjectFilesystem.class);
-    Repository repository = new TestRepositoryBuilder().setFilesystem(projectFilesystem).build();
+    projectFilesystem = new FakeProjectFilesystem();
+
+    Cell cell = new TestCellBuilder().setFilesystem(projectFilesystem).build();
 
     Supplier<AndroidPlatformTarget> androidPlatformTargetSupplier =
         AndroidPlatformTarget.EXPLODING_ANDROID_PLATFORM_TARGET_SUPPLIER;
     return new CommandRunnerParams(
         new TestConsole(),
-        repository,
+        new ByteArrayInputStream("".getBytes("UTF-8")),
+        cell,
         androidPlatformTargetSupplier,
-        new InstanceArtifactCacheFactory(createMock(ArtifactCache.class)),
+        createMock(ArtifactCache.class),
         BuckEventBusFactory.newInstance(),
         createMock(Parser.class),
         Platform.detect(),
         ImmutableMap.copyOf(System.getenv()),
         new FakeJavaPackageFinder(),
-        new ObjectMapper(),
+        ObjectMappers.newDefaultInstance(),
         new DefaultClock(),
         Optional.<ProcessManager>absent(),
         Optional.<WebServer>absent(),
-        new FakeBuckConfig(),
-        new NullFileHashCache());
+        FakeBuckConfig.builder().build(),
+        new NullFileHashCache(),
+        new HashMap<ExecutionContext.ExecutorPool, ListeningExecutorService>(),
+        CommandRunnerParamsForTesting.BUILD_ENVIRONMENT_DESCRIPTION,
+        new ActionGraphCache());
   }
 
 }

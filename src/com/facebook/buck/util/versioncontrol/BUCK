@@ -1,0 +1,41 @@
+PUBLIC_SRCS = [
+  'VersionControlBuckConfig.java',
+  'VersionControlCmdLineInterface.java',
+  'VersionControlCmdLineInterfaceFactory.java',
+  'VersionControlCommandFailedException.java',
+  'VersionControlStats.java',
+  'VersionControlStatsEvent.java',
+  'VersionControlStatsGenerator.java',
+  'NoOpCmdLineInterface.java',
+]
+
+java_immutables_library(
+  name = 'versioncontrol',
+  srcs = PUBLIC_SRCS,
+  immutable_types = [
+    'ImmutableVersionControlStats',
+  ],
+  tests = [
+    '//test/com/facebook/buck/util/versioncontrol:versioncontrol',
+    '//test/com/facebook/buck/util/versioncontrol:hg_cmd_line_interface_integration',
+  ],
+  autodeps = True,
+  visibility = [
+    'PUBLIC',
+  ],
+)
+
+java_library(
+  name = 'impl',
+  srcs = glob(['*.java'], excludes = PUBLIC_SRCS),
+  tests = [
+    '//test/com/facebook/buck/util/versioncontrol:versioncontrol',
+    '//test/com/facebook/buck/util/versioncontrol:hg_cmd_line_interface_integration',
+  ],
+  autodeps = True,
+  visibility = [
+   '//src/com/facebook/buck/util/versioncontrol:versioncontrol',
+   '//src/com/facebook/buck/cli:cli',
+   '//test/com/facebook/buck/util/versioncontrol/...',
+  ],
+)

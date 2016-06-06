@@ -16,29 +16,40 @@
 
 package com.facebook.buck.rules.macros;
 
+import static com.facebook.buck.rules.TestCellBuilder.createCellRoots;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.fail;
 
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.JavaBinaryRuleBuilder;
-import com.facebook.buck.java.JavaLibraryBuilder;
+import com.facebook.buck.jvm.java.JavaBinaryRuleBuilder;
+import com.facebook.buck.jvm.java.JavaLibraryBuilder;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.model.MacroException;
+import com.facebook.buck.parser.NoSuchBuildTargetException;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.BuildTargetSourcePath;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
+import com.facebook.buck.rules.TargetGraph;
+import com.facebook.buck.rules.TargetNode;
+import com.facebook.buck.shell.GenruleBuilder;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
+import com.facebook.buck.testutil.TargetGraphFactory;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSortedSet;
 
+import org.hamcrest.Matchers;
 import org.junit.Test;
 
-import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
 public class LocationMacroExpanderTest {
 
-  private BuildRule createSampleJavaBinaryRule(BuildRuleResolver ruleResolver) {
+  private BuildRule createSampleJavaBinaryRule(BuildRuleResolver ruleResolver)
+      throws NoSuchBuildTargetException {
     // Create a java_binary that depends on a java_library so it is possible to create a
     // java_binary rule with a classpath entry and a main class.
     BuildRule javaLibrary = JavaLibraryBuilder
@@ -55,12 +66,14 @@ public class LocationMacroExpanderTest {
   }
 
   @Test
-  public void testShouldWarnUsersWhenThereIsNoOutputForARuleButLocationRequested() {
-    BuildRuleResolver resolver = new BuildRuleResolver();
+  public void testShouldWarnUsersWhenThereIsNoOutputForARuleButLocationRequested()
+      throws NoSuchBuildTargetException {
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     JavaLibraryBuilder
-        .createBuilder(BuildTarget.builder("//cheese", "java").build())
+        .createBuilder(BuildTargetFactory.newInstance("//cheese:java"))
         .build(resolver);
-    BuildTarget target = BuildTarget.builder("//cheese", "cake").build();
+    BuildTarget target = BuildTargetFactory.newInstance("//cheese:cake");
 
     ProjectFilesystem filesystem = new FakeProjectFilesystem();
     MacroHandler macroHandler = new MacroHandler(
@@ -68,7 +81,11 @@ public class LocationMacroExpanderTest {
             "location",
             new LocationMacroExpander()));
     try {
-      macroHandler.expand(target, resolver, filesystem, "$(location //cheese:java)");
+      macroHandler.expand(
+          target,
+          createCellRoots(filesystem),
+          resolver,
+          "$(location //cheese:java)");
       fail("Location was null. Expected HumanReadableException with helpful message.");
     } catch (MacroException e) {
       assertEquals(
@@ -79,9 +96,10 @@ public class LocationMacroExpanderTest {
   }
 
   @Test
-  public void replaceLocationOfFullyQualifiedBuildTarget() throws IOException, MacroException {
+  public void replaceLocationOfFullyQualifiedBuildTarget() throws Exception {
     ProjectFilesystem filesystem = new FakeProjectFilesystem();
-    BuildRuleResolver ruleResolver = new BuildRuleResolver();
+    BuildRuleResolver ruleResolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     BuildRule javaBinary = createSampleJavaBinaryRule(ruleResolver);
     Path outputPath = javaBinary.getPathToOutput();
     Path absolutePath = outputPath.toAbsolutePath();
@@ -98,13 +116,35 @@ public class LocationMacroExpanderTest {
             new LocationMacroExpander()));
     String transformedString = macroHandler.expand(
         javaBinary.getBuildTarget(),
+        createCellRoots(filesystem),
         ruleResolver,
-        filesystem,
         originalCmd);
 
     // Verify that the correct cmd was created.
     String expectedCmd = String.format("%s %s $OUT", absolutePath, absolutePath);
     assertEquals(expectedCmd, transformedString);
+  }
+
+  @Test
+  public void extractRuleKeyAppendable() throws Exception {
+    BuildTarget target = BuildTargetFactory.newInstance("//:rule");
+    String input = "//some/other:rule";
+    TargetNode<?> node = GenruleBuilder.newGenruleBuilder(BuildTargetFactory.newInstance(input))
+        .setOut("out")
+        .build();
+    BuildRuleResolver resolver = new BuildRuleResolver(
+        TargetGraphFactory.newInstance(node),
+        new DefaultTargetNodeToBuildRuleTransformer());
+    resolver.requireRule(node.getBuildTarget());
+    LocationMacroExpander macroExpander = new LocationMacroExpander();
+    assertThat(
+        macroExpander.extractRuleKeyAppendables(
+            target,
+            createCellRoots(new FakeProjectFilesystem()),
+            resolver,
+            input),
+        Matchers.<Object>equalTo(
+            new BuildTargetSourcePath(BuildTargetFactory.newInstance(input))));
   }
 
 }

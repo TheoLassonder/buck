@@ -17,17 +17,15 @@
 package com.facebook.buck.rules;
 
 import com.facebook.buck.event.AbstractBuckEvent;
-import com.facebook.buck.event.BuckEvent;
+import com.facebook.buck.event.EventKey;
+import com.facebook.buck.event.WorkAdvanceEvent;
 import com.facebook.buck.test.TestResults;
+import com.facebook.buck.event.external.events.IndividualTesEventFinishedExternalInterface;
 
-import java.util.Objects;
-
-public abstract class IndividualTestEvent extends AbstractBuckEvent {
-
-  private int secret;
+public abstract class IndividualTestEvent extends AbstractBuckEvent implements WorkAdvanceEvent {
 
   private IndividualTestEvent(int secret) {
-    this.secret = secret;
+    super(EventKey.slowValueKey("IndividualTestEvent", secret));
   }
 
   public static Started started(Iterable<String> targets) {
@@ -38,17 +36,6 @@ public abstract class IndividualTestEvent extends AbstractBuckEvent {
     return new Finished(targets.hashCode(), results);
   }
 
-  @Override
-  public boolean isRelatedTo(BuckEvent event) {
-    if (!(event instanceof IndividualTestEvent)) {
-      return false;
-    }
-
-    return this.secret == ((IndividualTestEvent) event).secret &&
-        !Objects.equals(getClass(), event.getClass());
-  }
-
-
   public static class Started extends IndividualTestEvent {
 
     public Started(int secret) {
@@ -57,7 +44,7 @@ public abstract class IndividualTestEvent extends AbstractBuckEvent {
 
     @Override
     public String getEventName() {
-      return "AwaitingResults";
+      return INDIVIDUAL_TEST_AWAITING_RESULTS;
     }
 
     @Override
@@ -66,7 +53,8 @@ public abstract class IndividualTestEvent extends AbstractBuckEvent {
     }
   }
 
-  public static class Finished extends IndividualTestEvent {
+  public static class Finished extends IndividualTestEvent
+      implements IndividualTesEventFinishedExternalInterface<TestResults> {
 
     private final TestResults results;
 
@@ -76,13 +64,14 @@ public abstract class IndividualTestEvent extends AbstractBuckEvent {
       this.results = results;
     }
 
+    @Override
     public TestResults getResults() {
       return results;
     }
 
     @Override
     public String getEventName() {
-      return "ResultsAvailable";
+      return RESULTS_AVAILABLE;
     }
 
     @Override

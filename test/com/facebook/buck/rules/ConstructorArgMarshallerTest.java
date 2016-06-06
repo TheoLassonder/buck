@@ -16,6 +16,7 @@
 
 package com.facebook.buck.rules;
 
+import static com.facebook.buck.rules.TestCellBuilder.createCellRoots;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -23,10 +24,11 @@ import static org.junit.Assert.fail;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
-import com.facebook.buck.model.BuildTargetPattern;
 import com.facebook.buck.parser.NoSuchBuildTargetException;
+import com.facebook.buck.rules.coercer.DefaultTypeCoercerFactory;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
-import com.google.common.base.Functions;
+import com.facebook.buck.util.ObjectMappers;
+import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
@@ -47,6 +49,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import javax.annotation.Nullable;
+
 @SuppressWarnings("unused") // Many unused fields in sample DTO objects.
 public class ConstructorArgMarshallerTest {
 
@@ -58,8 +62,10 @@ public class ConstructorArgMarshallerTest {
   @Before
   public void setUpInspector() {
     basePath = Paths.get("example", "path");
-    marshaller = new ConstructorArgMarshaller();
-    ruleResolver = new BuildRuleResolver();
+    marshaller = new ConstructorArgMarshaller(new DefaultTypeCoercerFactory(
+        ObjectMappers.newDefaultInstance()));
+    ruleResolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     filesystem = new FakeProjectFilesystem();
   }
 
@@ -71,11 +77,12 @@ public class ConstructorArgMarshallerTest {
     Dto dto = new Dto();
     try {
       marshaller.populate(
+          createCellRoots(filesystem),
           filesystem,
           buildRuleFactoryParams(),
           dto,
           ImmutableSet.<BuildTarget>builder(),
-          ImmutableSet.<BuildTargetPattern>builder(),
+          ImmutableSet.<VisibilityPattern>builder(),
           ImmutableMap.<String, Object>of());
     } catch (RuntimeException | ConstructorArgMarshalException e) {
       fail("Did not expect an exception to be thrown:\n" + Throwables.getStackTraceAsString(e));
@@ -91,11 +98,12 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("name", "cheese"));
 
     assertEquals("cheese", dto.name);
@@ -110,11 +118,12 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("value", true));
 
     assertTrue(dto.value);
@@ -130,18 +139,19 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of(
             "target", "//cake:walk",
             "local", ":fish"
         ));
 
-    assertEquals(BuildTargetFactory.newInstance("//cake:walk"), dto.target);
-    assertEquals(BuildTargetFactory.newInstance("//example/path:fish"), dto.local);
+    assertEquals(BuildTargetFactory.newInstance(filesystem, "//cake:walk"), dto.target);
+    assertEquals(BuildTargetFactory.newInstance(filesystem, "//example/path:fish"), dto.local);
   }
 
   @Test
@@ -153,11 +163,12 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("number", 42L));
 
     assertEquals(42, dto.number);
@@ -173,11 +184,12 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("somePath", "Fish.java"));
 
     assertEquals(Paths.get("example/path", "Fish.java"), dto.somePath);
@@ -193,17 +205,19 @@ public class ConstructorArgMarshallerTest {
 
     ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
     BuildTarget target = BuildTargetFactory.newInstance("//example/path:peas");
-    FakeBuildRule rule = new FakeBuildRule(
-        target,
-        new SourcePathResolver(new BuildRuleResolver()));
+    SourcePathResolver resolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+     );
+    FakeBuildRule rule = new FakeBuildRule(target, resolver);
     ruleResolver.addToIndex(rule);
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of(
             "filePath", "cheese.txt",
             "targetPath", ":peas"
@@ -230,11 +244,12 @@ public class ConstructorArgMarshallerTest {
     Dto dto = new Dto();
     // Note: the ordering is reversed from the natural ordering
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("deps", ImmutableList.of("//please/go:here", ":there")));
 
     assertEquals(ImmutableSortedSet.of(t2, t1), dto.deps);
@@ -249,11 +264,12 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("paths", ImmutableList.of("one", "two")));
 
     assertEquals(
@@ -270,11 +286,12 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("list", ImmutableList.of("alpha", "beta")));
 
     assertEquals(ImmutableList.of("alpha", "beta"), dto.list);
@@ -293,14 +310,77 @@ public class ConstructorArgMarshallerTest {
     args.put("targets", Lists.newArrayList());
 
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         args);
 
     assertEquals(Optional.of((Set<BuildTarget>) Sets.<BuildTarget>newHashSet()), dto.targets);
+  }
+
+  @Test
+  public void onlyFieldNamedDepsAreConsideredDeclaredDeps()
+      throws ConstructorArgMarshalException, NoSuchBuildTargetException {
+
+    class Dto {
+      public Optional<Set<BuildTarget>> deps;
+      public Optional<Set<BuildTarget>> notdeps;
+    }
+
+    final String dep = "//is/a/declared:dep";
+    final String notDep = "//is/not/a/declared:dep";
+
+    BuildTarget declaredDep = BuildTargetFactory.newInstance(dep);
+
+    Dto dto = new Dto();
+    Map<String, Object> args = Maps.newHashMap();
+    args.put("deps", ImmutableList.of(dep));
+    args.put("notdeps", ImmutableList.of(notDep));
+
+    ImmutableSet.Builder<BuildTarget> declaredDeps = ImmutableSet.builder();
+
+    marshaller.populate(
+        createCellRoots(filesystem),
+        filesystem,
+        buildRuleFactoryParams(),
+        dto,
+        declaredDeps,
+        ImmutableSet.<VisibilityPattern>builder(),
+        args);
+
+    assertEquals(ImmutableSet.of(declaredDep), declaredDeps.build());
+  }
+
+  @Test
+  public void fieldsWithIsDepEqualsFalseHintAreNotTreatedAsDeps()
+      throws ConstructorArgMarshalException, NoSuchBuildTargetException {
+
+    class Dto {
+      @Hint(isDep = false)
+      public Optional<Set<BuildTarget>> deps;
+    }
+
+    final String dep = "//should/be:ignored";
+
+    Dto dto = new Dto();
+    Map<String, Object> args = Maps.newHashMap();
+    args.put("deps", ImmutableList.of(dep));
+
+    ImmutableSet.Builder<BuildTarget> declaredDeps = ImmutableSet.builder();
+
+    marshaller.populate(
+        createCellRoots(filesystem),
+        filesystem,
+        buildRuleFactoryParams(),
+        dto,
+        declaredDeps,
+        ImmutableSet.<VisibilityPattern>builder(),
+        args);
+
+    assertEquals(ImmutableSet.of(), declaredDeps.build());
   }
 
   @Test
@@ -316,11 +396,12 @@ public class ConstructorArgMarshallerTest {
     // Deliberately not populating args
 
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         args);
 
     assertEquals(Optional.of((Set<String>) Sets.<String>newHashSet()), dto.strings);
@@ -336,11 +417,12 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("file", ImmutableList.of("a", "b")));
   }
 
@@ -354,11 +436,12 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("strings", "isn't going to happen"));
   }
 
@@ -372,11 +455,12 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("strings", ImmutableSet.of(true, false)));
   }
 
@@ -390,11 +474,12 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("path", "./bar/././fish.txt"));
 
     assertEquals(basePath.resolve("bar/fish.txt").normalize(), dto.path);
@@ -409,11 +494,12 @@ public class ConstructorArgMarshallerTest {
     }
 
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         new Dto(),
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("nope", ImmutableList.of("//will/not:happen")));
   }
 
@@ -427,11 +513,12 @@ public class ConstructorArgMarshallerTest {
     Dto dto = new Dto();
 
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of(
             "single", "//com/example:cheese",
             "sameBuildFileTarget", ":cake",
@@ -454,18 +541,20 @@ public class ConstructorArgMarshallerTest {
       public List<? extends SourcePath> yup;
     }
 
-    ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
-    SourcePathResolver pathResolver = new SourcePathResolver(new BuildRuleResolver());
+    SourcePathResolver pathResolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+    );
     BuildRule rule = new FakeBuildRule(
         BuildTargetFactory.newInstance("//will:happen"), pathResolver);
     ruleResolver.addToIndex(rule);
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of(
             "yup",
             ImmutableList.of(rule.getBuildTarget().getFullyQualifiedName())));
@@ -483,11 +572,12 @@ public class ConstructorArgMarshallerTest {
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of("number", 0));
 
     assertTrue(dto.number.isPresent());
@@ -516,10 +606,12 @@ public class ConstructorArgMarshallerTest {
       public Optional<Path> notAPath;
     }
 
-    ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
+    SourcePathResolver resolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+     );
     FakeBuildRule expectedRule = new FakeBuildRule(
         BuildTargetFactory.newInstance("//example/path:path"),
-        new SourcePathResolver(new BuildRuleResolver()));
+        resolver);
     ruleResolver.addToIndex(expectedRule);
 
     ImmutableMap<String, Object> args = ImmutableMap.<String, Object>builder()
@@ -536,11 +628,12 @@ public class ConstructorArgMarshallerTest {
         .build();
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         args);
 
     assertEquals("cheese", dto.required);
@@ -580,11 +673,12 @@ public class ConstructorArgMarshallerTest {
     args.put("defaultSourcePath", null);
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         args);
 
     assertEquals(Optional.<String>absent(), dto.noString);
@@ -602,24 +696,33 @@ public class ConstructorArgMarshallerTest {
       public ImmutableSortedSet<SourcePath> srcs;
     }
 
-    BuildRuleResolver resolver = new BuildRuleResolver();
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     BuildTarget target = BuildTargetFactory.newInstance("//example/path:manifest");
     BuildRule rule = new FakeBuildRule(target, new SourcePathResolver(resolver));
     resolver.addToIndex(rule);
 
     Dto dto = new Dto();
     marshaller.populate(
+        createCellRoots(filesystem),
         filesystem,
         buildRuleFactoryParams(),
         dto,
         ImmutableSet.<BuildTarget>builder(),
-        ImmutableSet.<BuildTargetPattern>builder(),
+        ImmutableSet.<VisibilityPattern>builder(),
         ImmutableMap.<String, Object>of(
             "srcs",
             ImmutableList.of("main.py", "lib/__init__.py", "lib/manifest.py")));
 
     ImmutableSet<String> observedValues = FluentIterable.from(dto.srcs)
-        .transform(Functions.toStringFunction())
+        .transform(
+            new Function<SourcePath, String>() {
+              @Nullable
+              @Override
+              public String apply(SourcePath input) {
+                return ((PathSourcePath) input).getRelativePath().toString();
+              }
+            })
         .toSet();
     assertEquals(
         ImmutableSet.of(
@@ -631,6 +734,8 @@ public class ConstructorArgMarshallerTest {
 
   public BuildRuleFactoryParams buildRuleFactoryParams() {
     BuildTarget target = BuildTargetFactory.newInstance("//example/path:three");
-    return NonCheckingBuildRuleFactoryParams.createNonCheckingBuildRuleFactoryParams(target);
+    return NonCheckingBuildRuleFactoryParams.createNonCheckingBuildRuleFactoryParams(
+        target,
+        new FakeProjectFilesystem());
   }
 }

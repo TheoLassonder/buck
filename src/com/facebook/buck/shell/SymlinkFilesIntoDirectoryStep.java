@@ -20,6 +20,7 @@ import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.AbstractExecutionStep;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.google.common.collect.ImmutableSet;
 
 import java.io.IOException;
@@ -32,6 +33,7 @@ import java.nio.file.Path;
  */
 public class SymlinkFilesIntoDirectoryStep extends AbstractExecutionStep {
 
+  private final ProjectFilesystem filesystem;
   private final Path srcDir;
   private final ImmutableSet<Path> entries;
   private final Path outDir;
@@ -41,33 +43,38 @@ public class SymlinkFilesIntoDirectoryStep extends AbstractExecutionStep {
    * @param entries that exist in {@code srcDir}.
    * @param outDir relative to the project root where the symlinks will be created.
    */
-  public SymlinkFilesIntoDirectoryStep(Path srcDir, Iterable<Path> entries, Path outDir) {
+  public SymlinkFilesIntoDirectoryStep(
+      ProjectFilesystem filesystem,
+      Path srcDir,
+      Iterable<Path> entries,
+      Path outDir) {
     super("symlinking files into " + outDir);
+
+    this.filesystem = filesystem;
     this.srcDir = srcDir;
     this.entries = ImmutableSet.copyOf(entries);
     this.outDir = outDir;
   }
 
   @Override
-  public int execute(ExecutionContext context) {
+  public StepExecutionResult execute(ExecutionContext context) {
     // Note that because these paths are resolved to absolute paths, the symlinks will be absolute
     // paths, as well.
-    ProjectFilesystem projectFilesystem = context.getProjectFilesystem();
-    Path outDir = projectFilesystem.resolve(this.outDir);
-    Path srcDir = projectFilesystem.resolve(this.srcDir);
+    Path outDir = filesystem.resolve(this.outDir);
+    Path srcDir = filesystem.resolve(this.srcDir);
 
     for (Path entry : entries) {
       Path link = outDir.resolve(entry);
       Path target = srcDir.resolve(entry);
       try {
         Files.createDirectories(link.getParent());
-        projectFilesystem.createSymLink(link, target, false);
+        filesystem.createSymLink(link, target, false);
       } catch (IOException e) {
         context.logError(e, "Failed to create symlink from %s to %s.", link, target);
-        return 1;
+        return StepExecutionResult.ERROR;
       }
     }
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
 }

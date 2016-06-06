@@ -18,8 +18,6 @@ package com.facebook.buck.rules;
 
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
-import com.facebook.buck.model.BuildTargetPattern;
-import com.facebook.buck.parser.BuildTargetPatternParser;
 import com.facebook.buck.parser.NoSuchBuildTargetException;
 import com.facebook.buck.rules.coercer.TypeCoercerFactory;
 import com.google.common.annotations.VisibleForTesting;
@@ -46,7 +44,7 @@ import java.util.concurrent.ExecutionException;
 public class ConstructorArgMarshaller {
 
   private final TypeCoercerFactory typeCoercerFactory;
-  private final Cache<Class<?>, ImmutableSet<ParamInfo<?>>> coercedTypes;
+  private final Cache<Class<?>, ImmutableSet<ParamInfo>> coercedTypes;
 
   /**
    * Constructor. {@code pathFromProjectRootToBuildFile} is the path relative to the project root to
@@ -54,8 +52,8 @@ public class ConstructorArgMarshaller {
    * additional paths to ones relative to the project root, and to allow {@link BuildTarget}
    * instances to be fully qualified.
    */
-  public ConstructorArgMarshaller() {
-    this.typeCoercerFactory = new TypeCoercerFactory();
+  public ConstructorArgMarshaller(TypeCoercerFactory typeCoercerFactory) {
+    this.typeCoercerFactory = typeCoercerFactory;
     this.coercedTypes = CacheBuilder.newBuilder().build();
   }
 
@@ -82,38 +80,16 @@ public class ConstructorArgMarshaller {
    * @param visibilityPatterns A builder to be populated with the visibility patterns.
    */
   public void populate(
+      CellPathResolver cellRoots,
       ProjectFilesystem filesystem,
       BuildRuleFactoryParams params,
       Object dto,
       ImmutableSet.Builder<BuildTarget> declaredDeps,
-      ImmutableSet.Builder<BuildTargetPattern> visibilityPatterns,
+      ImmutableSet.Builder<VisibilityPattern> visibilityPatterns,
       Map<String, ?> instance) throws ConstructorArgMarshalException, NoSuchBuildTargetException {
-    populate(
-        filesystem,
-        params,
-        dto,
-        declaredDeps,
-        instance,
-        /* populate all fields, optional and required */ false);
-    populateVisibilityPatterns(visibilityPatterns, instance);
-  }
-
-  @VisibleForTesting
-  void populate(
-      ProjectFilesystem filesystem,
-      BuildRuleFactoryParams params,
-      Object dto,
-      final ImmutableSet.Builder<BuildTarget> declaredDeps,
-      Map<String, ?> instance,
-      boolean onlyOptional) throws ConstructorArgMarshalException {
-    Set<ParamInfo<?>> allInfo = getAllParamInfo(dto);
-
-    for (ParamInfo<?> info : allInfo) {
-      if (onlyOptional && !info.isOptional()) {
-        continue;
-      }
+    for (ParamInfo info : getAllParamInfo(dto)) {
       try {
-        info.setFromParams(filesystem, params, dto, instance);
+        info.setFromParams(cellRoots, filesystem, params, dto, instance);
       } catch (ParamInfoException e) {
         throw new ConstructorArgMarshalException(e.getMessage(), e);
       }
@@ -121,29 +97,56 @@ public class ConstructorArgMarshaller {
         populateDeclaredDeps(info, declaredDeps, dto);
       }
     }
+    populateVisibilityPatterns(cellRoots, visibilityPatterns, instance);
   }
 
-  @SuppressWarnings("unchecked")
-  private <T> void populateDeclaredDeps(
-      ParamInfo<T> paramInfo,
+  /**
+   * Populate only the fields that have default values.
+   *
+   * Used for testing.
+   */
+  @VisibleForTesting
+  void populateDefaults(
+      CellPathResolver cellRoots,
+      ProjectFilesystem filesystem,
+      BuildRuleFactoryParams params,
+      Object dto) throws ConstructorArgMarshalException {
+    for (ParamInfo info : getAllParamInfo(dto)) {
+      if (info.isOptional()) {
+        try {
+          info.set(cellRoots, filesystem, params.target.getBasePath(), dto, null);
+        } catch (ParamInfoException e) {
+          throw new ConstructorArgMarshalException(e.getMessage(), e);
+        }
+      }
+    }
+  }
+
+  private void populateDeclaredDeps(
+      ParamInfo paramInfo,
       final ImmutableSet.Builder<BuildTarget> declaredDeps,
       Object dto) {
-    paramInfo.traverse(
-        new ParamInfo.Traversal() {
-          @Override
-          public void traverse(Object object) {
-            if (!(object instanceof BuildTarget)) {
-              return;
+
+    if (paramInfo.isDep()) {
+      paramInfo.traverse(
+          new ParamInfo.Traversal() {
+            @Override
+            public void traverse(Object object) {
+              if (!(object instanceof BuildTarget)) {
+                return;
+              }
+              declaredDeps.add((BuildTarget) object);
             }
-            declaredDeps.add((BuildTarget) object);
-          }
-        },
-        (T) dto);
+          },
+          dto);
+
+    }
   }
 
   @SuppressWarnings("unchecked")
   private void populateVisibilityPatterns(
-      ImmutableSet.Builder<BuildTargetPattern> visibilityPatterns,
+      CellPathResolver cellNames,
+      ImmutableSet.Builder<VisibilityPattern> visibilityPatterns,
       Map<String, ?> instance) throws NoSuchBuildTargetException {
     Object value = instance.get("visibility");
     if (value != null) {
@@ -152,26 +155,26 @@ public class ConstructorArgMarshaller {
             String.format("Expected an array for visibility but was %s", value));
       }
 
+      VisibilityPatternParser parser = new VisibilityPatternParser();
       for (String visibility : (List<String>) value) {
-        visibilityPatterns.add(
-            BuildTargetPatternParser.forVisibilityArgument().parse(visibility));
+        visibilityPatterns.add(parser.parse(cellNames, visibility));
       }
     }
   }
 
-  ImmutableSet<ParamInfo<?>> getAllParamInfo(Object dto) {
+  ImmutableSet<ParamInfo> getAllParamInfo(Object dto) {
     final Class<?> argClass = dto.getClass();
     try {
-      return coercedTypes.get(argClass, new Callable<ImmutableSet<ParamInfo<?>>>() {
+      return coercedTypes.get(argClass, new Callable<ImmutableSet<ParamInfo>>() {
             @Override
-            public ImmutableSet<ParamInfo<?>> call() {
-              ImmutableSet.Builder<ParamInfo<?>> allInfo = ImmutableSet.builder();
+            public ImmutableSet<ParamInfo> call() {
+              ImmutableSet.Builder<ParamInfo> allInfo = ImmutableSet.builder();
 
               for (Field field : argClass.getFields()) {
                 if (Modifier.isFinal(field.getModifiers())) {
                   continue;
                 }
-                allInfo.add(new ParamInfo<>(typeCoercerFactory, field));
+                allInfo.add(new ParamInfo(typeCoercerFactory, field));
               }
 
               return allInfo.build();

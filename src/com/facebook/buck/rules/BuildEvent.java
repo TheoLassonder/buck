@@ -17,24 +17,33 @@
 package com.facebook.buck.rules;
 
 import com.facebook.buck.event.AbstractBuckEvent;
-import com.facebook.buck.event.BuckEvent;
+import com.facebook.buck.event.EventKey;
+import com.facebook.buck.event.WorkAdvanceEvent;
 import com.facebook.buck.model.BuildTarget;
 import com.google.common.base.Joiner;
 import com.google.common.base.Objects;
 import com.google.common.collect.ImmutableSet;
 
+
 /**
  * Base class for events about building.
  */
-@SuppressWarnings("PMD.OverrideBothEqualsAndHashcode")
-public abstract class BuildEvent extends AbstractBuckEvent {
+public abstract class BuildEvent extends AbstractBuckEvent implements WorkAdvanceEvent {
 
-  public static Started started(Iterable<String> buildArgs) {
-    return new Started(ImmutableSet.copyOf(buildArgs));
+  public BuildEvent(EventKey eventKey) {
+    super(eventKey);
   }
 
-  public static Finished finished(Iterable<String> buildArgs, int exitCode) {
-    return new Finished(ImmutableSet.copyOf(buildArgs), exitCode);
+  public static Started started(Iterable<String> buildArgs) {
+    return started(buildArgs, false);
+  }
+
+  public static Started started(Iterable<String> buildArgs, boolean isDistributedBuild) {
+    return new Started(ImmutableSet.copyOf(buildArgs), isDistributedBuild);
+  }
+
+  public static Finished finished(Started started, int exitCode) {
+    return new Finished(started, exitCode);
   }
 
   public static RuleCountCalculated ruleCountCalculated(
@@ -43,17 +52,24 @@ public abstract class BuildEvent extends AbstractBuckEvent {
     return new RuleCountCalculated(buildTargets, ruleCount);
   }
 
+  public static UnskippedRuleCountUpdated unskippedRuleCountUpdated(int ruleCount) {
+    return new UnskippedRuleCountUpdated(ruleCount);
+  }
+
   public static class Started extends BuildEvent {
 
     private final ImmutableSet<String> buildArgs;
+    private final boolean isDistributedBuild;
 
-    protected Started(ImmutableSet<String> buildArgs) {
+    protected Started(ImmutableSet<String> buildArgs, boolean isDistributedBuild) {
+      super(EventKey.unique());
       this.buildArgs = buildArgs;
+      this.isDistributedBuild = isDistributedBuild;
     }
 
     @Override
     public String getEventName() {
-      return "BuildStarted";
+      return BUILD_STARTED;
     }
 
     @Override
@@ -61,24 +77,13 @@ public abstract class BuildEvent extends AbstractBuckEvent {
       return Joiner.on(", ").join(buildArgs);
     }
 
-    @Override
-    public int hashCode() {
-      return Objects.hashCode(buildArgs);
-    }
-
-    @Override
-    public boolean isRelatedTo(BuckEvent event) {
-      if (!(event instanceof Started)) {
-        return false;
-      }
-      Started that = (Started) event;
-      return Objects.equal(buildArgs, that.buildArgs);
-    }
-
     public ImmutableSet<String> getBuildArgs() {
       return buildArgs;
     }
 
+    public boolean isDistributedBuild() {
+      return isDistributedBuild;
+    }
   }
 
   public static class Finished extends BuildEvent {
@@ -86,8 +91,9 @@ public abstract class BuildEvent extends AbstractBuckEvent {
     private final ImmutableSet<String> buildArgs;
     private final int exitCode;
 
-    protected Finished(ImmutableSet<String> buildArgs, int exitCode) {
-      this.buildArgs = buildArgs;
+    protected Finished(Started started, int exitCode) {
+      super(started.getEventKey());
+      this.buildArgs = started.getBuildArgs();
       this.exitCode = exitCode;
     }
 
@@ -101,7 +107,7 @@ public abstract class BuildEvent extends AbstractBuckEvent {
 
     @Override
     public String getEventName() {
-      return "BuildFinished";
+      return BUILD_FINISHED;
     }
 
     @Override
@@ -110,19 +116,19 @@ public abstract class BuildEvent extends AbstractBuckEvent {
     }
 
     @Override
-    public boolean isRelatedTo(BuckEvent event) {
-      if (!(event instanceof Finished)) {
+    public boolean equals(Object o) {
+      if (!super.equals(o)) {
         return false;
       }
-      Finished that = (Finished) event;
-      return Objects.equal(exitCode, that.exitCode);
+      // Because super.equals compares the EventKey, getting here means that we've somehow managed
+      // to create 2 Finished events for the same Started event.
+      throw new UnsupportedOperationException("Multiple conflicting Finished events detected.");
     }
 
     @Override
     public int hashCode() {
-      return Objects.hashCode(exitCode);
+      return Objects.hashCode(super.hashCode(), buildArgs, exitCode);
     }
-
   }
 
   public static class RuleCountCalculated extends BuildEvent {
@@ -131,6 +137,7 @@ public abstract class BuildEvent extends AbstractBuckEvent {
     private final int numRules;
 
     protected RuleCountCalculated(ImmutableSet<BuildTarget> buildRules, int numRulesToBuild) {
+      super(EventKey.unique());
       this.buildRules = buildRules;
       this.numRules = numRulesToBuild;
     }
@@ -154,21 +161,52 @@ public abstract class BuildEvent extends AbstractBuckEvent {
     }
 
     @Override
-    public boolean isRelatedTo(BuckEvent event) {
-      if (!(event instanceof RuleCountCalculated)) {
+    public boolean equals(Object o) {
+      if (!super.equals(o)) {
         return false;
       }
-      RuleCountCalculated that = (RuleCountCalculated) event;
-      return
-          Objects.equal(buildRules, that.buildRules) &&
-          Objects.equal(numRules, that.numRules);
+      // Because super.equals compares the EventKey, getting here means that we've somehow managed
+      // to create 2 Finished events for the same Started event.
+      throw new UnsupportedOperationException("Multiple conflicting Finished events detected.");
     }
 
     @Override
     public int hashCode() {
-      return Objects.hashCode(buildRules, numRules);
+      return Objects.hashCode(super.hashCode(), buildRules, numRules);
     }
-
   }
 
+  public static class UnskippedRuleCountUpdated extends BuildEvent {
+
+    private final int numRules;
+
+    protected UnskippedRuleCountUpdated(int numRulesToBuild) {
+      super(EventKey.unique());
+      this.numRules = numRulesToBuild;
+    }
+
+    public int getNumRules() {
+      return numRules;
+    }
+
+    @Override
+    public String getEventName() {
+      return "UnskippedRuleCountUpdated";
+    }
+
+    @Override
+    protected String getValueString() {
+      return Integer.toString(numRules);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      return this == o;
+    }
+
+    @Override
+    public int hashCode() {
+      return System.identityHashCode(this);
+    }
+  }
 }

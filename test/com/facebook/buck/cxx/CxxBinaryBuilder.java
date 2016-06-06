@@ -16,27 +16,33 @@
 
 package com.facebook.buck.cxx;
 
+import com.facebook.buck.cli.FakeBuckConfig;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.FlavorDomain;
 
-public class CxxBinaryBuilder extends AbstractCxxSourceBuilder<CxxBinaryDescription.Arg> {
+public class CxxBinaryBuilder extends
+    AbstractCxxSourceBuilder<CxxBinaryDescription.Arg, CxxBinaryBuilder> {
 
   public CxxBinaryBuilder(
       BuildTarget target,
-      CxxBuckConfig cxxBuckConfig,
       CxxPlatform defaultCxxPlatform,
       FlavorDomain<CxxPlatform> cxxPlatforms) {
     super(
         new CxxBinaryDescription(
-            cxxBuckConfig,
+            CxxPlatformUtils.DEFAULT_CONFIG,
+            new InferBuckConfig(FakeBuckConfig.builder().build()),
             defaultCxxPlatform,
-            cxxPlatforms,
-            CxxPreprocessMode.SEPARATE),
+            cxxPlatforms),
         target);
   }
 
   public CxxBinaryBuilder(BuildTarget target) {
-    this(target, createDefaultConfig(), createDefaultPlatform(), createDefaultPlatforms());
+    this(target, createDefaultPlatform(), createDefaultPlatforms());
+  }
+
+  @Override
+  protected CxxBinaryBuilder getThis() {
+    return this;
   }
 
 }

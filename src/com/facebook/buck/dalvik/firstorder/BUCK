@@ -1,10 +1,9 @@
 java_library(
   name = 'firstorder',
   srcs = glob(['*.java']),
-  deps = [
-    '//third-party/java/asm:asm',
-    '//third-party/java/guava:guava',
-    '//third-party/java/jsr:jsr305',
+  tests = [
+    '//test/com/facebook/buck/dalvik/firstorder:firstorder',
   ],
+  autodeps = True,
   visibility = ['PUBLIC'],
 )

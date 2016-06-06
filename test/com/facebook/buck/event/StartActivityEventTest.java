@@ -19,37 +19,44 @@ package com.facebook.buck.event;
 import static com.facebook.buck.event.TestEventConfigerator.configureTestEvent;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.fail;
 
 import com.facebook.buck.model.BuildTargetFactory;
 
+import org.hamcrest.Matchers;
 import org.junit.Test;
 
 public class StartActivityEventTest {
   @Test
   public void testEquals() throws Exception {
-    StartActivityEvent started =
+    StartActivityEvent.Started started =
         configureTestEvent(StartActivityEvent.started(BuildTargetFactory.newInstance("//foo:bar"),
             "com.foo.bar"));
-    StartActivityEvent startedTwo =
+    StartActivityEvent.Started startedTwo =
         configureTestEvent(StartActivityEvent.started(BuildTargetFactory.newInstance("//foo:bar"),
             "com.foo.bar"));
     StartActivityEvent finished =
-        configureTestEvent(StartActivityEvent.finished(BuildTargetFactory.newInstance("//foo:bar"),
-            "com.foo.bar",
-            false));
+        configureTestEvent(StartActivityEvent.finished(started, false));
     StartActivityEvent finishedTwo =
-        configureTestEvent(StartActivityEvent.finished(BuildTargetFactory.newInstance("//foo:bar"),
-            "com.foo.bar",
-            false));
+        configureTestEvent(StartActivityEvent.finished(started, false));
     StartActivityEvent finishedSucceed =
-        configureTestEvent(StartActivityEvent.finished(BuildTargetFactory.newInstance("//foo:bar"),
-            "com.foo.bar",
-            true));
+        configureTestEvent(StartActivityEvent.finished(started, true));
 
     assertEquals(started, started);
     assertNotEquals(started, finished);
-    assertEquals(started, startedTwo);
-    assertEquals(finished, finishedTwo);
-    assertNotEquals(finished, finishedSucceed);
+    assertNotEquals(started, startedTwo);
+    try {
+      finished.equals(finishedSucceed);
+      fail("Expected an UnsupportedOperationException.");
+    } catch (UnsupportedOperationException e) {
+      assertThat(e.toString(), Matchers.stringContainsInOrder("conflicting", "events"));
+    }
+
+    assertThat(started.isRelatedTo(finished), Matchers.is(true));
+    assertThat(started.isRelatedTo(finishedTwo), Matchers.is(true));
+    assertThat(finished.isRelatedTo(started), Matchers.is(true));
+
+    assertThat(started.isRelatedTo(startedTwo), Matchers.is(false));
   }
 }

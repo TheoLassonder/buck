@@ -23,6 +23,7 @@ import com.facebook.buck.model.UnflavoredBuildTarget;
 import com.facebook.buck.parser.BuildTargetParseException;
 import com.facebook.buck.parser.BuildTargetParser;
 import com.facebook.buck.parser.BuildTargetPatternParser;
+import com.facebook.buck.rules.CellPathResolver;
 
 import java.nio.file.Path;
 
@@ -35,6 +36,7 @@ public class BuildTargetTypeCoercer extends LeafTypeCoercer<BuildTarget> {
 
   @Override
   public BuildTarget coerce(
+      CellPathResolver cellRoots,
       ProjectFilesystem alsoUnused,
       Path pathRelativeToProjectRoot,
       Object object)
@@ -50,7 +52,8 @@ public class BuildTargetTypeCoercer extends LeafTypeCoercer<BuildTarget> {
 
       return BuildTargetParser.INSTANCE.parse(
           param,
-          BuildTargetPatternParser.forBaseName(baseName));
+          BuildTargetPatternParser.forBaseName(baseName),
+          cellRoots);
     } catch (BuildTargetParseException e) {
       throw CoerceFailedException.simple(object, getOutputClass());
     }

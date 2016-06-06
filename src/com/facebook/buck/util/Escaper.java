@@ -49,6 +49,12 @@ public final class Escaper {
       public String quote(String str) {
         return '"' + str.replace("\"", "\\\"") + '"';
       }
+    },
+    DOUBLE_WINDOWS_JAVAC('"') {
+      @Override
+      public String quote(String str) {
+        return '"' + str.replace("\\", "\\\\") + '"';
+      }
     }
     ;
 
@@ -101,10 +107,22 @@ public final class Escaper {
     };
   }
 
+  public static Function<String, String> javacEscaper() {
+    if (Platform.detect() == Platform.WINDOWS) {
+      return Escaper.escaper(
+          Quoter.DOUBLE_WINDOWS_JAVAC,
+          CharMatcher.anyOf("#'").or(CharMatcher.whitespace()));
+    } else {
+      return Escaper.escaper(
+          Escaper.Quoter.DOUBLE,
+          CharMatcher.anyOf("#\"'").or(CharMatcher.whitespace()));
+    }
+  }
+
   private static final CharMatcher BASH_SPECIAL_CHARS =
       CharMatcher
           .anyOf("<>|!?*[]$\\(){}\"'`&;=")
-          .or(CharMatcher.WHITESPACE);
+          .or(CharMatcher.whitespace());
 
   /**
    * Bash quoting {@link com.google.common.base.Function Function} which can be passed to
@@ -150,7 +168,11 @@ public final class Escaper {
    * @return possibly quoted string
    */
   public static String escapeAsBashString(String str) {
-    return escape(Quoter.SINGLE, BASH_SPECIAL_CHARS, str);
+    if (Platform.detect() == Platform.WINDOWS) {
+      return CREATE_PROCESS_ESCAPER.apply(str);
+    } else {
+      return escape(Quoter.SINGLE, BASH_SPECIAL_CHARS, str);
+    }
   }
 
   public static String escapeAsBashString(Path path) {
@@ -267,18 +289,6 @@ public final class Escaper {
   public static String escapeAsMakefileValueString(String str) {
     return escapeAsMakefileString("#", str);
   }
-
-  /**
-   * Platform-aware Path escaping {@link com.google.common.base.Function Function} which can be
-   * passed to {@link com.google.common.collect.Iterables#transform Iterables.transform()}
-   */
-  public static final Function<Path, String> PATH_FOR_C_INCLUDE_STRING_ESCAPER =
-      new Function<Path, String>() {
-        @Override
-        public String apply(Path input) {
-          return escapePathForCIncludeString(input);
-        }
-      };
 
   /**
    * Escapes forward slashes in a Path as a String that is safe to consume with other tools (such

@@ -16,46 +16,54 @@
 
 package com.facebook.buck.rules;
 
+import com.facebook.buck.artifact_cache.ArtifactCache;
+import com.facebook.buck.artifact_cache.ArtifactInfo;
+import com.facebook.buck.artifact_cache.CacheResult;
+import com.facebook.buck.event.ArtifactCompressionEvent;
 import com.facebook.buck.event.BuckEventBus;
 import com.facebook.buck.event.ConsoleEvent;
+import com.facebook.buck.io.BorrowablePath;
+import com.facebook.buck.io.LazyPath;
 import com.facebook.buck.io.MoreFiles;
 import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.log.Logger;
 import com.facebook.buck.model.BuildId;
 import com.facebook.buck.model.BuildTarget;
-import com.facebook.buck.model.Pair;
 import com.facebook.buck.timing.Clock;
+import com.facebook.buck.util.cache.FileHashCache;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Charsets;
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.FluentIterable;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
-import com.google.common.hash.Funnels;
 import com.google.common.hash.HashCode;
-import com.google.common.hash.HashFunction;
 import com.google.common.hash.Hasher;
-import com.google.common.io.ByteStreams;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonPrimitive;
+import com.google.common.hash.Hashing;
+import com.google.common.util.concurrent.FutureCallback;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 
-import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.annotation.Nullable;
 
@@ -66,6 +74,8 @@ import javax.annotation.Nullable;
  * build by an {@link OnDiskBuildInfo}.
  */
 public class BuildInfoRecorder {
+
+  private static final Logger LOG = Logger.get(BuildRuleResolver.class);
 
   @VisibleForTesting
   static final String ABSOLUTE_PATH_ERROR_FORMAT =
@@ -78,9 +88,11 @@ public class BuildInfoRecorder {
   private final ProjectFilesystem projectFilesystem;
   private final Clock clock;
   private final BuildId buildId;
+  private final ObjectMapper objectMapper;
   private final ImmutableMap<String, String> artifactExtraData;
   private final Map<String, String> metadataToWrite;
   private final Map<String, String> buildMetadata;
+  private final AtomicBoolean warnedUserOfCacheStoreFailure;
 
   /**
    * Every value in this set is a path relative to the project root.
@@ -91,12 +103,15 @@ public class BuildInfoRecorder {
       ProjectFilesystem projectFilesystem,
       Clock clock,
       BuildId buildId,
+      ObjectMapper objectMapper,
       ImmutableMap<String, String> environment) {
     this.buildTarget = buildTarget;
-    this.pathToMetadataDirectory = BuildInfo.getPathToMetadataDirectory(buildTarget);
+    this.pathToMetadataDirectory =
+        BuildInfo.getPathToMetadataDirectory(buildTarget, projectFilesystem);
     this.projectFilesystem = projectFilesystem;
     this.clock = clock;
     this.buildId = buildId;
+    this.objectMapper = objectMapper;
 
     this.artifactExtraData =
         ImmutableMap.<String, String>builder()
@@ -108,6 +123,15 @@ public class BuildInfoRecorder {
     this.metadataToWrite = Maps.newLinkedHashMap();
     this.buildMetadata = Maps.newLinkedHashMap();
     this.pathsToOutputs = Sets.newHashSet();
+    this.warnedUserOfCacheStoreFailure = new AtomicBoolean(false);
+  }
+
+  private String toJson(Object value) {
+    try {
+      return objectMapper.writeValueAsString(value);
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   private String formatAdditionalArtifactInfo(Map<String, String> entries) {
@@ -121,7 +145,7 @@ public class BuildInfoRecorder {
     return builder.toString();
   }
 
-  private ImmutableMap<String, String> getBuildMetadata() {
+  private ImmutableMap<String, String> getBuildMetadata() throws IOException {
     return ImmutableMap.<String, String>builder()
         .put(
             BuildInfo.METADATA_KEY_FOR_ADDITIONAL_INFO,
@@ -140,7 +164,7 @@ public class BuildInfoRecorder {
 
   /**
    * Writes the metadata currently stored in memory to the directory returned by
-   * {@link BuildInfo#getPathToMetadataDirectory(BuildTarget)}.
+   * {@link BuildInfo#getPathToMetadataDirectory(BuildTarget, ProjectFilesystem)}.
    */
   public void writeMetadataToDisk(boolean clearExistingMetadata) throws IOException {
     if (clearExistingMetadata) {
@@ -164,13 +188,12 @@ public class BuildInfoRecorder {
     return this;
   }
 
-  public BuildInfoRecorder addBuildMetadata(String key, Iterable<String> value) {
-    JsonArray values = new JsonArray();
-    for (String str : value) {
-      values.add(new JsonPrimitive(str));
-    }
-    addBuildMetadata(key, values.toString());
-    return this;
+  public BuildInfoRecorder addBuildMetadata(String key, ImmutableList<String> value) {
+    return addBuildMetadata(key, toJson(value));
+  }
+
+  public BuildInfoRecorder addBuildMetadata(String key, ImmutableMap<String, String> value) {
+    return addBuildMetadata(key, toJson(value));
   }
 
   /**
@@ -180,28 +203,25 @@ public class BuildInfoRecorder {
     metadataToWrite.put(key, value);
   }
 
-  public void addMetadata(String key, Iterable<String> value) {
-    JsonArray values = new JsonArray();
-    for (String str : value) {
-      values.add(new JsonPrimitive(str));
-    }
-    addMetadata(key, values.toString());
+  public void addMetadata(String key, ImmutableList<String> value) {
+    addMetadata(key, toJson(value));
   }
 
-  private ImmutableSet<Path> getRecordedPaths() throws IOException {
-    final ImmutableSet.Builder<Path> paths = ImmutableSortedSet.naturalOrder();
+  private ImmutableSortedSet<Path> getRecordedMetadataFiles() {
+    return FluentIterable.from(metadataToWrite.keySet())
+        .transform(MorePaths.TO_PATH)
+        .transform(
+            new Function<Path, Path>() {
+              @Override
+              public Path apply(Path input) {
+                return pathToMetadataDirectory.resolve(input);
+              }
+            })
+        .toSortedSet(Ordering.natural());
+  }
 
-    // Add metadata files.
-    paths.addAll(
-        FluentIterable.from(metadataToWrite.keySet())
-            .transform(MorePaths.TO_PATH)
-            .transform(
-                new Function<Path, Path>() {
-                  @Override
-                  public Path apply(Path input) {
-                    return pathToMetadataDirectory.resolve(input);
-                  }
-                }));
+  private ImmutableSortedSet<Path> getRecordedOutputDirsAndFiles() throws IOException {
+    final ImmutableSortedSet.Builder<Path> paths = ImmutableSortedSet.naturalOrder();
 
     // Add files from output directories.
     for (final Path output : pathsToOutputs) {
@@ -231,28 +251,52 @@ public class BuildInfoRecorder {
     return paths.build();
   }
 
-  public Pair<Long, HashCode> getOutputSizeAndHash(HashFunction hashFunction) throws IOException {
-    long size = 0;
-    Hasher hasher = hashFunction.newHasher();
+  private ImmutableSortedSet<Path> getRecordedDirsAndFiles() throws IOException {
+    return ImmutableSortedSet.<Path>naturalOrder()
+        .addAll(getRecordedMetadataFiles())
+        .addAll(getRecordedOutputDirsAndFiles())
+        .build();
+  }
+
+  /**
+   * @return the outputs paths as recorded by the rule.
+   */
+  public ImmutableSortedSet<Path> getOutputPaths() {
+    return ImmutableSortedSet.copyOf(pathsToOutputs);
+  }
+
+  public ImmutableSortedSet<Path> getRecordedPaths() throws IOException {
+    return ImmutableSortedSet.<Path>naturalOrder()
+        .addAll(getRecordedMetadataFiles())
+        .addAll(pathsToOutputs)
+        .build();
+  }
+
+  public HashCode getOutputHash(FileHashCache fileHashCache) throws IOException {
+    Hasher hasher = Hashing.md5().newHasher();
     for (Path path : getRecordedPaths()) {
+      hasher.putBytes(fileHashCache.get(projectFilesystem.resolve(path)).asBytes());
+    }
+    return hasher.hash();
+  }
+
+  public long getOutputSize() throws IOException {
+    long size = 0;
+    for (Path path : getRecordedDirsAndFiles()) {
       if (projectFilesystem.isFile(path)) {
         size += projectFilesystem.getFileSize(path);
-        hasher.putString(path.toString(), Charsets.UTF_8);
-        try (InputStream input = projectFilesystem.newFileInputStream(path)) {
-          ByteStreams.copy(input, Funnels.asOutputStream(hasher));
-        }
       }
     }
-    return new Pair<>(size, hasher.hash());
+    return size;
   }
 
   /**
    * Creates a zip file of the metadata and recorded artifacts and stores it in the artifact cache.
    */
   public void performUploadToArtifactCache(
-      ImmutableSet<RuleKey> ruleKeys,
+      final ImmutableSet<RuleKey> ruleKeys,
       ArtifactCache artifactCache,
-      BuckEventBus eventBus)
+      final BuckEventBus eventBus)
       throws InterruptedException {
 
     // Skip all of this if caching is disabled. Although artifactCache.store() will be a noop,
@@ -261,18 +305,20 @@ public class BuildInfoRecorder {
       return;
     }
 
-    eventBus.post(
-        ArtifactCacheEvent.started(
-            ArtifactCacheEvent.Operation.COMPRESS,
-            ruleKeys));
+    ArtifactCompressionEvent.Started started = ArtifactCompressionEvent.started(
+        ArtifactCompressionEvent.Operation.COMPRESS,
+        ruleKeys);
+    eventBus.post(started);
 
-    File zip;
+    final Path zip;
     ImmutableSet<Path> pathsToIncludeInZip = ImmutableSet.of();
+    ImmutableMap<String, String> buildMetadata;
     try {
-      pathsToIncludeInZip = getRecordedPaths();
-      zip = File.createTempFile(
+      pathsToIncludeInZip = getRecordedDirsAndFiles();
+      zip = Files.createTempFile(
           "buck_artifact_" + MoreFiles.sanitize(buildTarget.getShortName()),
           ".zip");
+      buildMetadata = getBuildMetadata();
       projectFilesystem.createZip(pathsToIncludeInZip, zip, ImmutableMap.<Path, String>of());
     } catch (IOException e) {
       eventBus.post(ConsoleEvent.info("Failed to create zip for %s containing:\n%s",
@@ -281,15 +327,40 @@ public class BuildInfoRecorder {
       e.printStackTrace();
       return;
     } finally {
-      eventBus.post(
-          ArtifactCacheEvent.finished(
-              ArtifactCacheEvent.Operation.COMPRESS,
-              ruleKeys));
+      eventBus.post(ArtifactCompressionEvent.finished(started));
     }
 
     // Store the artifact, including any additional metadata.
-    artifactCache.store(ruleKeys, getBuildMetadata(), zip);
-    zip.delete();
+    ListenableFuture<Void> storeFuture = artifactCache.store(
+        ArtifactInfo.builder().setRuleKeys(ruleKeys).setMetadata(buildMetadata).build(),
+        BorrowablePath.notBorrowablePath(zip));
+    Futures.addCallback(
+        storeFuture,
+        new FutureCallback<Void>() {
+          @Override
+          public void onSuccess(Void result) {
+            onCompletion();
+          }
+
+          @Override
+          public void onFailure(Throwable t) {
+            onCompletion();
+            LOG.info(t, "Failed storing RuleKeys %s to the cache.", ruleKeys);
+            if (warnedUserOfCacheStoreFailure.compareAndSet(false, true)) {
+              eventBus.post(
+                  ConsoleEvent.severe("Failed storing an artifact to the cache," +
+                      "see log for details."));
+            }
+          }
+
+          private void onCompletion() {
+            try {
+              Files.deleteIfExists(zip);
+            } catch (IOException e) {
+              throw new RuntimeException(e);
+            }
+          }
+        });
   }
 
   /**
@@ -298,7 +369,7 @@ public class BuildInfoRecorder {
    */
   public CacheResult fetchArtifactForBuildable(
       RuleKey ruleKey,
-      File outputFile,
+      LazyPath outputFile,
       ArtifactCache artifactCache)
       throws InterruptedException {
     return artifactCache.fetch(ruleKey, outputFile);

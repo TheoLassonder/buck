@@ -19,6 +19,9 @@ package com.facebook.buck.d;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
+import com.facebook.buck.util.BgProcessKiller;
+import com.facebook.buck.util.HumanReadableException;
 import com.facebook.buck.util.ProcessExecutor;
 import com.google.common.base.Function;
 import com.google.common.base.MoreObjects;
@@ -36,20 +39,27 @@ import java.nio.file.Path;
  */
 public class DTestStep implements Step {
 
+  private final ProjectFilesystem filesystem;
   private final ImmutableList<String> command;
   private final Path exitCode;
   private final Path output;
+  private final Optional<Long> testRuleTimeoutMs;
 
-  public DTestStep(ImmutableList<String> command, Path exitCode, Path output) {
+  public DTestStep(
+      ProjectFilesystem filesystem,
+      ImmutableList<String> command,
+      Path exitCode,
+      Optional<Long> testRuleTimeoutMs,
+      Path output) {
+    this.filesystem = filesystem;
     this.command = command;
     this.exitCode = exitCode;
+    this.testRuleTimeoutMs = testRuleTimeoutMs;
     this.output = output;
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
-
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
     // Build the process, redirecting output to the provided output file.  In general,
     // it's undesirable that both stdout and stderr are being redirected to the same
     // input stream.  However, due to the nature of OS pipe buffering, we can't really
@@ -65,10 +75,10 @@ public class DTestStep implements Step {
 
     Process process;
     try {
-      process = builder.start();
+      process = BgProcessKiller.startProcess(builder);
     } catch (IOException e) {
       context.logError(e, "Error starting command %s", command);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
     // Run the test process, saving the exit code.
@@ -79,8 +89,15 @@ public class DTestStep implements Step {
         process,
         options,
         /* stdin */ Optional.<String>absent(),
-        /* timeOutMs */ Optional.<Long>absent(),
+        /* timeOutMs */ testRuleTimeoutMs,
         /* timeOutHandler */ Optional.<Function<Process, Void>>absent());
+
+    if (result.isTimedOut()) {
+      throw new HumanReadableException(
+          "Timed out after %d ms running test command %s",
+          testRuleTimeoutMs.or(-1L),
+          command);
+    }
 
     // Since test binaries return a non-zero exit code when unittests fail, save the exit code
     // to a file rather than signalling a step failure.
@@ -88,10 +105,10 @@ public class DTestStep implements Step {
       stream.write((Integer.toString(result.getExitCode())).getBytes());
     } catch (IOException e) {
       context.logError(e, "Error saving exit code to %s", exitCode);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   @Override

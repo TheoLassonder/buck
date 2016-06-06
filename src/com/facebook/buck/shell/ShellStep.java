@@ -20,6 +20,7 @@ import com.facebook.buck.event.ConsoleEvent;
 import com.facebook.buck.log.Logger;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.util.Escaper;
 import com.facebook.buck.util.ProcessExecutor;
 import com.facebook.buck.util.ProcessExecutor.Option;
@@ -41,6 +42,7 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.OperatingSystemMXBean;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.Map.Entry;
 
@@ -56,8 +58,7 @@ public abstract class ShellStep implements Step {
   private ImmutableList<String> shellCommandArgs;
 
   /** If specified, working directory will be different from project root. **/
-  @Nullable
-  protected final File workingDirectory;
+  protected final Path workingDirectory;
 
   /**
    * This is set if {@link #shouldPrintStdout(Verbosity)} returns {@code true} when the command is
@@ -74,47 +75,26 @@ public abstract class ShellStep implements Step {
   private long startTime = 0L;
   private long endTime = 0L;
 
-  protected ShellStep() {
-    this(/* workingDirectory */ null);
-  }
-
-  protected ShellStep(@Nullable File workingDirectory) {
-    this.workingDirectory = workingDirectory;
+  protected ShellStep(Path workingDirectory) {
+    this.workingDirectory = Preconditions.checkNotNull(workingDirectory);
     this.stdout = Optional.absent();
     this.stderr = Optional.absent();
-  }
 
-  /**
-   * Get the working directory for this command.
-   * @return working directory specified on construction
-   *         ({@code null} if project directory will be used).
-   */
-  @Nullable
-  @VisibleForTesting
-  public File getWorkingDirectory() {
-    return workingDirectory;
-  }
-
-  private File getFinalWorkingDirectory(ExecutionContext context) {
-    if (workingDirectory != null) {
-      return workingDirectory;
+    if (!workingDirectory.isAbsolute()) {
+      LOG.info("Working directory is not absolute: %s", workingDirectory);
     }
-
-    return context.getProjectDirectoryRoot().toAbsolutePath().toFile();
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
     // Kick off a Process in which this ShellCommand will be run.
     ProcessExecutorParams.Builder builder = ProcessExecutorParams.builder();
 
-    File workDir = getFinalWorkingDirectory(context);
-
     builder.setCommand(getShellCommand(context));
     Map<String, String> environment = Maps.newHashMap();
-    setProcessEnvironment(context, environment, workDir);
+    setProcessEnvironment(context, environment, workingDirectory.toFile());
     builder.setEnvironment(environment);
-    builder.setDirectory(workDir);
+    builder.setDirectory(workingDirectory.toFile());
 
     Optional<String> stdin = getStdin(context);
     if (stdin.isPresent()) {
@@ -127,7 +107,6 @@ public abstract class ShellStep implements Step {
       startTime = System.currentTimeMillis();
       exitCode = launchAndInteractWithProcess(context, builder.build());
     } catch (IOException e) {
-      e.printStackTrace(context.getStdErr());
       exitCode = 1;
     }
 
@@ -135,14 +114,17 @@ public abstract class ShellStep implements Step {
     double endLoad = OS_JMX.getSystemLoadAverage();
 
     LOG.debug(
-        "%s: exit code: %d. os load (before, after): (%f, %f). CPU count: %d",
+        "%s: exit code: %d. os load (before, after): (%f, %f). CPU count: %d." +
+        "\nstdout:\n%s\nstderr:\n%s\n",
         shellCommandArgs,
         exitCode,
         initialLoad,
         endLoad,
-        OS_JMX.getAvailableProcessors());
+        OS_JMX.getAvailableProcessors(),
+        stdout.or(""),
+        stderr.or(""));
 
-    return exitCode;
+    return StepExecutionResult.of(exitCode, stderr);
   }
 
   @VisibleForTesting
@@ -191,10 +173,12 @@ public abstract class ShellStep implements Step {
     stderr = result.getStderr();
 
     Verbosity verbosity = context.getVerbosity();
-    if (stdout.isPresent() && !stdout.get().isEmpty() && shouldPrintStdout(verbosity)) {
+    if (stdout.isPresent() && !stdout.get().isEmpty() &&
+        (result.getExitCode() != 0 || shouldPrintStdout(verbosity))) {
       context.postEvent(ConsoleEvent.info("%s", stdout.get()));
     }
-    if (stderr.isPresent() && !stderr.get().isEmpty() && shouldPrintStderr(verbosity)) {
+    if (stderr.isPresent() && !stderr.get().isEmpty() &&
+        (result.getExitCode() != 0 || shouldPrintStderr(verbosity))) {
       context.postEvent(ConsoleEvent.warning("%s", stderr.get()));
     }
 
@@ -208,9 +192,7 @@ public abstract class ShellStep implements Step {
       options.add(Option.PRINT_STD_OUT);
       options.add(Option.PRINT_STD_ERR);
     }
-    if (context.getVerbosity() == Verbosity.SILENT) {
-      options.add(Option.IS_SILENT);
-    }
+    options.add(Option.IS_SILENT);
   }
 
   public long getDuration() {
@@ -265,7 +247,7 @@ public abstract class ShellStep implements Step {
     // resolve symbolic links in this case, and the default PWD might leave symbolic links
     // unresolved.  We try to make PWD match, and cd sets PWD.
     return String.format("(cd %s && %s)",
-        Escaper.escapeAsBashString(getFinalWorkingDirectory(context).getPath()),
+        Escaper.escapeAsBashString(workingDirectory),
         shellCommand);
   }
 
@@ -286,7 +268,7 @@ public abstract class ShellStep implements Step {
    *     error and only if verbosity is set to standard information.
    */
   protected boolean shouldPrintStdout(Verbosity verbosity) {
-    return false;
+    return verbosity.shouldPrintOutput();
   }
 
   /**

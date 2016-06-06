@@ -17,22 +17,28 @@
 package com.facebook.buck.zip;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeThat;
 
+import com.facebook.buck.io.MoreFiles;
 import com.facebook.buck.io.MorePosixFilePermissions;
 import com.facebook.buck.testutil.Zip;
+import com.facebook.buck.testutil.integration.TemporaryPaths;
+import com.facebook.buck.util.environment.Platform;
+import com.google.common.base.Charsets;
 import com.google.common.collect.ImmutableList;
 
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
+import org.hamcrest.Matchers;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
 
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.zip.ZipEntry;
@@ -41,13 +47,13 @@ public class UnzipTest {
   private static final byte[] DUMMY_FILE_CONTENTS = "BUCK Unzip Test String!\nNihao\n".getBytes();
 
   @Rule
-  public TemporaryFolder tmpFolder = new TemporaryFolder();
+  public TemporaryPaths tmpFolder = new TemporaryPaths();
 
-  private File zipFile;
+  private Path zipFile;
 
   @Before
   public void setUp() {
-    zipFile = new File(tmpFolder.getRoot(), "tmp.zip");
+    zipFile = tmpFolder.getRoot().resolve("tmp.zip");
   }
 
 
@@ -60,16 +66,16 @@ public class UnzipTest {
       zip.addDir("emptydir");
     }
 
-    File extractFolder = tmpFolder.newFolder();
+    Path extractFolder = tmpFolder.newFolder();
     ImmutableList<Path> result = Unzip.extractZipFile(
-        zipFile.toPath().toAbsolutePath(),
-        extractFolder.toPath().toAbsolutePath(),
+        zipFile.toAbsolutePath(),
+        extractFolder.toAbsolutePath(),
         Unzip.ExistingFileMode.OVERWRITE);
-    assertTrue(new File(extractFolder.getAbsolutePath() + "/1.bin").exists());
-    File bin2 = new File(extractFolder.getAbsolutePath() + "/subdir/2.bin");
-    assertTrue(bin2.exists());
-    assertTrue(new File(extractFolder.getAbsolutePath() + "/emptydir").isDirectory());
-    try (FileInputStream input = new FileInputStream(bin2)) {
+    assertTrue(Files.exists(extractFolder.toAbsolutePath().resolve("1.bin")));
+    Path bin2 = extractFolder.toAbsolutePath().resolve("subdir/2.bin");
+    assertTrue(Files.exists(bin2));
+    assertTrue(Files.isDirectory(extractFolder.toAbsolutePath().resolve("emptydir")));
+    try (InputStream input = Files.newInputStream(bin2)) {
       byte[] buffer = new byte[DUMMY_FILE_CONTENTS.length];
       int bytesRead = input.read(buffer, 0, DUMMY_FILE_CONTENTS.length);
       assertEquals(DUMMY_FILE_CONTENTS.length, bytesRead);
@@ -79,8 +85,8 @@ public class UnzipTest {
     }
     assertEquals(
         ImmutableList.of(
-          extractFolder.toPath().resolve("1.bin"),
-          extractFolder.toPath().resolve("subdir/2.bin")),
+          extractFolder.resolve("1.bin"),
+          extractFolder.resolve("subdir/2.bin")),
         result);
   }
 
@@ -88,7 +94,7 @@ public class UnzipTest {
   public void testExtractZipFilePreservesExecutePermissions() throws IOException {
 
     // Create a simple zip archive using apache's commons-compress to store executable info.
-    try (ZipArchiveOutputStream zip = new ZipArchiveOutputStream(zipFile)) {
+    try (ZipArchiveOutputStream zip = new ZipArchiveOutputStream(zipFile.toFile())) {
       ZipArchiveEntry entry = new ZipArchiveEntry("test.exe");
       entry.setUnixMode((int) MorePosixFilePermissions.toMode(
           PosixFilePermissions.fromString("r-x------")));
@@ -100,18 +106,42 @@ public class UnzipTest {
     }
 
     // Now run `Unzip.extractZipFile` on our test zip and verify that the file is executable.
-    File extractFolder = tmpFolder.newFolder();
+    Path extractFolder = tmpFolder.newFolder();
     ImmutableList<Path> result = Unzip.extractZipFile(
-        zipFile.toPath().toAbsolutePath(),
-        extractFolder.toPath().toAbsolutePath(),
+        zipFile.toAbsolutePath(),
+        extractFolder.toAbsolutePath(),
         Unzip.ExistingFileMode.OVERWRITE);
-    File exe = new File(extractFolder.getAbsoluteFile() + "/test.exe");
-    assertTrue(exe.exists());
-    assertTrue(exe.canExecute());
-    assertEquals(
-        ImmutableList.of(
-            extractFolder.toPath().resolve("test.exe")),
-        result);
-
+    Path exe = extractFolder.toAbsolutePath().resolve("test.exe");
+    assertTrue(Files.exists(exe));
+    assertTrue(Files.isExecutable(exe));
+    assertEquals(ImmutableList.of(extractFolder.resolve("test.exe")), result);
   }
+
+  @Test
+  public void testExtractSymlink() throws IOException {
+    assumeThat(Platform.detect(), Matchers.is(Matchers.not(Platform.WINDOWS)));
+
+    // Create a simple zip archive using apache's commons-compress to store executable info.
+    try (ZipArchiveOutputStream zip = new ZipArchiveOutputStream(zipFile.toFile())) {
+      ZipArchiveEntry entry = new ZipArchiveEntry("link.txt");
+      entry.setUnixMode((int) MoreFiles.S_IFLNK);
+      String target = "target.txt";
+      entry.setSize(target.getBytes(Charsets.UTF_8).length);
+      entry.setMethod(ZipEntry.STORED);
+      zip.putArchiveEntry(entry);
+      zip.write(target.getBytes(Charsets.UTF_8));
+      zip.closeArchiveEntry();
+    }
+
+    // Now run `Unzip.extractZipFile` on our test zip and verify that the file is executable.
+    Path extractFolder = tmpFolder.newFolder();
+    Unzip.extractZipFile(
+        zipFile.toAbsolutePath(),
+        extractFolder.toAbsolutePath(),
+        Unzip.ExistingFileMode.OVERWRITE);
+    Path link = extractFolder.toAbsolutePath().resolve("link.txt");
+    assertTrue(Files.isSymbolicLink(link));
+    assertThat(Files.readSymbolicLink(link).toString(), Matchers.equalTo("target.txt"));
+  }
+
 }

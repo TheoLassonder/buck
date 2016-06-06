@@ -20,6 +20,7 @@ import com.dd.plist.NSArray;
 import com.dd.plist.NSDictionary;
 import com.dd.plist.NSObject;
 import com.dd.plist.NSString;
+import com.dd.plist.PropertyListFormatException;
 import com.dd.plist.PropertyListParser;
 import com.facebook.buck.log.Logger;
 import com.facebook.buck.util.VersionStringComparator;
@@ -32,6 +33,8 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Ordering;
 import com.google.common.collect.TreeMultimap;
 
+import org.xml.sax.SAXException;
+
 import java.io.BufferedInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -40,6 +43,11 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.text.ParseException;
+import java.util.HashSet;
+import java.util.Set;
+
+import javax.xml.parsers.ParserConfigurationException;
 
 /**
  * Utility class to discover the location of SDKs contained inside an Xcode
@@ -119,9 +127,13 @@ public class AppleSdkDiscovery {
           try (DirectoryStream<Path> sdkStream = Files.newDirectoryStream(
                    developerSdksPath,
                    "*.sdk")) {
+            Set<Path> scannedSdkDirs = new HashSet<>();
             for (Path sdkDir : sdkStream) {
               LOG.debug("Fetching SDK name for %s", sdkDir);
-              if (Files.isSymbolicLink(sdkDir)) {
+
+              sdkDir = sdkDir.toRealPath();
+              if (scannedSdkDirs.contains(sdkDir)) {
+                LOG.debug("Skipping already scanned SDK directory %s", sdkDir);
                 continue;
               }
 
@@ -142,6 +154,7 @@ public class AppleSdkDiscovery {
                 appleSdkPathsBuilder.put(sdk, xcodePaths);
                 orderedSdksForPlatform.put(sdk.getApplePlatform(), sdk);
               }
+              scannedSdkDirs.add(sdkDir);
             }
           } catch (NoSuchFileException e) {
             LOG.warn(
@@ -173,25 +186,6 @@ public class AppleSdkDiscovery {
     return appleSdkPathsBuilder.build();
   }
 
-  private static void addArchitecturesForPlatform(
-      AppleSdk.Builder sdkBuilder,
-      ApplePlatform applePlatform) {
-    // TODO(user): These need to be read from the SDK, not hard-coded.
-    switch (applePlatform.getName()) {
-      case ApplePlatform.Name.MACOSX:
-        // Fall through.
-      case ApplePlatform.Name.IPHONESIMULATOR:
-        sdkBuilder.addArchitectures("i386", "x86_64");
-        break;
-      case ApplePlatform.Name.IPHONEOS:
-        sdkBuilder.addArchitectures("armv7", "arm64");
-        break;
-      default:
-        sdkBuilder.addArchitectures("armv7", "arm64", "i386", "x86_64");
-        break;
-    }
-  }
-
   private static boolean buildSdkFromPath(
         Path sdkDir,
         AppleSdk.Builder sdkBuilder,
@@ -202,7 +196,10 @@ public class AppleSdkDiscovery {
       NSDictionary sdkSettings;
       try {
         sdkSettings = (NSDictionary) PropertyListParser.parse(bufferedSdkSettingsPlist);
-      } catch (Exception e) {
+      } catch (PropertyListFormatException | ParseException | SAXException e) {
+        LOG.error(e, "Malformatted SDKSettings.plist. Skipping SDK path %s.", sdkDir);
+        return false;
+      } catch (ParserConfigurationException e) {
         throw new IOException(e);
       }
       String name = sdkSettings.objectForKey("CanonicalName").toString();
@@ -232,10 +229,9 @@ public class AppleSdkDiscovery {
         return false;
       } else {
         NSString platformName = (NSString) defaultProperties.objectForKey("PLATFORM_NAME");
-        ApplePlatform applePlatform =
-            ApplePlatform.builder().setName(platformName.toString()).build();
+        ApplePlatform applePlatform = ApplePlatform.of(platformName.toString());
         sdkBuilder.setName(name).setVersion(version).setApplePlatform(applePlatform);
-        addArchitecturesForPlatform(sdkBuilder, applePlatform);
+        sdkBuilder.addAllArchitectures(applePlatform.getArchitectures());
         return true;
       }
     } catch (FileNotFoundException e) {

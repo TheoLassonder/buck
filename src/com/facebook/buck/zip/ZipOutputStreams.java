@@ -21,10 +21,10 @@ import com.facebook.buck.timing.DefaultClock;
 import com.facebook.buck.util.HumanReadableException;
 
 import java.io.BufferedOutputStream;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 public class ZipOutputStreams {
 
@@ -39,12 +39,8 @@ public class ZipOutputStreams {
    *
    * @param zipFile The file to write to.
    */
-  public static CustomZipOutputStream newOutputStream(File zipFile) {
-    try {
-      return newOutputStream(new BufferedOutputStream(new FileOutputStream(zipFile)));
-    } catch (FileNotFoundException e) {
-      throw new RuntimeException(e);
-    }
+  public static CustomZipOutputStream newOutputStream(Path zipFile) throws IOException {
+    return newOutputStream(new BufferedOutputStream(Files.newOutputStream(zipFile)));
   }
 
   /**
@@ -65,10 +61,10 @@ public class ZipOutputStreams {
    * @param zipFile The file to write to.
    * @param mode How to handle duplicate entries.
    */
-  public static CustomZipOutputStream newOutputStream(File zipFile, HandleDuplicates mode)
-      throws FileNotFoundException {
+  public static CustomZipOutputStream newOutputStream(Path zipFile, HandleDuplicates mode)
+      throws IOException {
 
-    return newOutputStream(new BufferedOutputStream(new FileOutputStream(zipFile)), mode);
+    return newOutputStream(new BufferedOutputStream(Files.newOutputStream(zipFile)), mode);
   }
 
   /**
@@ -79,25 +75,29 @@ public class ZipOutputStreams {
    * @param mode How to handle duplicate entries.
    */
   public static CustomZipOutputStream newOutputStream(OutputStream out, HandleDuplicates mode) {
-    Clock clock = new DefaultClock();
+    return newOutputStream(out, mode, new DefaultClock());
+  }
 
+  public static CustomZipOutputStream newOutputStream(
+      OutputStream out,
+      HandleDuplicates mode,
+      Clock clock) {
     switch (mode) {
       case APPEND_TO_ZIP:
       case THROW_EXCEPTION:
-        return new AppendingZipOutputStream(clock,
+        return new AppendingZipOutputStream(
+            clock,
             out,
             mode == HandleDuplicates.THROW_EXCEPTION);
-
       case OVERWRITE_EXISTING:
         return new OverwritingZipOutputStream(clock, out);
-
       default:
         throw new HumanReadableException(
             "Unable to determine which zip output mode to use: %s", mode);
     }
   }
 
-  public static enum HandleDuplicates {
+  public enum HandleDuplicates {
     /** Duplicate entries are simply appended to the zip. */
     APPEND_TO_ZIP,
     /** An exception should be thrown if a duplicate entry is added to a zip. */

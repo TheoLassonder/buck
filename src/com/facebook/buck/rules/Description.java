@@ -18,6 +18,7 @@ package com.facebook.buck.rules;
 
 
 import com.facebook.buck.model.Flavor;
+import com.facebook.buck.parser.NoSuchBuildTargetException;
 
 /**
  * The Source of Truth about a {@link BuildRule}, providing mechanisms to expose the arguments that
@@ -52,7 +53,8 @@ public interface Description<T> {
    * @return The {@link BuildRule} that describes the default flavour of the rule being described.
    */
   <A extends T> BuildRule createBuildRule(
+      TargetGraph targetGraph,
       BuildRuleParams params,
       BuildRuleResolver resolver,
-      A args);
+      A args) throws NoSuchBuildTargetException;
 }

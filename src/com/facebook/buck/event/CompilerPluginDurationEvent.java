@@ -22,17 +22,21 @@ import com.google.common.collect.ImmutableMap;
 /**
  * Base class for events being reported by plugins to in-process compilers such as JSR199 javac.
  */
-public abstract class CompilerPluginDurationEvent extends AbstractBuckEvent implements LeafEvent {
+public abstract class CompilerPluginDurationEvent
+    extends AbstractBuckEvent
+    implements WorkAdvanceEvent {
   private final BuildTarget buildTarget;
   private final String pluginName;
   private final String durationName;
   private final ImmutableMap<String, String> args;
 
   protected CompilerPluginDurationEvent(
+      EventKey eventKey,
       BuildTarget buildTarget,
       String pluginName,
       String durationName,
       ImmutableMap<String, String> args) {
+    super(eventKey);
     this.buildTarget = buildTarget;
     this.pluginName = pluginName;
     this.durationName = durationName;
@@ -60,32 +64,6 @@ public abstract class CompilerPluginDurationEvent extends AbstractBuckEvent impl
     return "";
   }
 
-  @Override
-  public String getCategory() {
-    return pluginName + "." + durationName;
-  }
-
-  @Override
-  public boolean isRelatedTo(BuckEvent event) {
-    if (!(event instanceof CompilerPluginDurationEvent)) {
-      return false;
-    }
-
-    if (event == this) {
-      return true;
-    }
-
-    if (event instanceof Finished && ((Finished) event).getStartedEvent() == this) {
-      return true;
-    }
-
-    if (this instanceof Finished && ((Finished) this).getStartedEvent() == event) {
-      return true;
-    }
-
-    return false;
-  }
-
   public static Started started(
       BuildTarget buildTarget,
       String pluginName,
@@ -106,7 +84,7 @@ public abstract class CompilerPluginDurationEvent extends AbstractBuckEvent impl
         String pluginName,
         String durationName,
         ImmutableMap<String, String> args) {
-      super(buildTarget, pluginName, durationName, args);
+      super(EventKey.unique(), buildTarget, pluginName, durationName, args);
     }
 
     @Override
@@ -116,21 +94,15 @@ public abstract class CompilerPluginDurationEvent extends AbstractBuckEvent impl
   }
 
   public static class Finished extends CompilerPluginDurationEvent {
-    private final Started startedEvent;
-
     public Finished(
         Started startedEvent,
         ImmutableMap<String, String> args) {
       super(
+          startedEvent.getEventKey(),
           startedEvent.getBuildTarget(),
           startedEvent.getPluginName(),
           startedEvent.getDurationName(),
           args);
-      this.startedEvent = startedEvent;
-    }
-
-    public Started getStartedEvent() {
-      return startedEvent;
     }
 
     @Override

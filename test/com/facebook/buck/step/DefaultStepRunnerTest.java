@@ -48,7 +48,7 @@ public class DefaultStepRunnerTest {
     eventBus.register(listener);
 
     ExecutionContext context = TestExecutionContext.newBuilder()
-        .setEventBus(eventBus)
+        .setBuckEventBus(eventBus)
         .build();
     DefaultStepRunner runner = new DefaultStepRunner(context);
     runner.runStepForBuildTarget(passingStep, Optional.<BuildTarget>absent());
@@ -127,7 +127,7 @@ public class DefaultStepRunnerTest {
 
   private static class ExplosionStep implements Step {
     @Override
-    public int execute(ExecutionContext context) {
+    public StepExecutionResult execute(ExecutionContext context) {
       throw new RuntimeException("#yolo");
     }
 
@@ -152,9 +152,9 @@ public class DefaultStepRunnerTest {
     }
 
     @Override
-    public int execute(ExecutionContext context) throws InterruptedException {
+    public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
       Thread.sleep(sleepMillis);
-      return exitCode;
+      return StepExecutionResult.of(exitCode);
     }
 
     @Override

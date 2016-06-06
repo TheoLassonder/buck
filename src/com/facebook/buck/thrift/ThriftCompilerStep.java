@@ -23,6 +23,7 @@ import com.google.common.base.Functions;
 import com.google.common.base.Joiner;
 import com.google.common.base.Objects;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 
@@ -30,8 +31,8 @@ import java.nio.file.Path;
 
 public class ThriftCompilerStep extends ShellStep {
 
-  private final Path compiler;
-  private final ImmutableList<String> flags;
+  private final ImmutableMap<String, String> environment;
+  private final ImmutableList<String> compilerPrefix;
   private final Path outputDir;
   private final Path input;
   private final String language;
@@ -39,16 +40,17 @@ public class ThriftCompilerStep extends ShellStep {
   private final ImmutableList<Path> includes;
 
   public ThriftCompilerStep(
-      Path compiler,
-      ImmutableList<String> flags,
+      Path workingDirectory,
+      ImmutableMap<String, String> environment,
+      ImmutableList<String> compilerPrefix,
       Path outputDir,
       Path input,
       String language,
       ImmutableSet<String> options,
       ImmutableList<Path> includes) {
-
-    this.compiler = compiler;
-    this.flags = flags;
+    super(workingDirectory);
+    this.environment = environment;
+    this.compilerPrefix = compilerPrefix;
     this.outputDir = outputDir;
     this.input = input;
     this.language = language;
@@ -59,8 +61,7 @@ public class ThriftCompilerStep extends ShellStep {
   @Override
   protected ImmutableList<String> getShellCommandInternal(ExecutionContext context) {
     return ImmutableList.<String>builder()
-        .add(compiler.toString())
-        .addAll(flags)
+        .addAll(compilerPrefix)
         .add("--gen", String.format("%s:%s", language, Joiner.on(',').join(options)))
         .addAll(
             MoreIterables.zipAndConcat(
@@ -69,6 +70,11 @@ public class ThriftCompilerStep extends ShellStep {
         .add("-o", outputDir.toString())
         .add(input.toString())
         .build();
+  }
+
+  @Override
+  public ImmutableMap<String, String> getEnvironmentVariables(ExecutionContext context) {
+    return environment;
   }
 
   @Override
@@ -89,11 +95,7 @@ public class ThriftCompilerStep extends ShellStep {
 
     ThriftCompilerStep that = (ThriftCompilerStep) o;
 
-    if (!compiler.equals(that.compiler)) {
-      return false;
-    }
-
-    if (!flags.equals(that.flags)) {
+    if (!compilerPrefix.equals(that.compilerPrefix)) {
       return false;
     }
 
@@ -117,12 +119,16 @@ public class ThriftCompilerStep extends ShellStep {
       return false;
     }
 
+    if (!environment.equals(that.environment)) {
+      return false;
+    }
+
     return true;
   }
 
   @Override
   public int hashCode() {
-    return Objects.hashCode(compiler, flags, outputDir, input, language, options, includes);
+    return Objects.hashCode(compilerPrefix, outputDir, input, language, options, includes);
   }
 
 }

@@ -1,0 +1,15 @@
+genrule(
+  name = 'gen-res',
+  out = 'res',
+  bash = 'cp -r $SRCS $OUT',
+  cmd_exe = 'xcopy %SRCS% %OUT% /E /I',
+  srcs = [
+    'input_res',
+  ],
+)
+
+android_resource(
+  name = 'res',
+  res = ':gen-res',
+  package = 'com.example',
+)

@@ -16,15 +16,21 @@
 
 package com.facebook.buck.ocaml;
 
+import com.facebook.buck.cxx.CxxHeaders;
 import com.facebook.buck.cxx.CxxPreprocessorInput;
 import com.facebook.buck.cxx.CxxSource;
 import com.facebook.buck.cxx.NativeLinkableInput;
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.model.UnflavoredBuildTarget;
 import com.facebook.buck.rules.BuildRule;
-import com.facebook.buck.rules.RuleKey;
+import com.facebook.buck.rules.PathSourcePath;
 import com.facebook.buck.rules.RuleKeyAppendable;
+import com.facebook.buck.rules.RuleKeyObjectSink;
+import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.Tool;
 import com.facebook.buck.util.MoreIterables;
 import com.facebook.buck.util.immutables.BuckStyleImmutable;
 import com.google.common.base.Function;
@@ -41,6 +47,13 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 
+/**
+ * OCaml build context
+ *
+ * OCaml has two build modes, "native" (ocamlopt) and "bytecode" (ocamlc), and that terminology is
+ * used throughout this file -- not to be confused with the "native" terminology used in
+ * com.facebook.buck.cxx.NativeLinkableInput.
+ */
 @Value.Immutable
 @BuckStyleImmutable
 abstract class AbstractOCamlBuildContext implements RuleKeyAppendable {
@@ -50,114 +63,154 @@ abstract class AbstractOCamlBuildContext implements RuleKeyAppendable {
 
   static final Path DEFAULT_OCAML_INTEROP_INCLUDE_DIR = Paths.get("/usr/local/lib/ocaml");
 
-  public abstract BuildTarget getBuildTarget();
+  public abstract UnflavoredBuildTarget getBuildTarget();
+  public abstract ProjectFilesystem getProjectFilesystem();
+  public abstract SourcePathResolver getSourcePathResolver();
+
   public abstract boolean isLibrary();
   public abstract List<String> getFlags();
-  public abstract List<Path> getInput();
-  public abstract List<String> getIncludes();
-  public abstract NativeLinkableInput getLinkableInput();
+  public abstract List<SourcePath> getInput();
+  public abstract List<String> getNativeIncludes();
+  public abstract List<String> getBytecodeIncludes();
+
+  /**
+   * Inputs for the native (ocamlopt) build
+   */
+  public abstract NativeLinkableInput getNativeLinkableInput();
+
+  /**
+   * Inputs for the bytecode (ocamlc) build
+   */
+  public abstract NativeLinkableInput getBytecodeLinkableInput();
+
+  /**
+   * Inputs for the C compiler (both builds)
+   */
+  public abstract NativeLinkableInput getCLinkableInput();
+
   public abstract List<OCamlLibrary> getOCamlInput();
   public abstract CxxPreprocessorInput getCxxPreprocessorInput();
-  public abstract List<String> getBytecodeIncludes();
-  public abstract ImmutableSortedSet<BuildRule> getCompileDeps();
+  public abstract ImmutableSortedSet<BuildRule> getNativeCompileDeps();
   public abstract ImmutableSortedSet<BuildRule> getBytecodeCompileDeps();
   public abstract ImmutableSortedSet<BuildRule> getBytecodeLinkDeps();
 
-  public abstract Optional<Path> getOcamlDepTool();
-  public abstract Optional<Path> getOcamlCompiler();
-  public abstract Optional<Path> getOcamlDebug();
-  public abstract Optional<Path> getYaccCompiler();
-  public abstract Optional<Path> getLexCompiler();
-  public abstract Optional<Path> getOcamlBytecodeCompiler();
+  public abstract Optional<Tool> getOcamlDepTool();
+  public abstract Optional<Tool> getOcamlCompiler();
+  public abstract Optional<Tool> getOcamlDebug();
+  public abstract Optional<Tool> getYaccCompiler();
+  public abstract Optional<Tool> getLexCompiler();
+  public abstract Optional<Tool> getOcamlBytecodeCompiler();
 
   protected abstract List<String> getCFlags();
   protected abstract Optional<String> getOCamlInteropIncludesDir();
-  protected abstract List<String> getCLinkerFlags();
   protected abstract List<String> getLdFlags();
 
-  public ImmutableList<Path> getCInput() {
+  public ImmutableList<SourcePath> getCInput() {
     return FluentIterable.from(getInput())
-        .filter(OCamlUtil.ext(OCamlCompilables.OCAML_C))
+        .filter(OCamlUtil.sourcePathExt(getSourcePathResolver(), OCamlCompilables.OCAML_C))
         .toSet()
         .asList();
   }
 
-  public ImmutableList<Path> getLexInput() {
+  public ImmutableList<SourcePath> getLexInput() {
     return FluentIterable.from(getInput())
-        .filter(OCamlUtil.ext(OCamlCompilables.OCAML_MLL))
+        .filter(OCamlUtil.sourcePathExt(getSourcePathResolver(), OCamlCompilables.OCAML_MLL))
         .toSet()
         .asList();
   }
 
-  public ImmutableList<Path> getYaccInput() {
+  public ImmutableList<SourcePath> getYaccInput() {
     return FluentIterable.from(getInput())
-        .filter(OCamlUtil.ext(OCamlCompilables.OCAML_MLY))
+        .filter(OCamlUtil.sourcePathExt(getSourcePathResolver(), OCamlCompilables.OCAML_MLY))
         .toSet()
         .asList();
   }
 
-  public ImmutableList<Path> getMLInput() {
+  public ImmutableList<SourcePath> getMLInput() {
     return FluentIterable.from(getInput())
-        .filter(OCamlUtil.ext(OCamlCompilables.OCAML_ML, OCamlCompilables.OCAML_MLI))
+        .filter(
+            OCamlUtil.sourcePathExt(
+                getSourcePathResolver(),
+                OCamlCompilables.OCAML_ML,
+                OCamlCompilables.OCAML_MLI))
         .append(getLexOutput(getLexInput()))
         .append(getYaccOutput(getYaccInput()))
         .toSet()
         .asList();
   }
 
-  private static Path getArchiveOutputPath(UnflavoredBuildTarget target) {
+  private static Path getArchiveNativeOutputPath(
+      UnflavoredBuildTarget target,
+      ProjectFilesystem filesystem) {
     return BuildTargets.getGenPath(
-        target,
+        filesystem,
+        BuildTarget.of(target),
         "%s/lib" + target.getShortName() + OCamlCompilables.OCAML_CMXA);
   }
 
-  private static Path getArchiveBytecodeOutputPath(UnflavoredBuildTarget target) {
+  private static Path getArchiveBytecodeOutputPath(
+      UnflavoredBuildTarget target,
+      ProjectFilesystem filesystem) {
     return BuildTargets.getGenPath(
-        target,
+        filesystem,
+        BuildTarget.of(target),
         "%s/lib" + target.getShortName() + OCamlCompilables.OCAML_CMA);
   }
 
-  public Path getOutput() {
-    return getOutputPath(getBuildTarget(), isLibrary());
+  public Path getNativeOutput() {
+    return getNativeOutputPath(getBuildTarget(), getProjectFilesystem(), isLibrary());
   }
 
-  public static Path getOutputPath(BuildTarget target, boolean isLibrary) {
-    UnflavoredBuildTarget plainTarget = target.getUnflavoredBuildTarget();
+  public static Path getNativeOutputPath(
+      UnflavoredBuildTarget target,
+      ProjectFilesystem filesystem,
+      boolean isLibrary) {
     if (isLibrary) {
-      return getArchiveOutputPath(plainTarget);
+      return getArchiveNativeOutputPath(target, filesystem);
     } else {
       return BuildTargets.getScratchPath(
-          plainTarget,
-          "%s/" + plainTarget.getShortName() + ".opt");
+          filesystem,
+          BuildTarget.of(target),
+          "%s/" + target.getShortName() + ".opt");
     }
   }
 
   public Path getBytecodeOutput() {
-    UnflavoredBuildTarget plainTarget = getBuildTarget().getUnflavoredBuildTarget();
-    if (isLibrary()) {
-      return getArchiveBytecodeOutputPath(plainTarget);
+    return getBytecodeOutputPath(getBuildTarget(), getProjectFilesystem(), isLibrary());
+  }
+
+  public static Path getBytecodeOutputPath(
+      UnflavoredBuildTarget target,
+      ProjectFilesystem filesystem,
+      boolean isLibrary) {
+    if (isLibrary) {
+      return getArchiveBytecodeOutputPath(target, filesystem);
     } else {
       return BuildTargets.getScratchPath(
-          plainTarget,
-          "%s/" + plainTarget.getShortName());
+          filesystem,
+          BuildTarget.of(target),
+          "%s/" + target.getShortName());
     }
   }
 
   public Path getGeneratedSourceDir() {
-    return getOutput().getParent().resolve(OCAML_GENERATED_SOURCE_DIR);
+    return getNativeOutput().getParent().resolve(OCAML_GENERATED_SOURCE_DIR);
   }
 
-  public Path getCompileOutputDir() {
-    return getCompileOutputDir(getBuildTarget(), isLibrary());
+  public Path getCompileNativeOutputDir() {
+    return getCompileNativeOutputDir(getBuildTarget(), getProjectFilesystem(), isLibrary());
   }
 
-  public static Path getCompileOutputDir(BuildTarget buildTarget, boolean isLibrary) {
-    return getOutputPath(buildTarget, isLibrary).getParent().resolve(
+  public static Path getCompileNativeOutputDir(
+      UnflavoredBuildTarget buildTarget,
+      ProjectFilesystem filesystem,
+      boolean isLibrary) {
+    return getNativeOutputPath(buildTarget, filesystem, isLibrary).getParent().resolve(
         OCAML_COMPILED_DIR);
   }
 
   public Path getCompileBytecodeOutputDir() {
-    return getOutput().getParent().resolve(OCAML_COMPILED_BYTECODE_DIR);
+    return getNativeOutput().getParent().resolve(OCAML_COMPILED_BYTECODE_DIR);
   }
 
   public Path getCOutput(Path cSrc) {
@@ -166,7 +219,7 @@ abstract class AbstractOCamlBuildContext implements RuleKeyAppendable {
         .replaceFirst(
             OCamlCompilables.OCAML_C_REGEX,
             OCamlCompilables.OCAML_O);
-    return getCompileOutputDir().resolve(outputFileName);
+    return getCompileNativeOutputDir().resolve(outputFileName);
   }
 
   public Function<Path, Path> toCOutput() {
@@ -180,15 +233,15 @@ abstract class AbstractOCamlBuildContext implements RuleKeyAppendable {
 
   public ImmutableList<String> getIncludeDirectories(boolean isBytecode, boolean excludeDeps) {
     ImmutableSet.Builder<String> includeDirs = ImmutableSet.builder();
-    for (Path mlFile : getMLInput()) {
-      Path parent = mlFile.getParent();
+    for (SourcePath mlFile : getMLInput()) {
+      Path parent = getSourcePathResolver().getAbsolutePath(mlFile).getParent();
       if (parent != null) {
         includeDirs.add(parent.toString());
       }
     }
 
     if (!excludeDeps) {
-      includeDirs.addAll(isBytecode ? this.getBytecodeIncludes() : this.getIncludes());
+      includeDirs.addAll(isBytecode ? this.getBytecodeIncludes() : this.getNativeIncludes());
     }
 
     return ImmutableList.copyOf(includeDirs.build());
@@ -215,43 +268,57 @@ abstract class AbstractOCamlBuildContext implements RuleKeyAppendable {
     return includesBuilder.build();
   }
 
-  protected FluentIterable<Path> getLexOutput(Iterable<Path> lexInputs) {
+  protected FluentIterable<SourcePath> getLexOutput(Iterable<SourcePath> lexInputs) {
     return FluentIterable.from(lexInputs)
         .transform(
-            new Function<Path, Path>() {
+            new Function<SourcePath, SourcePath>() {
               @Override
-              public Path apply(Path lexInput) {
-                return getGeneratedSourceDir().resolve(
-                    lexInput.getFileName().toString().replaceFirst(
+              public SourcePath apply(SourcePath lexInput) {
+                Path fileName = getSourcePathResolver().getAbsolutePath(lexInput).getFileName();
+                Path out = getGeneratedSourceDir().resolve(
+                    fileName.toString().replaceFirst(
                         OCamlCompilables.OCAML_MLL_REGEX,
                         OCamlCompilables.OCAML_ML));
+                return new PathSourcePath(getProjectFilesystem(), out);
               }
             });
   }
 
-  protected FluentIterable<Path> getYaccOutput(Iterable<Path> yaccInputs) {
+  protected FluentIterable<SourcePath> getYaccOutput(Iterable<SourcePath> yaccInputs) {
     return FluentIterable.from(yaccInputs)
         .transformAndConcat(
-            new Function<Path, Iterable<? extends Path>>() {
+            new Function<SourcePath, Iterable<? extends SourcePath>>() {
               @Override
-              public Iterable<? extends Path> apply(Path yaccInput) {
-                String yaccFileName = yaccInput.getFileName().toString();
-                return ImmutableList.of(
+              public Iterable<? extends SourcePath> apply(SourcePath yaccInput) {
+                String yaccFileName = getSourcePathResolver()
+                    .getAbsolutePath(yaccInput)
+                    .getFileName()
+                    .toString();
+
+                ImmutableList.Builder<SourcePath> toReturn = ImmutableList.builder();
+
+                toReturn.add(new PathSourcePath(
+                    getProjectFilesystem(),
                     getGeneratedSourceDir().resolve(
                         yaccFileName.replaceFirst(
                             OCamlCompilables.OCAML_MLY_REGEX,
-                            OCamlCompilables.OCAML_ML)),
+                            OCamlCompilables.OCAML_ML))));
+
+                toReturn.add(new PathSourcePath(
+                    getProjectFilesystem(),
                     getGeneratedSourceDir().resolve(
                         yaccFileName.replaceFirst(
                             OCamlCompilables.OCAML_MLY_REGEX,
-                            OCamlCompilables.OCAML_MLI)));
+                            OCamlCompilables.OCAML_MLI))));
+
+                return toReturn.build();
               }
             });
   }
 
   @Override
-  public RuleKey.Builder appendToRuleKey(RuleKey.Builder builder) {
-    return builder
+  public void appendToRuleKey(RuleKeyObjectSink sink) {
+    sink
         .setReflectively("flags", getFlags())
         .setReflectively("input", getInput())
         .setReflectively("lexCompiler", getLexCompiler())
@@ -267,9 +334,13 @@ abstract class AbstractOCamlBuildContext implements RuleKeyAppendable {
 
     CxxPreprocessorInput cxxPreprocessorInput = getCxxPreprocessorInput();
 
-    for (Path includes : cxxPreprocessorInput.getIncludeRoots()) {
-      compileFlags.add("-ccopt", "-I" + includes.toString());
-    }
+    compileFlags.addAll(
+        MoreIterables.zipAndConcat(
+            Iterables.cycle("-ccopt"),
+            CxxHeaders.getArgs(
+                cxxPreprocessorInput.getIncludes(),
+                getSourcePathResolver(),
+                Optional.<Function<Path, Path>>absent())));
 
     for (Path includes : cxxPreprocessorInput.getSystemIncludeRoots()) {
       compileFlags.add("-ccopt", "-isystem" + includes.toString());
@@ -300,10 +371,7 @@ abstract class AbstractOCamlBuildContext implements RuleKeyAppendable {
   }
 
   public ImmutableList<String> getCommonCLinkerFlags() {
-    return addPrefix("-ccopt",
-        Iterables.concat(
-            getCLinkerFlags(),
-            addPrefix("-Xlinker", getLdFlags())));
+    return addPrefix("-ccopt", getLdFlags());
   }
 
   public static OCamlBuildContext.Builder builder(OCamlBuckConfig config) {
@@ -316,7 +384,6 @@ abstract class AbstractOCamlBuildContext implements RuleKeyAppendable {
         .setOcamlBytecodeCompiler(config.getOCamlBytecodeCompiler())
         .setOCamlInteropIncludesDir(config.getOCamlInteropIncludesDir())
         .setCFlags(config.getCFlags())
-        .setCLinkerFlags(config.getCLinkerFlags())
         .setLdFlags(config.getLdFlags());
   }
 

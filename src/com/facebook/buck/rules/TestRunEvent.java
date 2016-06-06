@@ -17,21 +17,20 @@
 package com.facebook.buck.rules;
 
 import com.facebook.buck.event.AbstractBuckEvent;
-import com.facebook.buck.event.BuckEvent;
+import com.facebook.buck.event.EventKey;
+import com.facebook.buck.event.WorkAdvanceEvent;
 import com.facebook.buck.test.TestResults;
 import com.facebook.buck.test.selectors.TestSelectorList;
+import com.facebook.buck.event.external.events.TestRunFinishedEventInterface;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.common.collect.ImmutableSet;
 
 import java.util.List;
-import java.util.Objects;
 
-public abstract class TestRunEvent extends AbstractBuckEvent {
-
-  private final int secret;
+public abstract class TestRunEvent extends AbstractBuckEvent implements WorkAdvanceEvent {
 
   private TestRunEvent(int secret) {
-    this.secret = secret;
+    super(EventKey.slowValueKey("TestRunEvent", secret));
   }
 
   public static Started started(
@@ -51,16 +50,6 @@ public abstract class TestRunEvent extends AbstractBuckEvent {
       ImmutableSet<String> targets,
       List<TestResults> completedResults) {
     return new Finished(targets.hashCode(), completedResults);
-  }
-
-  @Override
-  public boolean isRelatedTo(BuckEvent event) {
-    if (!(event instanceof TestRunEvent)) {
-      return false;
-    }
-
-    return this.secret == ((TestRunEvent) event).secret &&
-        !Objects.equals(getClass(), event.getClass());
   }
 
   public static class Started extends TestRunEvent {
@@ -92,7 +81,7 @@ public abstract class TestRunEvent extends AbstractBuckEvent {
 
     @Override
     public String getEventName() {
-      return "RunStarted";
+      return TEST_RUN_STARTED;
     }
 
     @Override
@@ -109,7 +98,8 @@ public abstract class TestRunEvent extends AbstractBuckEvent {
     }
   }
 
-  public static class Finished extends TestRunEvent {
+  public static class Finished extends TestRunEvent
+      implements TestRunFinishedEventInterface<TestResults> {
 
     private final List<TestResults> completedResults;
 
@@ -120,7 +110,7 @@ public abstract class TestRunEvent extends AbstractBuckEvent {
 
     @Override
     public String getEventName() {
-      return "RunComplete";
+      return RUN_COMPLETE;
     }
 
     @Override
@@ -128,6 +118,7 @@ public abstract class TestRunEvent extends AbstractBuckEvent {
       return completedResults.toString();
     }
 
+    @Override
     public List<TestResults> getResults() {
       return completedResults;
     }

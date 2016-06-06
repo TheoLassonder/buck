@@ -1,0 +1,61 @@
+#!/bin/bash
+
+function get_infer_argument {
+    # retrieves the value of an argument passed to infer
+    OPT="$1"
+    shift
+    while [ -n "$1" ] && [ "$1" != "$OPT" ] && [ "$1" != "--" ]; do shift; done
+    echo "$2"
+}
+
+function get_clang_argument {
+    # retrieves the value of an argument passed to clang, after the -- token
+    OPT="$1"
+    shift
+    while [ "$1" != "--" ]; do shift; done
+    while [ -n "$1" ] && [ "$1" != "$OPT" ]; do shift; done
+    echo $2
+}
+
+# Get the last argument (e.g. to understand if it's analysis or capture, or version)
+INPUT_ARGUMENTS=($@)
+LAST_ARG=$(echo ${INPUT_ARGUMENTS[${#INPUT_ARGUMENTS[@]} - 1]})
+
+# Check whether --version is given, then return a version on stderr and exit
+[ "$LAST_ARG" == "--version" ] \
+    && { echo -e "Infer version 0.12345\nabcdef" > /dev/stderr; exit 0; }
+
+# Check that the given results folder exists
+OUT="$(get_infer_argument "--out" "$@")"
+[ -d "$OUT" ] || { echo "No results dir passed"; exit 1; }
+
+# Check that the project root and the CWD where the compilation/analysis
+# is done, are always matching
+INPUT_PROJECT_ROOT="$(get_infer_argument "--project_root" "$@")"
+[ -d "$INPUT_PROJECT_ROOT" ] || { echo "No --project_root passed in input"; exit 1; }
+PROJECT_ROOT=$(cd "$INPUT_PROJECT_ROOT" && pwd)
+[ "$PROJECT_ROOT" == "$PWD" ] \
+    || { echo "Infer is launched from a path that doesn't match with project_root"; exit 1; }
+
+case $LAST_ARG in
+    analyze)
+        # analyze case: create a specs file and a fake json report
+        mkdir -p $OUT/specs
+        touch $OUT/specs/mockedSpec.specs
+        echo '[{"file":"aFile.c", "type":"NULL_DEREFERENCE", "line":123}]' > "$OUT/report.json"
+        ;;
+    *)
+        # capture case: check that the source file is passed at the end
+        [ -f "$LAST_ARG" ] || { echo "last argument \"$LAST_ARG\" should be source file"; exit 1; }
+
+        # Check that a depfile is specified in clang
+        DEPFILE="$(get_clang_argument "-MF" "$@")"
+        [ -n "$DEPFILE" ] || { echo "No depfile specified in clang command"; exit 1; }
+
+        FILENAME=`basename $LAST_ARG`
+        mkdir -p $OUT/captured/${FILENAME}_captured
+        SOURCE_FILENAME=$(basename $LAST_ARG)
+        touch $OUT/captured/${FILENAME}_captured/$FILENAME.cfg
+        cp "foo/mocked_depfiles/${SOURCE_FILENAME}.dep.mock" $DEPFILE
+        ;;
+esac

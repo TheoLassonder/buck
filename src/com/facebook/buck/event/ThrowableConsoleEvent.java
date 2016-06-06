@@ -16,7 +16,6 @@
 
 package com.facebook.buck.event;
 
-import com.google.common.base.Objects;
 import com.google.common.base.Throwables;
 
 import java.util.logging.Level;
@@ -24,7 +23,6 @@ import java.util.logging.Level;
 /**
  * Event for tracking {@link Throwable}
  */
-@SuppressWarnings("PMD.OverrideBothEqualsAndHashcode")
 public class ThrowableConsoleEvent extends ConsoleEvent {
 
   private final Throwable throwable;
@@ -34,7 +32,10 @@ public class ThrowableConsoleEvent extends ConsoleEvent {
   }
 
   protected ThrowableConsoleEvent(Throwable throwable, Level level, String message) {
-    super(level, combineThrowableAndMessage(throwable, message));
+    super(
+        level,
+        /* containsAnsiEscapeCodes */ false,
+        combineThrowableAndMessage(throwable, message));
     this.throwable = throwable;
   }
 
@@ -53,22 +54,5 @@ public class ThrowableConsoleEvent extends ConsoleEvent {
 
   public static ThrowableConsoleEvent create(Throwable throwable, String message, Object... args) {
     return new ThrowableConsoleEvent(throwable, String.format(message, args));
-  }
-
-  @Override
-  public boolean isRelatedTo(BuckEvent event) {
-    if (!(event instanceof ThrowableConsoleEvent)) {
-      return false;
-    }
-
-    ThrowableConsoleEvent that = (ThrowableConsoleEvent) event;
-
-    return super.isRelatedTo(that) &&
-        Objects.equal(getThrowable(), that.getThrowable());
-  }
-
-  @Override
-  public int hashCode() {
-    return Objects.hashCode(getMessage(), getLevel(), getThrowable());
   }
 }

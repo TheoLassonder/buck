@@ -16,29 +16,30 @@
 
 package com.facebook.buck.thrift;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import com.facebook.buck.cli.BuckConfig;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.cli.FakeBuckConfig;
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleResolver;
-import com.facebook.buck.rules.BuildTargetSourcePath;
-import com.facebook.buck.rules.FakeBuildRule;
-import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
-import com.facebook.buck.rules.PathSourcePath;
-import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.FakeSourcePath;
+import com.facebook.buck.rules.HashedFileTool;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.facebook.buck.rules.TestSourcePath;
+import com.facebook.buck.rules.TargetGraph;
+import com.facebook.buck.rules.Tool;
+import com.facebook.buck.shell.ShBinary;
+import com.facebook.buck.shell.ShBinaryBuilder;
 import com.facebook.buck.testutil.AllExistingProjectFilesystem;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.facebook.buck.util.HumanReadableException;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSortedSet;
 
+import org.hamcrest.Matchers;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -47,26 +48,17 @@ import java.nio.file.Paths;
 
 public class ThriftBuckConfigTest {
 
-  private static FakeBuildRule createFakeBuildRule(
-      String target,
-      SourcePathResolver resolver,
-      BuildRule... deps) {
-    return new FakeBuildRule(
-        new FakeBuildRuleParamsBuilder(BuildTargetFactory.newInstance(target))
-            .setDeps(ImmutableSortedSet.copyOf(deps))
-            .build(),
-        resolver);
-  }
-
   @Test
   public void getCompilerFailsIfNothingSet() {
     // Setup an empty thrift buck config, missing the compiler.
-    FakeBuckConfig buckConfig = new FakeBuckConfig();
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
+    BuckConfig buckConfig = FakeBuckConfig.builder().build();
     ThriftBuckConfig thriftBuckConfig = new ThriftBuckConfig(buckConfig);
 
     // Now try to lookup the compiler, which should fail since nothing was set.
     try {
-      thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT);
+      thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT, resolver);
       fail("expected to throw");
     } catch (HumanReadableException e) {
       assertTrue(
@@ -77,95 +69,111 @@ public class ThriftBuckConfigTest {
 
   @Test
   public void getCompilerSucceedsIfJustCompilerPathIsSet() throws IOException {
-    BuildRuleResolver resolver = new BuildRuleResolver();
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     Path thriftPath = Paths.get("thrift_path");
     FakeProjectFilesystem filesystem = new FakeProjectFilesystem();
     filesystem.touch(thriftPath);
 
     // Setup an empty thrift buck config, missing the compiler.
-    FakeBuckConfig buckConfig = new FakeBuckConfig(
-        ImmutableMap.of(
-            "thrift", ImmutableMap.of("compiler", thriftPath.toString())),
-        filesystem);
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "thrift", ImmutableMap.of("compiler", thriftPath.toString())))
+        .setFilesystem(filesystem)
+        .build();
+
     ThriftBuckConfig thriftBuckConfig = new ThriftBuckConfig(buckConfig);
 
     // Now try to lookup the compiler, which should succeed.
-    SourcePath compiler =
-        thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT);
+    Tool compiler =
+        thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT, resolver);
 
     // Verify that the returned SourcePath wraps the compiler path correctly.
-    assertTrue(compiler instanceof PathSourcePath);
-    assertEquals(
-        thriftPath,
-        new SourcePathResolver(resolver).getPath(compiler));
+    assertThat(compiler, Matchers.instanceOf(HashedFileTool.class));
+    assertThat(
+        compiler.getCommandPrefix(new SourcePathResolver(resolver)),
+        Matchers.contains(thriftPath.toString()));
   }
 
   @Test
-  public void getCompilerSucceedsIfJustCompilerTargetIsSet() {
-    BuildRuleResolver resolver = new BuildRuleResolver();
-    SourcePathResolver pathResolver = new SourcePathResolver(resolver);
-    BuildRule thriftRule = createFakeBuildRule("//thrift:target", pathResolver);
-    BuildTarget thriftTarget = thriftRule.getBuildTarget();
+  public void getCompilerSucceedsIfJustCompilerTargetIsSet() throws Exception {
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
+    ShBinary thriftRule =
+        (ShBinary) new ShBinaryBuilder(BuildTargetFactory.newInstance("//thrift:target"))
+            .setMain(new FakeSourcePath("thrift.sh"))
+            .build(resolver);
 
     // Add the thrift rule to the resolver.
     resolver.addToIndex(thriftRule);
 
     // Setup an empty thrift buck config, missing the compiler.
-    FakeBuckConfig buckConfig = new FakeBuckConfig(
+    BuckConfig buckConfig = FakeBuckConfig.builder().setSections(
         ImmutableMap.of(
-            "thrift", ImmutableMap.of("compiler", thriftTarget.toString())));
+            "thrift", ImmutableMap.of("compiler", thriftRule.getBuildTarget().toString()))).build();
     ThriftBuckConfig thriftBuckConfig = new ThriftBuckConfig(buckConfig);
 
     // Now try to lookup the compiler, which should succeed.
-    SourcePath compiler =
-        thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT);
+    Tool compiler =
+        thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT, resolver);
 
-    // Verify that the returned SourcePath wraps the compiler path correctly.
-    assertTrue(compiler instanceof BuildTargetSourcePath);
-    assertEquals(
-        BuildTargetFactory.newInstance("//thrift:target"),
-        ((BuildTargetSourcePath) compiler).getTarget());
+    // Verify that the returned Tool wraps the compiler rule correctly.
+    assertThat(
+        compiler.getDeps(new SourcePathResolver(resolver)),
+        Matchers.<BuildRule>contains(thriftRule));
   }
 
   @Test
   public void getCompilerThriftVsThrift2() throws IOException {
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     ProjectFilesystem filesystem = new AllExistingProjectFilesystem();
 
     // Setup an empty thrift buck config with thrift and thrift2 set..
-    FakeBuckConfig buckConfig = new FakeBuckConfig(
-        ImmutableMap.of(
-            "thrift",
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
             ImmutableMap.of(
-                "compiler", "thrift1",
-                "compiler2", "thrift2")),
-        filesystem);
+                "thrift",
+                ImmutableMap.of(
+                    "compiler", "thrift1",
+                    "compiler2", "thrift2")))
+        .setFilesystem(filesystem)
+        .build();
     ThriftBuckConfig thriftBuckConfig = new ThriftBuckConfig(buckConfig);
 
     // Verify that thrift1 and thrift2 are selected correctly.
-    assertEquals(
-        new TestSourcePath("thrift1"),
-        thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT));
-    assertEquals(
-        new TestSourcePath("thrift2"),
-        thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT2));
+    assertThat(
+        thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT, resolver)
+            .getCommandPrefix(new SourcePathResolver(resolver)),
+        Matchers.contains("thrift1"));
+    assertThat(
+        thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT2, resolver)
+            .getCommandPrefix(new SourcePathResolver(resolver)),
+        Matchers.contains("thrift2"));
   }
 
   @Test
   public void getCompilerThrift2FallsbackToThrift() throws IOException {
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     ProjectFilesystem filesystem = new AllExistingProjectFilesystem();
 
     // Setup an empty thrift buck config with thrift and thrift2 set..
-    FakeBuckConfig buckConfig = new FakeBuckConfig(
-        ImmutableMap.of(
-            "thrift",
-            ImmutableMap.of("compiler", "thrift1")),
-        filesystem);
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "thrift",
+                ImmutableMap.of("compiler", "thrift1")))
+        .setFilesystem(filesystem)
+        .build();
     ThriftBuckConfig thriftBuckConfig = new ThriftBuckConfig(buckConfig);
 
     // Verify that thrift2 falls back to the setting of thrift1.
-    assertEquals(
-        new TestSourcePath("thrift1"),
-        thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT2));
+    assertThat(
+        thriftBuckConfig.getCompiler(ThriftLibraryDescription.CompilerType.THRIFT2, resolver)
+            .getCommandPrefix(new SourcePathResolver(resolver)),
+        Matchers.contains("thrift1"));
   }
 
 }

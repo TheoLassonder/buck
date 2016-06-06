@@ -22,7 +22,6 @@ import com.facebook.buck.rules.AbstractBuildRule;
 import com.facebook.buck.rules.BuildContext;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildableContext;
-import com.facebook.buck.rules.PathSourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.step.Step;
 import com.google.common.collect.ImmutableList;
@@ -50,9 +49,7 @@ public class AndroidReactNativeLibrary extends AbstractBuildRule implements Andr
 
   @Override
   public void addToCollector(AndroidPackageableCollector collector) {
-    collector.addAssetsDirectory(
-        getBuildTarget(),
-        new PathSourcePath(getProjectFilesystem(), bundle.getJSBundleDir()));
+    collector.addAssetsDirectory(getBuildTarget(), bundle.getJSBundleDir());
   }
 
   @Override

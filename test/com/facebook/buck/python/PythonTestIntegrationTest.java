@@ -18,11 +18,18 @@ package com.facebook.buck.python;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
 
+import com.facebook.buck.cli.FakeBuckConfig;
+import com.facebook.buck.io.ExecutableFinder;
+import com.facebook.buck.testutil.TestConsole;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
 import com.facebook.buck.testutil.integration.ProjectWorkspace.ProcessResult;
 import com.facebook.buck.testutil.integration.TestDataHelper;
+import com.facebook.buck.util.ProcessExecutor;
+import com.facebook.buck.util.VersionStringComparator;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -57,6 +64,95 @@ public class PythonTestIntegrationTest {
         "`buck test` should fail because test_that_fails() failed.",
         result2.getStderr(),
         containsString("test_that_fails"));
+  }
+
+  @Test
+  public void testPythonTestSelectors() throws IOException {
+    ProcessResult result = workspace.runBuckCommand(
+        "test", "--test-selectors", "Test#test_that_passes", "//:test-failure");
+    result.assertSuccess();
+
+    result = workspace.runBuckCommand(
+        "test", "--test-selectors", "!Test#test_that_fails", "//:test-failure");
+    result.assertSuccess();
+    workspace.resetBuildLogFile();
+
+    result = workspace.runBuckCommand(
+        "test", "--test-selectors", "!test_failure.Test#", "//:test-failure");
+    result.assertSuccess();
+    assertThat(result.getStderr(), containsString("1 Passed"));
+  }
+
+  @Test
+  public void testPythonTestEnv() throws IOException {
+    // Test if setting environment during test execution works
+    ProcessResult result = workspace.runBuckCommand("test", "//:test-env");
+    result.assertSuccess();
+  }
+
+  @Test
+  public void testPythonSkippedResult() throws IOException, InterruptedException {
+    assumePythonVersionIsAtLeast("2.7", "unittest skip support was added in Python-2.7");
+    ProcessResult result = workspace.runBuckCommand("test", "//:test-skip").assertSuccess();
+    assertThat(result.getStderr(), containsString("1 Skipped"));
+  }
+
+  @Test
+  public void testPythonTestTimeout() throws IOException {
+    ProcessResult result = workspace.runBuckCommand("test", "//:test-spinning");
+    String stderr = result.getStderr();
+    result.assertSpecialExitCode("test should fail", 42);
+    assertTrue(stderr, stderr.contains("Following test case timed out: //:test-spinning"));
+  }
+
+  @Test
+  public void testPythonSetupClassFailure() throws IOException, InterruptedException {
+    assumePythonVersionIsAtLeast("2.7", "`setUpClass` support was added in Python-2.7");
+    ProjectWorkspace.ProcessResult result =
+        workspace.runBuckCommand("test", "//:test-setup-class-failure");
+    result.assertSpecialExitCode("Tests should execute successfully but fail.", 42);
+    assertThat(
+        result.getStderr(),
+        containsString(
+            "FAILURE test_setup_class_failure.Test test_that_passes: Exception: setup failure!"));
+  }
+
+  @Test
+  public void testRunPythonTest() throws IOException {
+    ProcessResult result = workspace.runBuckCommand("run", "//:test-success");
+    result.assertSuccess();
+    assertThat(
+        result.getStderr(),
+        containsString("test_that_passes (test_success.Test) ... ok"));
+  }
+
+  @Test
+  public void testPythonSetupClassFailureWithTestSuite() throws IOException, InterruptedException {
+    assumePythonVersionIsAtLeast("2.7", "`setUpClass` support was added in Python-2.7");
+    ProjectWorkspace.ProcessResult result =
+        workspace.runBuckCommand("test", "//:test-setup-class-failure-with-test-suite");
+    result.assertSpecialExitCode("Tests should execute successfully but fail.", 42);
+    assertThat(
+        result.getStderr(),
+        containsString(
+            "FAILURE test_setup_class_failure_with_test_suite.Test test_that_passes:" +
+                " Exception: setup failure!"));
+  }
+
+  private void assumePythonVersionIsAtLeast(String expectedVersion, String message)
+      throws InterruptedException {
+    PythonVersion actualVersion =
+        new PythonBuckConfig(FakeBuckConfig.builder().build(), new ExecutableFinder())
+            .getPythonEnvironment(new ProcessExecutor(new TestConsole()))
+            .getPythonVersion();
+    assumeTrue(
+        String.format(
+            "Needs at least Python-%s, but found Python-%s: %s",
+            expectedVersion,
+            actualVersion,
+            message),
+        new VersionStringComparator().compare(
+            actualVersion.getVersionString(), expectedVersion) >= 0);
   }
 
 }

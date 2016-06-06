@@ -22,20 +22,28 @@ import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.rules.BuildRule;
-import com.facebook.buck.rules.BuildRuleParamsFactory;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.CommandTool;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
+import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
 import com.facebook.buck.rules.Label;
+import com.facebook.buck.rules.RuleScheduleInfo;
+import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.facebook.buck.rules.TestSourcePath;
-import com.facebook.buck.step.ExecutionContext;
-import com.facebook.buck.step.TestExecutionContext;
+import com.facebook.buck.rules.TargetGraph;
+import com.facebook.buck.rules.args.Arg;
+import com.facebook.buck.rules.args.StringArg;
 import com.facebook.buck.test.TestResultSummary;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
 import com.facebook.buck.testutil.integration.TestDataHelper;
+import com.facebook.buck.util.ObjectMappers;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.base.Optional;
+import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 
@@ -48,7 +56,7 @@ import java.util.List;
 
 public class CxxBoostTestTest {
 
-  private static final ObjectMapper mapper = new ObjectMapper();
+  private static final ObjectMapper mapper = ObjectMappers.newDefaultInstance();
   private static final TypeReference<List<TestResultSummary>> SUMMARIES_REFERENCE =
       new TypeReference<List<TestResultSummary>>() {};
 
@@ -68,20 +76,35 @@ public class CxxBoostTestTest {
             "simple_failure_with_output");
 
     BuildTarget target = BuildTargetFactory.newInstance("//:test");
-    CxxBoostTest test = new CxxBoostTest(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(target),
-        new SourcePathResolver(new BuildRuleResolver()),
-        new TestSourcePath(""),
-        ImmutableSortedSet.<BuildRule>of(),
-        ImmutableSet.<Label>of(),
-        ImmutableSet.<String>of(),
-        ImmutableSet.<BuildRule>of());
-
-    ExecutionContext context =
-        TestExecutionContext.newBuilder()
-            .setProjectFilesystem(
-                new ProjectFilesystem(tmp.getRoot().toPath()))
-            .build();
+    BuildRuleResolver ruleResolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
+    SourcePathResolver pathResolver = new SourcePathResolver(ruleResolver);
+    CxxBoostTest test =
+        new CxxBoostTest(
+            new FakeBuildRuleParamsBuilder(target)
+                .setProjectFilesystem(new ProjectFilesystem(tmp.getRoot().toPath()))
+                .build(),
+            pathResolver,
+            new CxxLink(
+                new FakeBuildRuleParamsBuilder(BuildTargetFactory.newInstance("//:link")).build(),
+                pathResolver,
+                CxxPlatformUtils.DEFAULT_PLATFORM.getLd().resolve(ruleResolver),
+                Paths.get("output"),
+                ImmutableList.<Arg>of(),
+                Optional.<RuleScheduleInfo>absent(),
+                /* cacheable */ true),
+            new CommandTool.Builder()
+                .addArg(new StringArg(""))
+                .build(),
+            Suppliers.ofInstance(ImmutableMap.<String, String>of()),
+            Suppliers.ofInstance(ImmutableList.<String>of()),
+            ImmutableSortedSet.<SourcePath>of(),
+            Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()),
+            ImmutableSet.<Label>of(),
+            ImmutableSet.<String>of(),
+            ImmutableSet.<BuildRule>of(),
+            /* runTestSeparately */ false,
+            /* testRuleTimeoutMs */ Optional.<Long>absent());
 
     for (String sample : samples) {
       Path exitCode = Paths.get("unused");
@@ -91,7 +114,7 @@ public class CxxBoostTestTest {
       List<TestResultSummary> expectedSummaries =
           mapper.readValue(summaries.toFile(), SUMMARIES_REFERENCE);
       ImmutableList<TestResultSummary> actualSummaries =
-          test.parseResults(context, exitCode, output, results);
+          test.parseResults(exitCode, output, results);
       assertEquals(sample, expectedSummaries, actualSummaries);
     }
 

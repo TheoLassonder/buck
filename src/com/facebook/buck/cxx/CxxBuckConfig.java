@@ -20,12 +20,25 @@ import com.facebook.buck.cli.BuckConfig;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.Flavor;
 import com.facebook.buck.model.ImmutableFlavor;
+import com.facebook.buck.rules.BinaryBuildRuleToolProvider;
+import com.facebook.buck.rules.BuildRuleType;
+import com.facebook.buck.rules.RuleScheduleInfo;
+import com.facebook.buck.rules.Tool;
+import com.facebook.buck.rules.ToolProvider;
+import com.facebook.buck.util.environment.Platform;
+import com.facebook.buck.util.immutables.BuckStyleImmutable;
 import com.google.common.base.Optional;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Maps;
+
+import org.immutables.value.Value;
 
 import java.nio.file.Path;
+import java.nio.file.Paths;
 
 /**
  * Contains platform independent settings for C/C++ rules.
@@ -35,8 +48,13 @@ public class CxxBuckConfig {
   private static final String FLAVORED_CXX_SECTION_PREFIX = "cxx#";
   private static final String UNFLAVORED_CXX_SECTION_PREFIX = "cxx";
 
+  private static final long DEFAULT_MAX_TEST_OUTPUT_SIZE = 8096;
+
   private final BuckConfig delegate;
   private final String cxxSection;
+
+  public static final String DEFAULT_FLAVOR_LIBRARY_TYPE = "type";
+  public static final String DEFAULT_FLAVOR_PLATFORM = "platform";
 
   /**
    * Constructs set of flavors given in a .buckconfig file, as is specified by section names
@@ -69,24 +87,19 @@ public class CxxBuckConfig {
   }
 
   /**
-   * @return the {@link BuildTarget} which represents the lex library.
-   */
-  public BuildTarget getLexDep() {
-    return delegate.getRequiredBuildTarget(cxxSection, "lex_dep");
-  }
-
-  /**
-   * @return the {@link BuildTarget} which represents the python library.
-   */
-  public BuildTarget getPythonDep() {
-    return delegate.getRequiredBuildTarget(cxxSection, "python_dep");
-  }
-
-  /**
    * @return the {@link BuildTarget} which represents the gtest library.
    */
   public BuildTarget getGtestDep() {
     return delegate.getRequiredBuildTarget(cxxSection, "gtest_dep");
+  }
+
+  /**
+   * @return the {@link BuildTarget} which represents the main function that
+   * gtest tests should use by default (if no other main is given).
+   */
+  public BuildTarget getGtestDefaultTestMainDep() {
+    return delegate.getBuildTarget(cxxSection, "gtest_default_test_main_dep")
+        .or(getGtestDep());
   }
 
   /**
@@ -97,19 +110,24 @@ public class CxxBuckConfig {
   }
 
   public Optional<Path> getPath(String flavor, String name) {
-    return delegate
-        .getPath(cxxSection, flavor + "_" + name)
-        .or(delegate.getPath(cxxSection, name));
+    Optional<String> rawPath = delegate
+        .getValue(cxxSection, flavor + "_" + name)
+        .or(delegate.getValue(cxxSection, name));
+
+    if (!rawPath.isPresent()) {
+      return Optional.absent();
+    }
+
+    return Optional.fromNullable(
+        delegate.resolvePathThatMayBeOutsideTheProjectFilesystem(Paths.get(rawPath.get())));
   }
 
   public Optional<String> getDefaultPlatform() {
     return delegate.getValue(cxxSection, "default_platform");
   }
 
-  public <T extends Enum<T>> Optional<T> getLinkerType(String flavor, Class<T> clazz) {
-    return delegate
-        .getEnum(cxxSection, flavor + "_ld_type", clazz)
-        .or(delegate.getEnum(cxxSection, "ld_type", clazz));
+  public Optional<String> getHostPlatform() {
+    return delegate.getValue(cxxSection, "host_platform");
   }
 
   public Optional<ImmutableList<String>> getFlags(
@@ -141,4 +159,206 @@ public class CxxBuckConfig {
         ? CxxPreprocessMode.COMBINED
         : CxxPreprocessMode.SEPARATE;
   }
+
+  /*
+   * Constructs the appropriate Archiver for the specified platform.
+   */
+  public Optional<Archiver> getArchiver(Tool ar) {
+    Optional<Platform> archiverPlatform = delegate
+        .getEnum(cxxSection, "archiver_platform", Platform.class);
+    if (!archiverPlatform.isPresent()) {
+      return Optional.absent();
+    }
+    Archiver result;
+    switch (archiverPlatform.get()) {
+      case MACOS:
+        result = new BsdArchiver(ar);
+        break;
+      case LINUX:
+      case WINDOWS:
+        result = new GnuArchiver(ar);
+        break;
+      case UNKNOWN:
+        result = new UnknownArchiver(ar);
+        break;
+      default:
+        throw new RuntimeException(
+            "Invalid platform for archiver. Must be one of {MACOS, LINUX, WINDOWS, UNKNOWN}");
+    }
+    return Optional.of(result);
+  }
+
+  /**
+   * @return the maximum size in bytes of test output to report in test results.
+   */
+  public long getMaximumTestOutputSize() {
+    return delegate.getLong(cxxSection, "max_test_output_size").or(DEFAULT_MAX_TEST_OUTPUT_SIZE);
+  }
+
+  private Optional<CxxToolProviderParams> getCxxToolProviderParams(
+      String field,
+      Optional<CxxToolProvider.Type> defaultType) {
+    Optional<String> value = delegate.getValue(cxxSection, field);
+    if (!value.isPresent()) {
+      return Optional.absent();
+    }
+    String source = String.format("[%s] %s", cxxSection, field);
+    Optional<BuildTarget> target = delegate.getMaybeBuildTarget(cxxSection, field);
+    Optional<CxxToolProvider.Type> type =
+        delegate.getEnum(cxxSection, field + "_type", CxxToolProvider.Type.class)
+            .or(defaultType);
+    if (target.isPresent()) {
+      return Optional.of(
+          CxxToolProviderParams.builder()
+              .setSource(source)
+              .setBuildTarget(target.get())
+              .setType(type.or(CxxToolProvider.Type.DEFAULT))
+              .build());
+    } else {
+      return Optional.of(
+          CxxToolProviderParams.builder()
+              .setSource(source)
+              .setPath(delegate.getRequiredPath(cxxSection, field))
+              .setType(type)
+              .build());
+    }
+  }
+
+  private Optional<PreprocessorProvider> getPreprocessorProvider(
+      Flavor flavor,
+      String field,
+      Optional<CxxToolProvider.Type> defaultType) {
+    Optional<CxxToolProviderParams> params =
+        getCxxToolProviderParams(flavor.toString() + '_' + field, defaultType)
+            .or(getCxxToolProviderParams(field, defaultType));
+    if (!params.isPresent()) {
+      return Optional.absent();
+    }
+    return Optional.of(params.get().getPreprocessorProvider());
+  }
+
+  public Optional<PreprocessorProvider> getPreprocessorProvider(Flavor flavor, String field) {
+    return getPreprocessorProvider(flavor, field, Optional.<CxxToolProvider.Type>absent());
+  }
+
+  public Optional<PreprocessorProvider> getPreprocessorProvider(
+      Flavor flavor,
+      String field,
+      CxxToolProvider.Type defaultType) {
+    return getPreprocessorProvider(flavor, field, Optional.of(defaultType));
+  }
+
+  private Optional<CompilerProvider> getCompilerProvider(
+      Flavor flavor,
+      String field,
+      Optional<CxxToolProvider.Type> defaultType) {
+    Optional<CxxToolProviderParams> params =
+        getCxxToolProviderParams(flavor.toString() + '_' + field, defaultType)
+            .or(getCxxToolProviderParams(field, defaultType));
+    if (!params.isPresent()) {
+      return Optional.absent();
+    }
+    return Optional.of(params.get().getCompilerProvider());
+  }
+
+  public Optional<CompilerProvider> getCompilerProvider(Flavor flavor, String field) {
+    return getCompilerProvider(flavor, field, Optional.<CxxToolProvider.Type>absent());
+  }
+
+  public Optional<CompilerProvider> getCompilerProvider(
+      Flavor flavor,
+      String field,
+      CxxToolProvider.Type defaultType) {
+    return getCompilerProvider(flavor, field, Optional.of(defaultType));
+  }
+
+  public Optional<LinkerProvider> getLinkerProvider(
+      Flavor flavor,
+      String field,
+      LinkerProvider.Type defaultType) {
+    Optional<ToolProvider> toolProvider =
+        delegate.getToolProvider(cxxSection, flavor.toString() + '_' + field)
+            .or(delegate.getToolProvider(cxxSection, field));
+    if (!toolProvider.isPresent()) {
+      return Optional.absent();
+    }
+    Optional<LinkerProvider.Type> type =
+        delegate.getEnum(cxxSection, "linker_platform", LinkerProvider.Type.class);
+    return Optional.<LinkerProvider>of(
+        new DefaultLinkerProvider(type.or(defaultType), toolProvider.get()));
+  }
+
+  public HeaderVerification getHeaderVerification() {
+    return HeaderVerification.builder()
+        .setMode(
+            delegate.getEnum(cxxSection, "untracked_headers", HeaderVerification.Mode.class)
+                .or(HeaderVerification.Mode.IGNORE))
+        .addAllWhitelist(delegate.getListWithoutComments(cxxSection, "untracked_headers_whitelist"))
+        .build();
+  }
+
+  public Optional<RuleScheduleInfo> getLinkScheduleInfo() {
+    Optional<Long> linkWeight = delegate.getLong(cxxSection, "link_weight");
+    if (!linkWeight.isPresent()) {
+      return Optional.absent();
+    }
+    return Optional.of(
+        RuleScheduleInfo.builder()
+            .setJobsMultiplier(linkWeight.get().intValue())
+            .build());
+  }
+
+  public boolean shouldCacheLinks() {
+    return delegate.getBooleanValue(cxxSection, "cache_links", true);
+  }
+
+  public Archive.Contents getArchiveContents() {
+    return delegate.getEnum(cxxSection, "archive_contents", Archive.Contents.class)
+        .or(Archive.Contents.NORMAL);
+  }
+
+  public ImmutableMap<String, Flavor> getDefaultFlavorsForRuleType(BuildRuleType type) {
+    return ImmutableMap.copyOf(
+        Maps.transformValues(
+            delegate.getEntriesForSection("defaults." + type.getName()),
+            Flavor.TO_FLAVOR));
+  }
+
+  @Value.Immutable
+  @BuckStyleImmutable
+  abstract static class AbstractCxxToolProviderParams {
+
+    public abstract String getSource();
+    public abstract Optional<BuildTarget> getBuildTarget();
+    public abstract Optional<Path> getPath();
+    public abstract Optional<CxxToolProvider.Type> getType();
+
+    @Value.Check
+    protected void check() {
+      Preconditions.checkState(getBuildTarget().isPresent() || getPath().isPresent());
+      Preconditions.checkState(!getBuildTarget().isPresent() || getType().isPresent());
+    }
+
+    public PreprocessorProvider getPreprocessorProvider() {
+      if (getBuildTarget().isPresent()) {
+        return new PreprocessorProvider(
+            new BinaryBuildRuleToolProvider(getBuildTarget().get(), getSource()),
+            getType().get());
+      } else {
+        return new PreprocessorProvider(getPath().get(), getType());
+      }
+    }
+
+    public CompilerProvider getCompilerProvider() {
+      if (getBuildTarget().isPresent()) {
+        return new CompilerProvider(
+            new BinaryBuildRuleToolProvider(getBuildTarget().get(), getSource()),
+            getType().get());
+      } else {
+        return new CompilerProvider(getPath().get(), getType());
+      }
+    }
+
+  }
+
 }

@@ -16,25 +16,30 @@
 
 package com.facebook.buck.ocaml;
 
-import com.facebook.buck.cxx.CxxHeaders;
+import com.facebook.buck.cxx.CxxPlatform;
 import com.facebook.buck.cxx.CxxPreprocessables;
 import com.facebook.buck.cxx.CxxPreprocessorDep;
 import com.facebook.buck.cxx.CxxPreprocessorInput;
 import com.facebook.buck.cxx.Linker;
 import com.facebook.buck.cxx.NativeLinkableInput;
 import com.facebook.buck.cxx.NativeLinkables;
+import com.facebook.buck.graph.TopologicalSort;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.Flavor;
 import com.facebook.buck.model.ImmutableFlavor;
+import com.facebook.buck.parser.NoSuchBuildTargetException;
 import com.facebook.buck.rules.AbstractBuildRule;
 import com.facebook.buck.rules.BuildRule;
+import com.facebook.buck.rules.BuildRuleDependencyVisitors;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.rules.SourcePaths;
+import com.facebook.buck.rules.args.Arg;
 import com.facebook.buck.rules.coercer.OCamlSource;
 import com.facebook.buck.util.Ansi;
+import com.facebook.buck.util.BgProcessKiller;
 import com.facebook.buck.util.CapturingPrintStream;
 import com.facebook.buck.util.Console;
 import com.facebook.buck.util.HumanReadableException;
@@ -52,8 +57,8 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.Lists;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -119,8 +124,9 @@ public class OCamlRuleBuilder {
       BuildRuleResolver resolver,
       ImmutableList<OCamlSource> srcs,
       boolean isLibrary,
+      boolean bytecodeOnly,
       ImmutableList<String> argFlags,
-      final ImmutableList<String> linkerFlags) {
+      final ImmutableList<String> linkerFlags) throws NoSuchBuildTargetException {
     SourcePathResolver pathResolver = new SourcePathResolver(resolver);
     boolean noYaccOrLexSources = FluentIterable.from(srcs).transform(OCamlSource.TO_SOURCE_PATH)
         .filter(OCamlUtil.sourcePathExt(
@@ -135,6 +141,7 @@ public class OCamlRuleBuilder {
           resolver,
           srcs,
           isLibrary,
+          bytecodeOnly,
           argFlags,
           linkerFlags);
     } else {
@@ -144,9 +151,53 @@ public class OCamlRuleBuilder {
           resolver,
           srcs,
           isLibrary,
+          bytecodeOnly,
           argFlags,
           linkerFlags);
     }
+  }
+
+  private static ImmutableList<BuildRule> getTransitiveOCamlLibraryDeps(Iterable<BuildRule> deps) {
+    return TopologicalSort.sort(
+        BuildRuleDependencyVisitors.getBuildRuleDirectedGraphFilteredBy(
+            deps,
+            Predicates.instanceOf(OCamlLibrary.class),
+            Predicates.instanceOf(OCamlLibrary.class)),
+        Predicates.<BuildRule>alwaysTrue());
+  }
+
+  private static NativeLinkableInput getNativeLinkableInput(Iterable<BuildRule> deps) {
+    List<NativeLinkableInput> inputs = Lists.newArrayList();
+
+    // Add in the linkable input from OCaml libraries.
+    ImmutableList<BuildRule> ocamlDeps = getTransitiveOCamlLibraryDeps(deps);
+    for (BuildRule dep : ocamlDeps) {
+      inputs.add(((OCamlLibrary) dep).getNativeLinkableInput());
+    }
+
+    return NativeLinkableInput.concat(inputs);
+  }
+
+  private static NativeLinkableInput getBytecodeLinkableInput(Iterable<BuildRule> deps) {
+    List<NativeLinkableInput> inputs = Lists.newArrayList();
+
+    // Add in the linkable input from OCaml libraries.
+    ImmutableList<BuildRule> ocamlDeps = getTransitiveOCamlLibraryDeps(deps);
+    for (BuildRule dep : ocamlDeps) {
+      inputs.add(((OCamlLibrary) dep).getBytecodeLinkableInput());
+    }
+
+    return NativeLinkableInput.concat(inputs);
+  }
+
+  private static NativeLinkableInput getCLinkableInput(
+      CxxPlatform cxxPlatform,
+      Iterable<BuildRule> deps) throws NoSuchBuildTargetException {
+    return NativeLinkables.getTransitiveNativeLinkableInput(
+        cxxPlatform,
+        deps,
+        Linker.LinkableDepType.STATIC,
+        Predicates.instanceOf(OCamlLibrary.class));
   }
 
   public static AbstractBuildRule createBulkBuildRule(
@@ -155,22 +206,19 @@ public class OCamlRuleBuilder {
       BuildRuleResolver resolver,
       ImmutableList<OCamlSource> srcs,
       boolean isLibrary,
+      boolean bytecodeOnly,
       ImmutableList<String> argFlags,
-      final ImmutableList<String> linkerFlags) {
-    CxxPreprocessorInput cxxPreprocessorInputFromDeps;
-    try {
-      cxxPreprocessorInputFromDeps = CxxPreprocessorInput.concat(
+      final ImmutableList<String> linkerFlags) throws NoSuchBuildTargetException {
+    CxxPreprocessorInput cxxPreprocessorInputFromDeps =
+      CxxPreprocessorInput.concat(
           CxxPreprocessables.getTransitiveCxxPreprocessorInput(
               ocamlBuckConfig.getCxxPlatform(),
               FluentIterable.from(params.getDeps())
                   .filter(Predicates.instanceOf(CxxPreprocessorDep.class))));
-    } catch (CxxHeaders.ConflictingHeadersException e) {
-      throw e.getHumanReadableExceptionForBuildTarget(params.getBuildTarget());
-    }
 
     SourcePathResolver pathResolver = new SourcePathResolver(resolver);
 
-    ImmutableList<String> includes = FluentIterable.from(params.getDeps())
+    ImmutableList<String> nativeIncludes = FluentIterable.from(params.getDeps())
         .transformAndConcat(getLibInclude(false))
         .toList();
 
@@ -178,21 +226,37 @@ public class OCamlRuleBuilder {
         .transformAndConcat(getLibInclude(true))
         .toList();
 
-    NativeLinkableInput linkableInput = NativeLinkables.getTransitiveNativeLinkableInput(
-        ocamlBuckConfig.getCxxPlatform(),
-        params.getDeps(),
-        Linker.LinkableDepType.STATIC,
-        /* reverse */ false);
+    NativeLinkableInput nativeLinkableInput =
+        getNativeLinkableInput(params.getDeps());
+    NativeLinkableInput bytecodeLinkableInput =
+        getBytecodeLinkableInput(params.getDeps());
+    NativeLinkableInput cLinkableInput =
+        getCLinkableInput(ocamlBuckConfig.getCxxPlatform(), params.getDeps());
 
     ImmutableList<OCamlLibrary> ocamlInput = OCamlUtil.getTransitiveOCamlInput(params.getDeps());
 
     ImmutableSortedSet.Builder<BuildRule> allDepsBuilder = ImmutableSortedSet.naturalOrder();
     allDepsBuilder.addAll(pathResolver.filterBuildRuleInputs(getInput(srcs)));
-    allDepsBuilder.addAll(pathResolver.filterBuildRuleInputs(linkableInput.getInputs()));
+    allDepsBuilder.addAll(
+        FluentIterable.from(nativeLinkableInput.getArgs())
+            .append(bytecodeLinkableInput.getArgs())
+            .append(cLinkableInput.getArgs())
+            .transformAndConcat(Arg.getDepsFunction(pathResolver)));
     for (OCamlLibrary library : ocamlInput) {
-      allDepsBuilder.addAll(library.getCompileDeps());
+      allDepsBuilder.addAll(library.getNativeCompileDeps());
       allDepsBuilder.addAll(library.getBytecodeCompileDeps());
     }
+    allDepsBuilder.addAll(
+        pathResolver.filterBuildRuleInputs(
+            ocamlBuckConfig.getCCompiler().resolve(resolver).getInputs()));
+    allDepsBuilder.addAll(
+        pathResolver.filterBuildRuleInputs(
+            ocamlBuckConfig.getCxxCompiler().resolve(resolver).getInputs()));
+
+    // The bulk rule will do preprocessing on sources, and so needs deps from the preprocessor
+    // input object.
+    allDepsBuilder.addAll(cxxPreprocessorInputFromDeps.getDeps(resolver, pathResolver));
+
     ImmutableSortedSet<BuildRule> allDeps = allDepsBuilder.build();
 
     BuildTarget buildTarget =
@@ -206,28 +270,33 @@ public class OCamlRuleBuilder {
     ImmutableList.Builder<String> flagsBuilder = ImmutableList.builder();
     flagsBuilder.addAll(argFlags);
 
-    ImmutableSortedSet.Builder<BuildRule> compileDepsBuilder = ImmutableSortedSet.naturalOrder();
+    ImmutableSortedSet.Builder<BuildRule> nativeCompileDepsBuilder =
+        ImmutableSortedSet.naturalOrder();
     ImmutableSortedSet.Builder<BuildRule> bytecodeCompileDepsBuilder =
         ImmutableSortedSet.naturalOrder();
     ImmutableSortedSet.Builder<BuildRule> bytecodeLinkDepsBuilder =
         ImmutableSortedSet.naturalOrder();
     for (OCamlLibrary library : ocamlInput) {
-      compileDepsBuilder.addAll(library.getCompileDeps());
+      nativeCompileDepsBuilder.addAll(library.getNativeCompileDeps());
       bytecodeCompileDepsBuilder.addAll(library.getBytecodeCompileDeps());
       bytecodeLinkDepsBuilder.addAll(library.getBytecodeLinkDeps());
     }
     OCamlBuildContext ocamlContext =
         OCamlBuildContext.builder(ocamlBuckConfig)
+            .setProjectFilesystem(params.getProjectFilesystem())
+            .setSourcePathResolver(pathResolver)
             .setFlags(flagsBuilder.build())
-            .setIncludes(includes)
+            .setNativeIncludes(nativeIncludes)
             .setBytecodeIncludes(bytecodeIncludes)
             .setOCamlInput(ocamlInput)
-            .setLinkableInput(linkableInput)
-            .setBuildTarget(buildTarget)
+            .setNativeLinkableInput(nativeLinkableInput)
+            .setBytecodeLinkableInput(bytecodeLinkableInput)
+            .setCLinkableInput(cLinkableInput)
+            .setBuildTarget(buildTarget.getUnflavoredBuildTarget())
             .setLibrary(isLibrary)
             .setCxxPreprocessorInput(cxxPreprocessorInputFromDeps)
-            .setInput(pathResolver.getAllPaths(getInput(srcs)))
-            .setCompileDeps(compileDepsBuilder.build())
+            .setInput(getInput(srcs))
+            .setNativeCompileDeps(nativeCompileDepsBuilder.build())
             .setBytecodeCompileDeps(bytecodeCompileDepsBuilder.build())
             .setBytecodeLinkDeps(bytecodeLinkDepsBuilder.build())
             .build();
@@ -236,8 +305,9 @@ public class OCamlRuleBuilder {
         compileParams,
         pathResolver,
         ocamlContext,
-        ocamlBuckConfig.getCCompiler(),
-        ocamlBuckConfig.getCxxCompiler());
+        ocamlBuckConfig.getCCompiler().resolve(resolver),
+        ocamlBuckConfig.getCxxCompiler().resolve(resolver),
+        bytecodeOnly);
     resolver.addToIndex(ocamlLibraryBuild);
 
     if (isLibrary) {
@@ -245,16 +315,16 @@ public class OCamlRuleBuilder {
           params.copyWithDeps(
               Suppliers.ofInstance(
                   ImmutableSortedSet.<BuildRule>naturalOrder()
-                      .addAll(params.getDeclaredDeps())
+                      .addAll(params.getDeclaredDeps().get())
                       .add(ocamlLibraryBuild)
                       .build()),
-              Suppliers.ofInstance(params.getExtraDeps())),
+              params.getExtraDeps()),
           pathResolver,
           compileParams,
           linkerFlags,
           FluentIterable.from(srcs)
               .transform(OCamlSource.TO_SOURCE_PATH)
-              .transform(pathResolver.getPathFunction())
+              .transform(pathResolver.getAbsolutePathFunction())
               .filter(OCamlUtil.ext(OCamlCompilables.OCAML_C))
               .transform(ocamlContext.toCOutput())
               .transform(SourcePaths.getToBuildTargetSourcePath(compileParams.getBuildTarget()))
@@ -269,10 +339,10 @@ public class OCamlRuleBuilder {
           params.copyWithDeps(
               Suppliers.ofInstance(
                   ImmutableSortedSet.<BuildRule>naturalOrder()
-                      .addAll(params.getDeclaredDeps())
+                      .addAll(params.getDeclaredDeps().get())
                       .add(ocamlLibraryBuild)
                       .build()),
-              Suppliers.ofInstance(params.getExtraDeps())),
+              params.getExtraDeps()),
           pathResolver,
           ocamlLibraryBuild);
     }
@@ -284,22 +354,19 @@ public class OCamlRuleBuilder {
       BuildRuleResolver resolver,
       ImmutableList<OCamlSource> srcs,
       boolean isLibrary,
+      boolean bytecodeOnly,
       ImmutableList<String> argFlags,
-      final ImmutableList<String> linkerFlags) {
-    CxxPreprocessorInput cxxPreprocessorInputFromDeps;
-    try {
-      cxxPreprocessorInputFromDeps = CxxPreprocessorInput.concat(
+      final ImmutableList<String> linkerFlags) throws NoSuchBuildTargetException {
+    CxxPreprocessorInput cxxPreprocessorInputFromDeps =
+      CxxPreprocessorInput.concat(
           CxxPreprocessables.getTransitiveCxxPreprocessorInput(
               ocamlBuckConfig.getCxxPlatform(),
               FluentIterable.from(params.getDeps())
                   .filter(Predicates.instanceOf(CxxPreprocessorDep.class))));
-    } catch (CxxHeaders.ConflictingHeadersException e) {
-      throw e.getHumanReadableExceptionForBuildTarget(params.getBuildTarget());
-    }
 
     SourcePathResolver pathResolver = new SourcePathResolver(resolver);
 
-    ImmutableList<String> includes = FluentIterable.from(params.getDeps())
+    ImmutableList<String> nativeIncludes = FluentIterable.from(params.getDeps())
         .transformAndConcat(getLibInclude(false))
         .toList();
 
@@ -307,19 +374,14 @@ public class OCamlRuleBuilder {
         .transformAndConcat(getLibInclude(true))
         .toList();
 
-    NativeLinkableInput linkableInput = NativeLinkables.getTransitiveNativeLinkableInput(
-        ocamlBuckConfig.getCxxPlatform(),
-        params.getDeps(),
-        Linker.LinkableDepType.STATIC,
-        /* reverse */ false);
+    NativeLinkableInput nativeLinkableInput =
+        getNativeLinkableInput(params.getDeps());
+    NativeLinkableInput bytecodeLinkableInput =
+        getBytecodeLinkableInput(params.getDeps());
+    NativeLinkableInput cLinkableInput =
+        getCLinkableInput(ocamlBuckConfig.getCxxPlatform(), params.getDeps());
 
     ImmutableList<OCamlLibrary> ocamlInput = OCamlUtil.getTransitiveOCamlInput(params.getDeps());
-
-    ImmutableList<SourcePath> allInputs =
-        ImmutableList.<SourcePath>builder()
-            .addAll(getInput(srcs))
-            .addAll(linkableInput.getInputs())
-            .build();
 
     BuildTarget buildTarget =
         isLibrary ? createStaticLibraryBuildTarget(params.getBuildTarget())
@@ -328,39 +390,55 @@ public class OCamlRuleBuilder {
     final BuildRuleParams compileParams = params.copyWithChanges(
         buildTarget,
         /* declaredDeps */ Suppliers.ofInstance(
-            ImmutableSortedSet.copyOf(pathResolver.filterBuildRuleInputs(allInputs))),
+            ImmutableSortedSet.<BuildRule>naturalOrder()
+                .addAll(pathResolver.filterBuildRuleInputs(getInput(srcs)))
+                .addAll(
+                    FluentIterable.from(nativeLinkableInput.getArgs())
+                        .transformAndConcat(Arg.getDepsFunction(pathResolver)))
+                .addAll(
+                    FluentIterable.from(bytecodeLinkableInput.getArgs())
+                        .transformAndConcat(Arg.getDepsFunction(pathResolver)))
+                .addAll(
+                    FluentIterable.from(cLinkableInput.getArgs())
+                        .transformAndConcat(Arg.getDepsFunction(pathResolver)))
+                .build()),
         /* extraDeps */ Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()));
 
     ImmutableList.Builder<String> flagsBuilder = ImmutableList.builder();
     flagsBuilder.addAll(argFlags);
 
-    ImmutableSortedSet.Builder<BuildRule> compileDepsBuilder = ImmutableSortedSet.naturalOrder();
+    ImmutableSortedSet.Builder<BuildRule> nativeCompileDepsBuilder =
+        ImmutableSortedSet.naturalOrder();
     ImmutableSortedSet.Builder<BuildRule> bytecodeCompileDepsBuilder =
         ImmutableSortedSet.naturalOrder();
     ImmutableSortedSet.Builder<BuildRule> bytecodeLinkDepsBuilder =
         ImmutableSortedSet.naturalOrder();
     for (OCamlLibrary library : ocamlInput) {
-      compileDepsBuilder.addAll(library.getCompileDeps());
+      nativeCompileDepsBuilder.addAll(library.getNativeCompileDeps());
       bytecodeCompileDepsBuilder.addAll(library.getBytecodeCompileDeps());
       bytecodeLinkDepsBuilder.addAll(library.getBytecodeLinkDeps());
     }
     OCamlBuildContext ocamlContext =
         OCamlBuildContext.builder(ocamlBuckConfig)
+            .setProjectFilesystem(params.getProjectFilesystem())
+            .setSourcePathResolver(pathResolver)
             .setFlags(flagsBuilder.build())
-            .setIncludes(includes)
+            .setNativeIncludes(nativeIncludes)
             .setBytecodeIncludes(bytecodeIncludes)
             .setOCamlInput(ocamlInput)
-            .setLinkableInput(linkableInput)
-            .setBuildTarget(buildTarget)
+            .setNativeLinkableInput(nativeLinkableInput)
+            .setBytecodeLinkableInput(bytecodeLinkableInput)
+            .setCLinkableInput(cLinkableInput)
+            .setBuildTarget(buildTarget.getUnflavoredBuildTarget())
             .setLibrary(isLibrary)
             .setCxxPreprocessorInput(cxxPreprocessorInputFromDeps)
-            .setInput(pathResolver.getAllPaths(getInput(srcs)))
-            .setCompileDeps(compileDepsBuilder.build())
+            .setInput(getInput(srcs))
+            .setNativeCompileDeps(nativeCompileDepsBuilder.build())
             .setBytecodeCompileDeps(bytecodeCompileDepsBuilder.build())
             .setBytecodeLinkDeps(bytecodeLinkDepsBuilder.build())
             .build();
 
-    File baseDir = params.getProjectFilesystem().getRootPath().toAbsolutePath().toFile();
+    Path baseDir = params.getProjectFilesystem().getRootPath().toAbsolutePath();
     ImmutableMap<Path, ImmutableList<Path>> mlInput = getMLInputWithDeps(
         baseDir,
         ocamlContext);
@@ -374,8 +452,9 @@ public class OCamlRuleBuilder {
         ocamlContext,
         mlInput,
         cInput,
-        ocamlBuckConfig.getCCompiler(),
-        ocamlBuckConfig.getCxxCompiler());
+        ocamlBuckConfig.getCCompiler().resolve(resolver),
+        ocamlBuckConfig.getCxxCompiler().resolve(resolver),
+        bytecodeOnly);
 
     OCamlGeneratedBuildRules result = generator.generate();
 
@@ -384,17 +463,17 @@ public class OCamlRuleBuilder {
           params.copyWithDeps(
               Suppliers.ofInstance(
                   ImmutableSortedSet.<BuildRule>naturalOrder()
-                      .addAll(params.getDeclaredDeps())
+                      .addAll(params.getDeclaredDeps().get())
                       .addAll(result.getRules())
                       .build()),
-              Suppliers.ofInstance(params.getExtraDeps())),
+              params.getExtraDeps()),
           pathResolver,
           compileParams,
           linkerFlags,
           result.getObjectFiles(),
           ocamlContext,
           result.getRules().get(0),
-          result.getCompileDeps(),
+          result.getNativeCompileDeps(),
           result.getBytecodeCompileDeps(),
           ImmutableSortedSet.<BuildRule>naturalOrder()
               .add(result.getBytecodeLink())
@@ -405,10 +484,10 @@ public class OCamlRuleBuilder {
           params.copyWithDeps(
               Suppliers.ofInstance(
                   ImmutableSortedSet.<BuildRule>naturalOrder()
-                      .addAll(params.getDeclaredDeps())
+                      .addAll(params.getDeclaredDeps().get())
                       .addAll(result.getRules())
                       .build()),
-              Suppliers.ofInstance(params.getExtraDeps())),
+              params.getExtraDeps()),
           pathResolver,
           result.getRules().get(0));
     }
@@ -424,9 +503,11 @@ public class OCamlRuleBuilder {
   }
 
   private static ImmutableMap<Path, ImmutableList<Path>> getMLInputWithDeps(
-      File baseDir,
+      Path baseDir,
       OCamlBuildContext ocamlContext) {
     OCamlDepToolStep depToolStep = new OCamlDepToolStep(
+        baseDir,
+        ocamlContext.getSourcePathResolver(),
         ocamlContext.getOcamlDepTool().get(),
         ocamlContext.getMLInput(),
         ocamlContext.getIncludeFlags(/* isBytecode */ false, /* excludeDeps */ true));
@@ -447,7 +528,7 @@ public class OCamlRuleBuilder {
     if (depsString.isPresent()) {
       OCamlDependencyGraphGenerator graphGenerator = new OCamlDependencyGraphGenerator();
       return filterCurrentRuleInput(
-          ocamlContext.getMLInput(),
+          ocamlContext.getSourcePathResolver().getAllAbsolutePaths(ocamlContext.getMLInput()),
           graphGenerator.generateDependencyMap(depsString.get()));
     } else {
       throw new HumanReadableException("ocamldep execution failed");
@@ -475,27 +556,30 @@ public class OCamlRuleBuilder {
   }
 
   private static Optional<String> executeProcessAndGetStdout(
-      File baseDir,
+      Path baseDir,
       ImmutableList<String> cmd) throws IOException, InterruptedException {
-    CapturingPrintStream stdout = new CapturingPrintStream();
-    CapturingPrintStream stderr = new CapturingPrintStream();
+    try (
+        CapturingPrintStream stdout = new CapturingPrintStream();
+        CapturingPrintStream stderr = new CapturingPrintStream()) {
 
-    ImmutableSet.Builder<ProcessExecutor.Option> options = ImmutableSet.builder();
-    options.add(ProcessExecutor.Option.EXPECTING_STD_OUT);
-    Console console = new Console(Verbosity.SILENT, stdout, stderr, Ansi.withoutTty());
-    ProcessExecutor exe = new ProcessExecutor(console);
-    ProcessBuilder processBuilder = new ProcessBuilder(cmd);
-    processBuilder.directory(baseDir);
-    ProcessExecutor.Result result = exe.execute(
-        processBuilder.start(),
-        options.build(),
+      ImmutableSet.Builder<ProcessExecutor.Option> options = ImmutableSet.builder();
+      options.add(ProcessExecutor.Option.EXPECTING_STD_OUT);
+      Console console = new Console(Verbosity.SILENT, stdout, stderr, Ansi.withoutTty());
+      ProcessExecutor exe = new ProcessExecutor(console);
+      ProcessBuilder processBuilder = new ProcessBuilder(cmd);
+      processBuilder.directory(baseDir.toFile());
+      Process p = BgProcessKiller.startProcess(processBuilder);
+      ProcessExecutor.Result result = exe.execute(
+          p,
+          options.build(),
         /* stdin */ Optional.<String>absent(),
         /* timeOutMs */ Optional.<Long>absent(),
         /* timeOutHandler */ Optional.<Function<Process, Void>>absent());
-    if (result.getExitCode() != 0) {
-      throw new HumanReadableException(stderr.getContentsAsString(StandardCharsets.UTF_8));
-    }
+      if (result.getExitCode() != 0) {
+        throw new HumanReadableException(stderr.getContentsAsString(StandardCharsets.UTF_8));
+      }
 
-    return result.getStdout();
+      return result.getStdout();
+    }
   }
 }

@@ -16,20 +16,15 @@
 # 9814 via ./docs/soyweb-prod.sh.
 
 import os
+import subprocess
 import sys
-import urllib2
+import time
+
+
+URL_ROOT = 'http://localhost:9814/'
 
 
 def main(output_dir):
-    # Create opener.
-    opener = urllib2.OpenerDirector()
-    opener.add_handler(urllib2.ProxyHandler())
-    opener.add_handler(urllib2.UnknownHandler())
-    opener.add_handler(urllib2.HTTPHandler())
-    opener.add_handler(urllib2.HTTPDefaultErrorHandler())
-    opener.add_handler(urllib2.HTTPSHandler())
-    opener.add_handler(urllib2.HTTPErrorProcessor())
-
     # Iterate over the files in the docs directory and copy them, as
     # appropriate.
     for root, dirs, files in os.walk('.'):
@@ -42,13 +37,12 @@ def main(output_dir):
                 # Construct the URL where the .soy file is being served.
                 soy_file = file_name
                 html_file = root + '/' + soy_file[:-len('.soy')] + '.html'
-                url = 'http://localhost:9814/' + html_file
+                url = URL_ROOT + html_file
 
-                # Fetch url and copy its contents to output_dir.
-                req = urllib2.Request(url)
-                res = opener.open(req)
-                html = res.read()
-                copy_to_output_dir(html_file, output_dir, html)
+                copy_dest = ensure_dir(html_file, output_dir)
+                subprocess.check_call([
+                    "curl", "--fail", "--output", copy_dest, url
+                ])
             elif (file_name == ".nojekyll" or
                   file_name == "CNAME" or
                   file_name.endswith('.css') or
@@ -68,20 +62,33 @@ def main(output_dir):
                     copy_to_output_dir(relative_path, output_dir, resource)
 
 
-def copy_to_output_dir(path, output_dir, content):
-    # Make sure that the directory for the destination path exists.
+def ensure_dir(path, output_dir):
     last_slash = path.rfind('/')
     if last_slash != -1:
         output_subdir = os.path.join(output_dir, path[:last_slash])
         if not os.path.exists(output_subdir):
             os.makedirs(output_subdir)
 
-    # Copy the file.
-    output_file = os.path.join(output_dir, path)
+    return os.path.join(output_dir, path)
+
+
+def copy_to_output_dir(path, output_dir, content):
+    output_file = ensure_dir(path, output_dir)
     with open(output_file, 'w') as f:
         f.write(content)
 
 
+def pollForServerReady():
+    SERVER_START_POLL = 5
+    print 'Waiting for server to start.'
+    for _ in range(0, SERVER_START_POLL):
+        result = subprocess.call(['curl', '--fail', '-I', URL_ROOT])
+        if result == 0:
+            return
+        time.sleep(1)
+    print 'Server failed to start after %s seconds.' % SERVER_START_POLL
+
 if __name__ == '__main__':
     output_dir = sys.argv[1]
+    pollForServerReady()
     main(output_dir)

@@ -22,42 +22,59 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
 public class SingletonBuildTargetPatternTest {
+
+  private static final Path ROOT = Paths.get("/opt/src/buck");
 
   @Test
   public void testApply() {
     SingletonBuildTargetPattern pattern =
-        new SingletonBuildTargetPattern("//src/com/facebook/buck:buck");
+        new SingletonBuildTargetPattern(ROOT, "//src/com/facebook/buck:buck");
 
     assertFalse(pattern.apply(null));
-    assertTrue(pattern.apply(BuildTarget.builder("//src/com/facebook/buck", "buck").build()));
+    assertTrue(pattern.apply(BuildTarget.builder(ROOT, "//src/com/facebook/buck", "buck").build()));
     assertFalse(pattern.apply(
-            BuildTarget.builder("//src/com/facebook/buck", "otherTarget").build()));
-    assertFalse(pattern.apply(BuildTarget.builder("//src/com/facebook/foo", "foo").build()));
-    assertFalse(pattern.apply(BuildTarget.builder("//src/com/facebook/buck/bar", "bar").build()));
+            BuildTarget.builder(ROOT, "//src/com/facebook/buck", "otherTarget").build()));
+    assertFalse(pattern.apply(
+            BuildTarget.builder(ROOT, "//src/com/facebook/foo", "foo").build()));
+    assertFalse(pattern.apply(
+            BuildTarget.builder(ROOT, "//src/com/facebook/buck/bar", "bar").build()));
   }
 
   @Test
   public void testEquals() {
     SingletonBuildTargetPattern singletonPattern1 = new SingletonBuildTargetPattern(
+        ROOT,
         "//src/com/facebook/buck:buck");
     SingletonBuildTargetPattern singletonPattern2 = new SingletonBuildTargetPattern(
+        ROOT,
         "//src/com/facebook/buck:buck");
     SingletonBuildTargetPattern singletonPattern3 = new SingletonBuildTargetPattern(
+        ROOT,
         "//src/com/facebook/buck/cli:cli");
+    SingletonBuildTargetPattern singletonPattern4 = new SingletonBuildTargetPattern(
+        ROOT,
+        "cell//src/com/facebook/buck:buck");
 
     assertFalse(singletonPattern1.equals(null));
     assertEquals(singletonPattern1, singletonPattern2);
     assertFalse(singletonPattern2.equals(singletonPattern3));
+    assertEquals(singletonPattern1, singletonPattern4);
   }
 
   @Test
   public void testHashCode() {
     SingletonBuildTargetPattern singletonPattern1 = new SingletonBuildTargetPattern(
+        ROOT,
         "//src/com/facebook/buck:buck");
     SingletonBuildTargetPattern singletonPattern2 = new SingletonBuildTargetPattern(
+        ROOT,
         "//src/com/facebook/buck:buck");
     SingletonBuildTargetPattern singletonPattern3 = new SingletonBuildTargetPattern(
+        ROOT,
         "//src/com/facebook/buck/cli:cli");
 
     assertEquals(singletonPattern1.hashCode(), singletonPattern2.hashCode());

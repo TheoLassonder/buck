@@ -19,6 +19,7 @@ package com.facebook.buck.zip;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.hash.Hashing;
 import com.google.common.io.ByteStreams;
@@ -26,10 +27,9 @@ import com.google.common.io.ByteStreams;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -42,10 +42,11 @@ import java.util.zip.ZipInputStream;
  */
 public class RepackZipEntriesStep implements Step {
 
+  private final ProjectFilesystem filesystem;
   private final Path inputPath;
   private final Path outputPath;
   private final ImmutableSet<String> entries;
-  private final int compressionLevel;
+  private final ZipCompressionLevel compressionLevel;
 
   /**
    * Creates a {@link RepackZipEntriesStep}. A temporary directory will be created and used
@@ -55,10 +56,16 @@ public class RepackZipEntriesStep implements Step {
    * @param entries files to repack (e.g. {@code ImmutableSet.of("resources.arsc")})
    */
   public RepackZipEntriesStep(
+      ProjectFilesystem filesystem,
       Path inputPath,
       Path outputPath,
       ImmutableSet<String> entries) {
-    this(inputPath, outputPath, entries, ZipStep.MAX_COMPRESSION_LEVEL);
+    this(
+        filesystem,
+        inputPath,
+        outputPath,
+        entries,
+        ZipCompressionLevel.MAX_COMPRESSION_LEVEL);
   }
 
   /**
@@ -66,13 +73,15 @@ public class RepackZipEntriesStep implements Step {
    * @param inputPath input archive
    * @param outputPath destination archive
    * @param entries files to repack (e.g. {@code ImmutableSet.of("resources.arsc")})
-   * @param compressionLevel 0 to 9
+   * @param compressionLevel the level of compression to use
    */
   public RepackZipEntriesStep(
+      ProjectFilesystem filesystem,
       Path inputPath,
       Path outputPath,
       ImmutableSet<String> entries,
-      int compressionLevel) {
+      ZipCompressionLevel compressionLevel) {
+    this.filesystem = filesystem;
     this.inputPath = inputPath;
     this.outputPath = outputPath;
     this.entries = entries;
@@ -80,19 +89,17 @@ public class RepackZipEntriesStep implements Step {
   }
 
   @Override
-  public int execute(ExecutionContext context) {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
-    File inputFile = filesystem.getFileForRelativePath(inputPath);
-    File outputFile = filesystem.getFileForRelativePath(outputPath);
+  public StepExecutionResult execute(ExecutionContext context) {
+    Path inputFile = filesystem.getPathForRelativePath(inputPath);
+    Path outputFile = filesystem.getPathForRelativePath(outputPath);
     try (
         ZipInputStream in =
-            new ZipInputStream(new BufferedInputStream(new FileInputStream(inputFile)));
-        CustomZipOutputStream out = ZipOutputStreams.newOutputStream(outputFile)
-    ) {
+            new ZipInputStream(new BufferedInputStream(Files.newInputStream(inputFile)));
+        CustomZipOutputStream out = ZipOutputStreams.newOutputStream(outputFile)) {
       for (ZipEntry entry = in.getNextEntry(); entry != null; entry = in.getNextEntry()) {
         CustomZipEntry customEntry = new CustomZipEntry(entry);
         if (entries.contains(customEntry.getName())) {
-          customEntry.setCompressionLevel(compressionLevel);
+          customEntry.setCompressionLevel(compressionLevel.getValue());
         }
 
         InputStream toUse;
@@ -115,10 +122,10 @@ public class RepackZipEntriesStep implements Step {
         out.closeEntry();
       }
 
-      return 0;
+      return StepExecutionResult.SUCCESS;
     } catch (IOException e) {
       context.logError(e, "Unable to repack zip");
-      return 1;
+      return StepExecutionResult.ERROR;
     }
   }
 

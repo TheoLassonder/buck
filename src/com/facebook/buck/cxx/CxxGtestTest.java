@@ -16,115 +16,195 @@
 
 package com.facebook.buck.cxx;
 
-import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
+import com.facebook.buck.rules.ExternalTestRunnerRule;
+import com.facebook.buck.rules.ExternalTestRunnerTestSpec;
 import com.facebook.buck.rules.HasRuntimeDeps;
 import com.facebook.buck.rules.Label;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.Tool;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.test.TestResultSummary;
+import com.facebook.buck.test.TestRunningOptions;
 import com.facebook.buck.test.result.type.ResultType;
+import com.facebook.buck.util.ChunkAccumulator;
 import com.facebook.buck.util.XmlDomParser;
+import com.google.common.base.Charsets;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.annotation.Nullable;
+
 @SuppressWarnings("PMD.TestClassWithoutTestCases")
-public class CxxGtestTest extends CxxTest implements HasRuntimeDeps {
+public class CxxGtestTest extends CxxTest implements HasRuntimeDeps, ExternalTestRunnerRule {
 
   private static final Pattern START = Pattern.compile("^\\[\\s*RUN\\s*\\] (.*)$");
   private static final Pattern END = Pattern.compile("^\\[\\s*(FAILED|OK)\\s*\\] .*");
+  private static final String NOTRUN = "notrun";
 
-  private final SourcePath binary;
-  private final ImmutableSortedSet<BuildRule> additionalDeps;
+  private final BuildRule binary;
+  private final Tool executable;
+  private final long maxTestOutputSize;
 
   public CxxGtestTest(
       BuildRuleParams params,
       SourcePathResolver resolver,
-      SourcePath binary,
-      ImmutableSortedSet<BuildRule> additionalDeps,
+      BuildRule binary,
+      Tool executable,
+      Supplier<ImmutableMap<String, String>> env,
+      Supplier<ImmutableList<String>> args,
+      ImmutableSortedSet<SourcePath> resources,
+      Supplier<ImmutableSortedSet<BuildRule>> additionalDeps,
       ImmutableSet<Label> labels,
       ImmutableSet<String> contacts,
-      ImmutableSet<BuildRule> sourceUnderTest) {
-    super(params, resolver, labels, contacts, sourceUnderTest);
+      ImmutableSet<BuildRule> sourceUnderTest,
+      boolean runTestSeparately,
+      Optional<Long> testRuleTimeoutMs,
+      long maxTestOutputSize) {
+    super(
+        params,
+        resolver,
+        executable.getEnvironment(resolver),
+        env,
+        args,
+        resources,
+        additionalDeps,
+        labels,
+        contacts,
+        sourceUnderTest,
+        runTestSeparately,
+        testRuleTimeoutMs);
     this.binary = binary;
-    this.additionalDeps = additionalDeps;
+    this.executable = executable;
+    this.maxTestOutputSize = maxTestOutputSize;
+  }
+
+  @Nullable
+  @Override
+  public Path getPathToOutput() {
+    return binary.getPathToOutput();
   }
 
   @Override
-  protected ImmutableList<String> getShellCommand(
-      ExecutionContext context,
-      Path output) {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
-    String resolvedBinary = filesystem.resolve(getResolver().getPath(binary)).toString();
-    String resolvedOutput = filesystem.resolve(output).toString();
-    return ImmutableList.of(
-        resolvedBinary,
-        "--gtest_color=no",
-        "--gtest_output=xml:" + resolvedOutput);
+  protected ImmutableList<String> getShellCommand(Path output) {
+    return ImmutableList.<String>builder()
+        .addAll(executable.getCommandPrefix(getResolver()))
+        .add("--gtest_color=no")
+        .add("--gtest_output=xml:" + getProjectFilesystem().resolve(output).toString())
+        .build();
+  }
+
+  private TestResultSummary getProgramFailureSummary(
+      String message,
+      String output) {
+    return new TestResultSummary(
+        getBuildTarget().toString(),
+        "main",
+        ResultType.FAILURE,
+        0L,
+        message,
+        "",
+        output,
+        "");
   }
 
   @Override
   protected ImmutableList<TestResultSummary> parseResults(
-      ExecutionContext context,
       Path exitCode,
       Path output,
       Path results)
-      throws Exception {
+      throws IOException, SAXException {
+
+    // Try to parse the results file first, which should be written if the test suite exited
+    // normally (even in the event of a failing test).  If this fails, just construct a test
+    // summary with the output we have.
+    Document doc;
+    try {
+      doc = XmlDomParser.parse(results);
+    } catch (SAXException e) {
+      return ImmutableList.of(
+          getProgramFailureSummary(
+              "test program aborted before finishing",
+              getProjectFilesystem().readFileIfItExists(output).or("")));
+    }
 
     ImmutableList.Builder<TestResultSummary> summariesBuilder = ImmutableList.builder();
 
-    List<String> outputLines = context.getProjectFilesystem().readLines(output);
+    // It's possible the test output had invalid characters in it's output, so make sure to
+    // ignore these as we parse the output lines.
     Optional<String> currentTest = Optional.absent();
-    Map<String, List<String>> stdout = Maps.newHashMap();
-    for (String line : outputLines) {
-      Matcher matcher;
-      if ((matcher = START.matcher(line.trim())).matches()) {
-        String test = matcher.group(1);
-        currentTest = Optional.of(test);
-        stdout.put(test, Lists.<String>newArrayList());
-      } else if (END.matcher(line.trim()).matches()) {
-        currentTest = Optional.absent();
-      } else if (currentTest.isPresent()) {
-        stdout.get(currentTest.get()).add(line);
+    Map<String, ChunkAccumulator> stdout = Maps.newHashMap();
+    CharsetDecoder decoder = Charsets.UTF_8.newDecoder();
+    decoder.onMalformedInput(CodingErrorAction.IGNORE);
+    try (InputStream input = getProjectFilesystem().newFileInputStream(output);
+         BufferedReader reader = new BufferedReader(new InputStreamReader(input, decoder))) {
+      String line;
+      while ((line = reader.readLine()) != null) {
+        Matcher matcher;
+        if ((matcher = START.matcher(line.trim())).matches()) {
+          String test = matcher.group(1);
+          currentTest = Optional.of(test);
+          stdout.put(test, new ChunkAccumulator(Charsets.UTF_8, maxTestOutputSize));
+        } else if (END.matcher(line.trim()).matches()) {
+          currentTest = Optional.absent();
+        } else if (currentTest.isPresent()) {
+          stdout.get(currentTest.get()).append(line);
+        }
       }
     }
 
-    Document doc = XmlDomParser.parse(results.toFile());
-    Node testsuites = doc.getElementsByTagName("testsuites").item(0);
-    Node testsuite = testsuites.getChildNodes().item(1);
-    NodeList testcases = testsuite.getChildNodes();
-    for (int index = 1; index < testcases.getLength(); index += 2) {
+    NodeList testcases = doc.getElementsByTagName("testcase");
+    for (int index = 0; index < testcases.getLength(); index++) {
       Node testcase = testcases.item(index);
       NamedNodeMap attributes = testcase.getAttributes();
       String testCase = attributes.getNamedItem("classname").getNodeValue();
       String testName = attributes.getNamedItem("name").getNodeValue();
       String testFull = String.format("%s.%s", testCase, testName);
       Double time = Double.parseDouble(attributes.getNamedItem("time").getNodeValue()) * 1000;
+
+      // Prepare the result message and type
       ResultType type = ResultType.SUCCESS;
       String message = "";
       if (testcase.getChildNodes().getLength() > 0) {
         Node failure = testcase.getChildNodes().item(1);
         type = ResultType.FAILURE;
         message = failure.getAttributes().getNamedItem("message").getNodeValue();
+      } else if (attributes.getNamedItem("status").getNodeValue().equals(NOTRUN)) {
+        type = ResultType.ASSUMPTION_VIOLATION;
+        message = "DISABLED";
       }
+
+      // Prepare the tests stdout.
+      String testStdout = "";
+      if (stdout.containsKey(testFull)) {
+        testStdout = Joiner.on(System.lineSeparator()).join(stdout.get(testFull).getChunks());
+      }
+
       summariesBuilder.add(
           new TestResultSummary(
               testCase,
@@ -133,7 +213,7 @@ public class CxxGtestTest extends CxxTest implements HasRuntimeDeps {
               time.longValue(),
               message,
               "",
-              Joiner.on(System.lineSeparator()).join(stdout.get(testFull)),
+              testStdout,
               ""));
     }
 
@@ -145,8 +225,23 @@ public class CxxGtestTest extends CxxTest implements HasRuntimeDeps {
   @Override
   public ImmutableSortedSet<BuildRule> getRuntimeDeps() {
     return ImmutableSortedSet.<BuildRule>naturalOrder()
-        .addAll(getResolver().getRule(binary).asSet())
-        .addAll(additionalDeps)
+        .addAll(super.getRuntimeDeps())
+        .addAll(executable.getDeps(getResolver()))
+        .build();
+  }
+
+  @Override
+  public ExternalTestRunnerTestSpec getExternalTestRunnerSpec(
+      ExecutionContext executionContext,
+      TestRunningOptions testRunningOptions) {
+    return ExternalTestRunnerTestSpec.builder()
+        .setTarget(getBuildTarget())
+        .setType("gtest")
+        .addAllCommand(executable.getCommandPrefix(getResolver()))
+        .addAllCommand(getArgs().get())
+        .putAllEnv(getEnv().get())
+        .addAllLabels(getLabels())
+        .addAllContacts(getContacts())
         .build();
   }
 

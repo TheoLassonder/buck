@@ -7,12 +7,11 @@ java_library(
     'ExplodingDownloader.java',
     'HttpDownloader.java',
     'MavenUrlDecoder.java',
+    'OnDiskMavenDownloader.java',
+    'RemoteMavenDownloader.java',
+    'StackedDownloader.java',
   ],
-  deps = [
-    '//third-party/java/guava:guava',
-    '//src/com/facebook/buck/event:event',
-    '//src/com/facebook/buck/util:exceptions',
-  ],
+  autodeps = True,
   visibility = [ 'PUBLIC' ],
 )
 
@@ -23,24 +22,11 @@ java_library(
     'RemoteFile.java',
     'RemoteFileDescription.java',
   ],
-  deps = [
-    ':downloader',
-    '//src/com/facebook/buck/event:event',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/rules:build_rule',
-    '//src/com/facebook/buck/rules:rules',
-    '//src/com/facebook/buck/step/fs:fs',
-    '//src/com/facebook/buck/step:step',
-    '//src/com/facebook/buck/util:exceptions',
-    '//third-party/java/guava:guava',
-    '//third-party/java/infer-annotations:infer-annotations',
-    '//third-party/java/jsr:jsr305',
-  ],
+  autodeps = True,
   visibility = [
     '//src/com/facebook/buck/cli:cli',
     '//src/com/facebook/buck/rules:types',
-    '//test/com/facebook/buck/file:file',
+    '//test/com/facebook/buck/file:',
     '//test/com/facebook/buck/maven:maven',
   ],
 )
@@ -50,13 +36,6 @@ java_library(
   srcs = [
     'WriteFile.java',
   ],
-  deps = [
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/rules:build_rule',
-    '//src/com/facebook/buck/rules:rules',
-    '//src/com/facebook/buck/step:step',
-    '//src/com/facebook/buck/step/fs:fs',
-    '//third-party/java/guava:guava',
-  ],
+  autodeps = True,
   visibility = [ 'PUBLIC' ],
 )

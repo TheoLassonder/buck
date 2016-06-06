@@ -47,7 +47,9 @@ public class PrebuiltPythonLibrary extends NoopBuildRule implements PythonPackag
   }
 
   @Override
-  public PythonPackageComponents getPythonPackageComponents(CxxPlatform cxxPlatform) {
+  public PythonPackageComponents getPythonPackageComponents(
+      PythonPlatform pythonPlatform,
+      CxxPlatform cxxPlatform) {
     // TODO(mikekap): Allow varying sources by cxx platform (in cases of prebuilt
     // extension modules).
     return PythonPackageComponents.of(

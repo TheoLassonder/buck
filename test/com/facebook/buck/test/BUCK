@@ -1,13 +1,1 @@
-java_test(
-  name = 'test',
-  srcs = glob(['*Test.java']),
-  deps = [
-    '//third-party/java/guava:guava',
-    '//third-party/java/junit:junit',
-    '//src/com/facebook/buck/test/result/type:type',
-    '//src/com/facebook/buck/test:test',  
-  ],
-  source_under_test = [
-    '//src/com/facebook/buck/test:test',  
-  ],
-)
+standard_java_test()

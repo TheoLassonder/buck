@@ -1,21 +1,19 @@
-STANDARD_TEST_SRCS = [
-  '*Test.java',
-]
+java_immutables_library(
+  name = 'testutil',
+  srcs = [
+    'AbstractFakeExecutionEnvironment.java',
+  ],
+  immutable_types = [
+    'FakeExecutionEnvironment',
+  ],
+  autodeps = True,
+  visibility = [
+    '//test/...',
+  ],
+)
 
 java_test(
   name = 'environment',
-  srcs = glob(STANDARD_TEST_SRCS),
-  source_under_test = [
-    '//src/com/facebook/buck/util/environment:environment',
-  ],
-  deps = [
-    '//src/com/facebook/buck/util/environment:environment',
-    '//src/com/facebook/buck/util/environment:env-filter',
-    '//src/com/facebook/buck/util/environment:platform',
-    '//src/com/facebook/buck/util:io',
-    '//test/com/facebook/buck/util:testutil',
-    '//third-party/java/guava:guava',
-    '//third-party/java/hamcrest:hamcrest',
-    '//third-party/java/junit:junit',
-  ],
+  srcs = glob(['*Test.java']),
+  autodeps = True,
 )

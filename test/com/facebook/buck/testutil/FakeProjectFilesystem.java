@@ -20,6 +20,7 @@ import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.timing.Clock;
 import com.facebook.buck.timing.FakeClock;
+import com.facebook.buck.util.environment.Platform;
 import com.google.common.base.Charsets;
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
@@ -36,6 +37,8 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Ordering;
 import com.google.common.hash.Hashing;
 import com.google.common.io.ByteStreams;
+import com.google.common.jimfs.Configuration;
+import com.google.common.jimfs.Jimfs;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -49,10 +52,12 @@ import java.io.StringReader;
 import java.math.BigInteger;
 import java.nio.file.CopyOption;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.FileVisitor;
+import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.NotLinkException;
@@ -62,25 +67,29 @@ import java.nio.file.Paths;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.EnumSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Random;
 import java.util.Set;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.jar.JarInputStream;
+import java.util.jar.Manifest;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import javax.annotation.Nullable;
-
-import okio.Buffer;
-import okio.BufferedSource;
 
 // TODO(natthu): Implement methods that throw UnsupportedOperationException.
 public class FakeProjectFilesystem extends ProjectFilesystem {
 
   private static final Random RANDOM = new Random();
+  private static final Path DEFAULT_ROOT = Paths.get(".").toAbsolutePath().normalize();
 
   private static final BasicFileAttributes DEFAULT_FILE_ATTRIBUTES =
       new BasicFileAttributes() {
@@ -193,25 +202,57 @@ public class FakeProjectFilesystem extends ProjectFilesystem {
   private final Set<Path> directories;
   private final Clock clock;
 
+  public static ProjectFilesystem createJavaOnlyFilesystem() {
+    return createJavaOnlyFilesystem("/opt/src/buck");
+  }
+
+  public static ProjectFilesystem createJavaOnlyFilesystem(String rootPath) {
+    boolean isWindows = Platform.detect() == Platform.WINDOWS;
+
+    Configuration configuration = isWindows ? Configuration.windows() : Configuration.unix();
+    rootPath = isWindows ? "C:" + rootPath : rootPath;
+
+    FileSystem vfs = Jimfs.newFileSystem(configuration);
+
+    Path root = vfs.getPath(rootPath);
+    try {
+      Files.createDirectories(root);
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
+
+    return new ProjectFilesystem(root) {
+      @Override
+      public Path resolve(Path path) {
+        // Avoid resolving paths from different Java FileSystems.
+        return super.resolve(path.toString());
+      }
+    };
+  }
+
   public FakeProjectFilesystem() {
-    this(new FakeClock(0), Paths.get("").toFile(), ImmutableSet.<Path>of());
+    this(new FakeClock(0), DEFAULT_ROOT, ImmutableSet.<Path>of());
   }
 
   // We accept a File here since that's what's returned by TemporaryFolder.
   public FakeProjectFilesystem(File root) {
-    this(new FakeClock(0), root, ImmutableSet.<Path>of());
+    this(new FakeClock(0), root.toPath(), ImmutableSet.<Path>of());
   }
 
   public FakeProjectFilesystem(Clock clock) {
-    this(clock, Paths.get(".").toFile(), ImmutableSet.<Path>of());
+    this(clock, DEFAULT_ROOT, ImmutableSet.<Path>of());
   }
 
   public FakeProjectFilesystem(Set<Path> files) {
-    this(new FakeClock(0), Paths.get(".").toFile(), files);
+    this(new FakeClock(0), DEFAULT_ROOT, files);
   }
 
   public FakeProjectFilesystem(Clock clock, File root, Set<Path> files) {
-    super(root.toPath());
+    this(clock, root.toPath(), files);
+  }
+
+  public FakeProjectFilesystem(Clock clock, Path root, Set<Path> files) {
+    super(root);
     // We use LinkedHashMap to preserve insertion order, so the
     // behavior of this test is consistent across versions. (It also lets
     // us write tests which explicitly test iterating over entries in
@@ -259,6 +300,14 @@ public class FakeProjectFilesystem extends ProjectFilesystem {
     return Preconditions.checkNotNull(fileAttributes.get(path));
   }
 
+  public void clear() {
+    fileContents.clear();
+    fileAttributes.clear();
+    fileLastModifiedTimes.clear();
+    symLinks.clear();
+    directories.clear();
+  }
+
   @Override
   public <A extends BasicFileAttributes> A readAttributes(
       Path pathRelativeToProjectRoot,
@@ -302,11 +351,6 @@ public class FakeProjectFilesystem extends ProjectFilesystem {
   }
 
   @Override
-  public Properties readPropertiesFile(Path pathToPropertiesFile) throws IOException {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
   public boolean isFile(Path path) {
     return fileContents.containsKey(MorePaths.normalize(path));
   }
@@ -347,6 +391,22 @@ public class FakeProjectFilesystem extends ProjectFilesystem {
               }
             })
         .toList();
+  }
+
+  @Override
+  public ImmutableCollection<Path> getZipMembers(Path archivePath) throws IOException {
+    // We can't use ZipFile here because it won't work with streams. We don't use ZipInputStream
+    // in the real ProjectFilesystem because it reads the entire zip file to list entries, whereas
+    // ZipFile just looks at the directory if it exists.
+    try (ZipInputStream zipInputStream = new ZipInputStream(newFileInputStream(archivePath))) {
+      ImmutableList.Builder<Path> resultBuilder = ImmutableList.builder();
+      ZipEntry zipEntry;
+      while ((zipEntry = zipInputStream.getNextEntry()) != null) {
+        resultBuilder.add(Paths.get(zipEntry.getName()));
+      }
+
+      return resultBuilder.build();
+    }
   }
 
   @Override
@@ -523,13 +583,6 @@ public class FakeProjectFilesystem extends ProjectFilesystem {
   }
 
 
-  @Override
-  public BufferedSource newSource(Path pathRelativeToProjectRoot) throws IOException {
-    Buffer buffer = new Buffer();
-    buffer.write(fileContents.get(normalizePathToProjectRoot(pathRelativeToProjectRoot)));
-    return buffer;
-  }
-
   private Path normalizePathToProjectRoot(Path pathRelativeToProjectRoot)
     throws NoSuchFileException {
     if (!exists(pathRelativeToProjectRoot)) {
@@ -596,15 +649,59 @@ public class FakeProjectFilesystem extends ProjectFilesystem {
     return Splitter.on('\n').splitToList(content);
   }
 
+  @Override
+  public Manifest getJarManifest(Path path) throws IOException {
+    try (JarInputStream jar = new JarInputStream(newFileInputStream(path))) {
+
+      Manifest result = jar.getManifest();
+      if (result != null) {
+        return result;
+      }
+
+      // JarInputStream will only find the manifest if it's the first entry, but we have code that
+      // puts it elsewhere. We must search. Fortunately, this is test code! So we can be slow!
+      JarEntry entry;
+      while ((entry = jar.getNextJarEntry()) != null) {
+        if (JarFile.MANIFEST_NAME.equals(entry.getName())) {
+          result = new Manifest();
+          result.read(jar);
+          return result;
+        }
+      }
+    }
+
+    return null;
+  }
+
   /**
    * Does not support symlinks.
    */
   @Override
-  public String computeSha1(Path path) throws IOException {
-    if (!exists(path)) {
-      throw new FileNotFoundException(path.toString());
+  public String computeSha1(Path pathRelativeToProjectRootOrJustAbsolute) throws IOException {
+    if (!exists(pathRelativeToProjectRootOrJustAbsolute)) {
+      throw new FileNotFoundException(pathRelativeToProjectRootOrJustAbsolute.toString());
     }
-    return Hashing.sha1().hashBytes(getFileBytes(path)).toString();
+    return Hashing.sha1()
+        .hashBytes(getFileBytes(pathRelativeToProjectRootOrJustAbsolute))
+        .toString();
+  }
+
+  @Override
+  public void copy(Path source, Path target, CopySourceMode sourceMode) throws IOException {
+    Path normalizedSourcePath = MorePaths.normalize(source);
+    Path normalizedTargetPath = MorePaths.normalize(target);
+    switch (sourceMode) {
+      case FILE:
+        ImmutableSet<FileAttribute<?>> attrs = fileAttributes.get(normalizedSourcePath);
+        writeBytesToPath(
+            fileContents.get(normalizedSourcePath),
+            normalizedTargetPath,
+            attrs.toArray(new FileAttribute[attrs.size()]));
+        break;
+      case DIRECTORY_CONTENTS_ONLY:
+      case DIRECTORY_AND_CONTENTS:
+        throw new UnsupportedOperationException();
+    }
   }
 
   /**
@@ -666,6 +763,15 @@ public class FakeProjectFilesystem extends ProjectFilesystem {
   }
 
   @Override
+  public Set<PosixFilePermission> getPosixFilePermissions(Path path) throws IOException {
+    return ImmutableSet.of(
+        PosixFilePermission.OWNER_READ,
+        PosixFilePermission.OWNER_WRITE,
+        PosixFilePermission.GROUP_READ,
+        PosixFilePermission.OTHERS_READ);
+  }
+
+  @Override
   public boolean isSymLink(Path path) throws IOException {
     return symLinks.containsKey(path);
   }
@@ -711,5 +817,4 @@ public class FakeProjectFilesystem extends ProjectFilesystem {
     fileLastModifiedTimes.put(MorePaths.normalize(target),
         fileLastModifiedTimes.remove(MorePaths.normalize(source)));
   }
-
 }

@@ -32,6 +32,10 @@ import java.util.Map;
 @BuckStyleImmutable
 abstract class AbstractProcessExecutorParams {
 
+  public static ProcessExecutorParams ofCommand(String... args) {
+    return ProcessExecutorParams.builder().addCommand(args).build();
+  }
+
   /**
    * The command and arguments to launch.
    */
@@ -71,5 +75,11 @@ abstract class AbstractProcessExecutorParams {
    */
   @Value.Parameter
   public abstract Optional<ProcessBuilder.Redirect> getRedirectError();
+
+  /*
+   * If true, redirects stderr for the process to stdout.
+   */
+  @Value.Parameter
+  public abstract Optional<Boolean> getRedirectErrorStream();
 
 }

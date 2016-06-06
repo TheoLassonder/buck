@@ -17,7 +17,8 @@
 package com.facebook.buck.gwt;
 
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.JavaLibrary;
+import com.facebook.buck.jvm.java.JavaRuntimeLauncher;
+import com.facebook.buck.jvm.java.JavaLibrary;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.rules.AbstractBuildRule;
@@ -54,7 +55,7 @@ public class GwtBinary extends AbstractBuildRule {
    * Valid values for the GWT Compiler's {@code -style} flag.
    * Acceptable values are defined in the GWT docs at http://bit.ly/1sclx5O.
    */
-  static enum Style {
+  enum Style {
     /** Named "obf" for "obfuscated". This is the default style. */
     OBF,
     PRETTY,
@@ -67,6 +68,8 @@ public class GwtBinary extends AbstractBuildRule {
   private final Path outputFile;
   @AddToRuleKey
   private final ImmutableSortedSet<String> modules;
+  @AddToRuleKey
+  private final JavaRuntimeLauncher javaRuntimeLauncher;
   @AddToRuleKey
   private final ImmutableList<String> vmArgs;
   @AddToRuleKey
@@ -91,6 +94,7 @@ public class GwtBinary extends AbstractBuildRule {
       BuildRuleParams buildRuleParams,
       SourcePathResolver resolver,
       ImmutableSortedSet<String> modules,
+      JavaRuntimeLauncher javaRuntimeLauncher,
       List<String> vmArgs,
       Style style,
       boolean draftCompile,
@@ -102,6 +106,7 @@ public class GwtBinary extends AbstractBuildRule {
     super(buildRuleParams, resolver);
     BuildTarget buildTarget = buildRuleParams.getBuildTarget();
     this.outputFile = BuildTargets.getGenPath(
+        buildRuleParams.getProjectFilesystem(),
         buildTarget,
         "__gwt_binary_%s__/" + buildTarget.getShortNameAndFlavorPostfix() + ".zip");
     this.modules = modules;
@@ -109,6 +114,7 @@ public class GwtBinary extends AbstractBuildRule {
         !modules.isEmpty(),
         "Must specify at least one module for %s.",
         buildTarget);
+    this.javaRuntimeLauncher = javaRuntimeLauncher;
     this.vmArgs = ImmutableList.copyOf(vmArgs);
     this.style = style;
     this.draftCompile = draftCompile;
@@ -136,13 +142,14 @@ public class GwtBinary extends AbstractBuildRule {
 
     // Create a clean directory where the .zip file will be written.
     Path workingDirectory = getPathToOutput().getParent();
-    steps.add(new MakeCleanDirectoryStep(workingDirectory));
+    ProjectFilesystem projectFilesystem = getProjectFilesystem();
+    steps.add(new MakeCleanDirectoryStep(projectFilesystem, workingDirectory));
 
     // Write the deploy files into a separate directory so that the generated .zip is smaller.
     final Path deployDirectory = workingDirectory.resolve("deploy");
-    steps.add(new MkdirStep(deployDirectory));
+    steps.add(new MkdirStep(projectFilesystem, deployDirectory));
 
-    Step javaStep = new ShellStep() {
+    Step javaStep = new ShellStep(projectFilesystem.getRootPath()) {
       @Override
       public String getShortName() {
         return "gwt-compile";
@@ -150,21 +157,21 @@ public class GwtBinary extends AbstractBuildRule {
 
       @Override
       protected ImmutableList<String> getShellCommandInternal(ExecutionContext context) {
-        ProjectFilesystem projectFilesystem = context.getProjectFilesystem();
-
         ImmutableList.Builder<String> javaArgsBuilder = ImmutableList.builder();
-        javaArgsBuilder.add("java");
+        javaArgsBuilder.add(javaRuntimeLauncher.getCommand());
         javaArgsBuilder.add("-Dgwt.normalizeTimestamps=true");
         javaArgsBuilder.addAll(vmArgs);
         javaArgsBuilder.add(
             "-classpath", Joiner.on(File.pathSeparator).join(
-                Iterables.transform(getClasspathEntries(), projectFilesystem.getAbsolutifier())),
+                Iterables.transform(
+                    getClasspathEntries(),
+                    getProjectFilesystem().getAbsolutifier())),
             GWT_COMPILER_CLASS,
-            "-war", projectFilesystem.resolve(getPathToOutput()).toString(),
+            "-war", getProjectFilesystem().resolve(getPathToOutput()).toString(),
             "-style", style.name(),
             "-optimize", String.valueOf(optimize),
             "-localWorkers", String.valueOf(localWorkers),
-            "-deploy", projectFilesystem.resolve(deployDirectory).toString());
+            "-deploy", getProjectFilesystem().resolve(deployDirectory).toString());
         if (draftCompile) {
           javaArgsBuilder.add("-draftCompile");
         }

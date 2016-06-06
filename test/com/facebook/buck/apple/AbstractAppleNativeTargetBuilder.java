@@ -22,8 +22,9 @@ import com.facebook.buck.rules.AbstractNodeBuilder;
 import com.facebook.buck.rules.Description;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.coercer.FrameworkPath;
+import com.facebook.buck.rules.coercer.PatternMatchedCollection;
 import com.facebook.buck.rules.coercer.SourceList;
-import com.facebook.buck.rules.coercer.SourceWithFlags;
+import com.facebook.buck.rules.SourceWithFlags;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -52,8 +53,20 @@ public abstract class AbstractAppleNativeTargetBuilder<
     return getThis();
   }
 
+  public BUILDER setPlatformCompilerFlags(
+      Optional<PatternMatchedCollection<ImmutableList<String>>> platformPreprocessorFlags) {
+    arg.platformPreprocessorFlags = platformPreprocessorFlags;
+    return getThis();
+  }
+
   public BUILDER setPreprocessorFlags(Optional<ImmutableList<String>> preprocessorFlags) {
     arg.preprocessorFlags = preprocessorFlags;
+    return getThis();
+  }
+
+  public BUILDER setPlatformPreprocessorFlags(
+      Optional<PatternMatchedCollection<ImmutableList<String>>> platformPreprocessorFlags) {
+    arg.platformPreprocessorFlags = platformPreprocessorFlags;
     return getThis();
   }
 
@@ -79,7 +92,7 @@ public abstract class AbstractAppleNativeTargetBuilder<
     return getThis();
   }
 
-  public BUILDER setSrcs(Optional<ImmutableList<SourceWithFlags>> srcs) {
+  public BUILDER setSrcs(Optional<ImmutableSortedSet<SourceWithFlags>> srcs) {
     arg.srcs = srcs;
     return getThis();
   }
@@ -98,7 +111,7 @@ public abstract class AbstractAppleNativeTargetBuilder<
     return setHeaders(Optional.of(SourceList.ofUnnamedSources(headers)));
   }
 
-  public BUILDER setHeaders(ImmutableMap<String, SourcePath> headers) {
+  public BUILDER setHeaders(ImmutableSortedMap<String, SourcePath> headers) {
     return setHeaders(Optional.of(SourceList.ofNamedSources(headers)));
   }
 
@@ -111,12 +124,17 @@ public abstract class AbstractAppleNativeTargetBuilder<
     return setExportedHeaders(Optional.of(SourceList.ofUnnamedSources(exportedHeaders)));
   }
 
-  public BUILDER setExportedHeaders(ImmutableMap<String, SourcePath> exportedHeaders) {
+  public BUILDER setExportedHeaders(ImmutableSortedMap<String, SourcePath> exportedHeaders) {
     return setExportedHeaders(Optional.of(SourceList.ofNamedSources(exportedHeaders)));
   }
 
   public BUILDER setFrameworks(Optional<ImmutableSortedSet<FrameworkPath>> frameworks) {
     arg.frameworks = frameworks;
+    return getThis();
+  }
+
+  public BUILDER setLibraries(Optional<ImmutableSortedSet<FrameworkPath>> libraries) {
+    arg.libraries = libraries;
     return getThis();
   }
 
@@ -130,18 +148,8 @@ public abstract class AbstractAppleNativeTargetBuilder<
     return getThis();
   }
 
-  public BUILDER setGid(Optional<String> gid) {
-    arg.gid = gid;
-    return getThis();
-  }
-
   public BUILDER setHeaderPathPrefix(Optional<String> headerPathPrefix) {
     arg.headerPathPrefix = headerPathPrefix;
-    return getThis();
-  }
-
-  public BUILDER setUseBuckHeaderMaps(Optional<Boolean> useBuckHeaderMaps) {
-    arg.useBuckHeaderMaps = useBuckHeaderMaps;
     return getThis();
   }
 

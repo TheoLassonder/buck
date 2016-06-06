@@ -16,15 +16,16 @@
 
 package com.facebook.buck.cli;
 
+import com.facebook.buck.event.ConsoleEvent;
 import com.facebook.buck.io.MorePaths;
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.json.BuildFileParseException;
 import com.facebook.buck.model.BuildFileTree;
-import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetException;
 import com.facebook.buck.model.FilesystemBackedBuildFileTree;
-import com.facebook.buck.parser.ParserConfig;
 import com.facebook.buck.rules.TargetNode;
 import com.facebook.buck.util.Ansi;
+import com.facebook.buck.util.MoreExceptions;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
@@ -136,75 +137,83 @@ public class AuditOwnerCommand extends AbstractCommand {
   /**
    * @return relative paths under the project root
    */
-  public Iterable<Path> getArgumentsAsPaths(Path projectRoot) throws IOException {
-    return PathArguments.getCanonicalFilesUnderProjectRoot(projectRoot, getArguments())
+  public static Iterable<Path> getArgumentsAsPaths(Path projectRoot, Iterable<String> args)
+      throws IOException {
+    return PathArguments.getCanonicalFilesUnderProjectRoot(projectRoot, args)
         .relativePathsUnderProjectRoot;
   }
 
   @Override
   public int runWithoutHelp(CommandRunnerParams params) throws IOException, InterruptedException {
-    OwnersReport report = OwnersReport.emptyReport();
-    Map<Path, List<TargetNode<?>>> targetNodes = Maps.newHashMap();
-    ParserConfig parserConfig = new ParserConfig(params.getBuckConfig());
     BuildFileTree buildFileTree = new FilesystemBackedBuildFileTree(
-        params.getRepository().getFilesystem(),
-        parserConfig.getBuildFileName());
+        params.getCell().getFilesystem(),
+        params.getCell().getBuildFileName());
+    try {
+      OwnersReport report = buildOwnersReport(
+          params,
+          buildFileTree,
+          getArguments(),
+          isGuessForDeletedEnabled());
+      printReport(params, report);
+    } catch (BuildFileParseException | BuildTargetException e) {
+      params.getBuckEventBus().post(ConsoleEvent.severe(
+          MoreExceptions.getHumanReadableOrLocalizedMessage(e)));
+      return BUILD_TARGET_ERROR;
+    }
+    return 0;
+  }
 
-    for (Path filePath : getArgumentsAsPaths(
-        params.getRepository().getFilesystem().getRootPath())) {
+  OwnersReport buildOwnersReport(
+      CommandRunnerParams params,
+      BuildFileTree buildFileTree,
+      Iterable<String> arguments,
+      boolean guessForDeletedEnabled)
+      throws IOException, InterruptedException, BuildFileParseException, BuildTargetException {
+    ProjectFilesystem cellFilesystem = params.getCell().getFilesystem();
+    final Path rootPath = cellFilesystem.getRootPath();
+    Preconditions.checkState(rootPath.isAbsolute());
+    Map<Path, ImmutableSet<TargetNode<?>>> targetNodes = Maps.newHashMap();
+    OwnersReport report = OwnersReport.emptyReport();
+
+    for (Path filePath : getArgumentsAsPaths(rootPath, arguments)) {
       Optional<Path> basePath = buildFileTree.getBasePathOfAncestorTarget(filePath);
       if (!basePath.isPresent()) {
         report = report.updatedWith(
             new OwnersReport(
                 ImmutableSetMultimap.<TargetNode<?>, Path>of(),
-              /* inputWithNoOwners */ ImmutableSet.of(filePath),
+                /* inputWithNoOwners */ ImmutableSet.of(filePath),
                 Sets.<String>newHashSet(),
                 Sets.<String>newHashSet()));
         continue;
       }
 
-      Path buckFile = basePath.get().resolve(parserConfig.getBuildFileName());
-      Preconditions.checkState(params.getRepository().getFilesystem().exists(buckFile));
-
-      // Get the target base name.
-      Path targetBasePath = MorePaths.relativize(
-          params.getRepository().getFilesystem().getRootPath().toAbsolutePath(),
-          buckFile.toAbsolutePath().getParent());
-      String targetBaseName = "//" + targetBasePath.toString();
+      Path buckFile = cellFilesystem.resolve(basePath.get())
+          .resolve(params.getCell().getBuildFileName());
+      Preconditions.checkState(cellFilesystem.exists(buckFile));
 
       // Parse buck files and load target nodes.
       if (!targetNodes.containsKey(buckFile)) {
-        try {
-          List<Map<String, Object>> buildFileTargets = params.getParser().parseBuildFile(
+        try (CommandThreadManager pool = new CommandThreadManager(
+            "AuditOwner",
+            params.getBuckConfig().getWorkQueueExecutionOrder(),
+            getConcurrencyLimit(params.getBuckConfig()))){
+          targetNodes.put(
               buckFile,
-              parserConfig,
-              params.getEnvironment(),
-              params.getConsole(),
-              params.getBuckEventBus());
+              params.getParser().getAllTargetNodes(
+                  params.getBuckEventBus(),
+                  params.getCell(),
+                  /* enable profiling */ false,
+                  pool.getExecutor(),
+                  buckFile));
+        } catch (BuildFileParseException e) {
+          Path targetBasePath = MorePaths.relativize(rootPath, rootPath.resolve(basePath.get()));
+          String targetBaseName = "//" + MorePaths.pathWithUnixSeparators(targetBasePath);
 
-          for (Map<String, Object> buildFileTarget : buildFileTargets) {
-            if (!buildFileTarget.containsKey("name")) {
-              continue;
-            }
-
-            BuildTarget target = BuildTarget.builder(
-                targetBaseName,
-                (String) buildFileTarget.get("name")).build();
-
-            if (!targetNodes.containsKey(buckFile)) {
-              targetNodes.put(buckFile, Lists.<TargetNode<?>>newArrayList());
-            }
-            TargetNode<?> parsedTargetNode = params.getParser().getTargetNode(target);
-            if (parsedTargetNode != null) {
-              targetNodes.get(buckFile).add(parsedTargetNode);
-            }
-          }
-        } catch (BuildFileParseException | BuildTargetException e) {
           params
               .getConsole()
               .getStdErr()
               .format("Could not parse build targets for %s", targetBaseName);
-          return BUILD_TARGET_ERROR;
+          throw e;
         }
       }
 
@@ -214,12 +223,10 @@ public class AuditOwnerCommand extends AbstractCommand {
                 params,
                 targetNode,
                 ImmutableList.of(filePath.toString()),
-                isGuessForDeletedEnabled()));
+                guessForDeletedEnabled));
       }
     }
-
-    printReport(params, report);
-    return 0;
+    return report;
   }
 
   @Override
@@ -228,7 +235,7 @@ public class AuditOwnerCommand extends AbstractCommand {
   }
 
   @VisibleForTesting
-  OwnersReport generateOwnersReport(
+  static OwnersReport generateOwnersReport(
       CommandRunnerParams params,
       TargetNode<?> targetNode,
       Iterable<String> filePaths,
@@ -240,7 +247,7 @@ public class AuditOwnerCommand extends AbstractCommand {
     Set<String> nonFileInputs = Sets.newHashSet();
 
     for (String filePath : filePaths) {
-      File file = params.getRepository().getFilesystem().getFileForRelativePath(filePath);
+      File file = params.getCell().getFilesystem().getFileForRelativePath(filePath);
       if (!file.exists()) {
         nonExistentInputs.add(filePath);
       } else if (!file.isFile()) {
@@ -271,8 +278,8 @@ public class AuditOwnerCommand extends AbstractCommand {
 
     // Try to guess owners for nonexistent files.
     if (guessForDeletedEnabled) {
-      for (String nonExsitentInput : nonExistentInputs) {
-        owners.put(targetNode, new File(nonExsitentInput).toPath());
+      for (String nonExistentInput : nonExistentInputs) {
+        owners.put(targetNode, new File(nonExistentInput).toPath());
       }
     }
 

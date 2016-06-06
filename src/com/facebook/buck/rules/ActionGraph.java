@@ -16,17 +16,10 @@
 
 package com.facebook.buck.rules;
 
-import com.facebook.buck.model.BuildTarget;
-import com.google.common.collect.ImmutableMap;
-
-import java.util.Map;
-
-import javax.annotation.Nullable;
+import com.google.common.collect.Iterables;
 
 public class ActionGraph {
 
-  @Nullable
-  private Map<BuildTarget, BuildRule> index;
   private final Iterable<BuildRule> nodes;
 
   public ActionGraph(Iterable<BuildRule> nodes) {
@@ -37,17 +30,8 @@ public class ActionGraph {
     return nodes;
   }
 
-  @Nullable
-  public BuildRule findBuildRuleByTarget(BuildTarget buildTarget) {
-    if (index == null) {
-      ImmutableMap.Builder<BuildTarget, BuildRule> builder = ImmutableMap.builder();
-      for (BuildRule rule : nodes) {
-        builder.put(rule.getBuildTarget(), rule);
-      }
-      index = builder.build();
-    }
-
-    return index.get(buildTarget);
+  @Override
+  public String toString() {
+    return Iterables.toString(nodes);
   }
-
 }

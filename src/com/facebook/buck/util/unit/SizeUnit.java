@@ -16,12 +16,11 @@
 
 package com.facebook.buck.util.unit;
 
+import com.facebook.buck.model.Pair;
 import com.facebook.buck.util.MoreStrings;
 import com.google.common.collect.ImmutableMap;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.text.DecimalFormat;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -34,17 +33,6 @@ public enum SizeUnit {
 
   private final int ordinal;
   private final String abbreviation;
-  private static final ThreadLocal<DecimalFormat> SIZE_UNIT_FORMAT =
-    new ThreadLocal<DecimalFormat>() {
-      @Override
-      protected DecimalFormat initialValue() {
-          DecimalFormat result = new DecimalFormat();
-          result.setMaximumFractionDigits(1);
-          result.setRoundingMode(RoundingMode.DOWN);
-          result.setGroupingUsed(false);
-          return result;
-      }
-    };
 
   private SizeUnit(int ordinal, String abbreviation) {
     this.ordinal = ordinal;
@@ -108,16 +96,6 @@ public enum SizeUnit {
     throw new NumberFormatException(String.format("%s is not a valid file size", input));
   }
 
-  public static String formatBytes(long bytes) {
-    SizeUnit[] sizeUnits = SizeUnit.values();
-    int sizeUnitsIndex = Math.min(
-        sizeUnits.length - 1,
-        (int) Math.max(0, (Math.log10(Math.abs(bytes)) / Math.log10(1024))));
-    SizeUnit sizeUnit = sizeUnits[sizeUnitsIndex];
-    double valueInUnits = bytes / Math.pow(1024, sizeUnitsIndex);
-    return SIZE_UNIT_FORMAT.get().format(valueInUnits) + sizeUnit.getAbbreviation();
-  }
-
   public long toBytes(double size) {
     return multiplyByByteOrderOfMagnitude(size, getOrdinal() - BYTES.getOrdinal());
   }
@@ -136,5 +114,31 @@ public enum SizeUnit {
 
   public long toTerabytes(double size) {
     return multiplyByByteOrderOfMagnitude(size, getOrdinal() - TERABYTES.getOrdinal());
+  }
+
+  public static Pair<Double, SizeUnit> getHumanReadableSize(double size, SizeUnit unit) {
+    if (size == 0) {
+      return new Pair<>(size, unit);
+    }
+    int ordinal = unit.getOrdinal();
+    double resultSize = size;
+    if (size > 1) {
+      while (size > 1 && ordinal < 4) {
+        size = size / 1024;
+        if (size > 1) {
+          ordinal++;
+          resultSize = size;
+        }
+      }
+    } else {
+      while (size < 1024 && ordinal > 0) {
+        size = size * 1024;
+        if (size < 1024) {
+          ordinal--;
+          resultSize = size;
+        }
+      }
+    }
+    return new Pair<>(resultSize, SizeUnit.values()[ordinal]);
   }
 }

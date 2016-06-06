@@ -26,7 +26,6 @@ import com.facebook.buck.step.TestExecutionContext;
 import com.facebook.buck.testutil.integration.TestDataHelper;
 import com.google.common.io.ByteSource;
 
-import org.easymock.EasyMock;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -48,7 +47,7 @@ public class XzStepTest {
   @Test
   public void testXzStepDefaultDestinationFile() {
     final Path sourceFile = Paths.get("/path/to/source.file");
-    XzStep step = new XzStep(sourceFile);
+    XzStep step = new XzStep(new ProjectFilesystem(tmp.getRoot().toPath()), sourceFile);
     assertEquals(Paths.get(sourceFile + ".xz"), step.getDestinationFile());
   }
 
@@ -59,21 +58,16 @@ public class XzStepTest {
     final File destinationFile = tmp.newFile("xzstep.data.xz");
 
     XzStep step = new XzStep(
+        new ProjectFilesystem(tmp.getRoot().toPath()),
         sourceFile,
         destinationFile.toPath(),
         /* compressionLevel -- for faster testing */ 1,
-        /* keep */ false,
+        /* keep */ true,
         XZ.CHECK_CRC32);
 
-    ProjectFilesystem fs = EasyMock.createMock(ProjectFilesystem.class);
-    fs.deleteFileAtPath(sourceFile);
-    EasyMock.replay(fs);
+    ExecutionContext context = TestExecutionContext.newInstance();
 
-    ExecutionContext context = TestExecutionContext.newBuilder()
-        .setProjectFilesystem(fs)
-        .build();
-
-    assertEquals(0, step.execute(context));
+    assertEquals(0, step.execute(context).getExitCode());
 
     ByteSource original = PathByteSource.asByteSource(sourceFile);
     ByteSource decompressed = new ByteSource() {
@@ -86,7 +80,5 @@ public class XzStepTest {
     assertTrue(
         "Decompressed file must be identical to original.",
         original.contentEquals(decompressed));
-
-    EasyMock.verify(fs);
   }
 }

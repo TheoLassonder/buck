@@ -39,7 +39,9 @@ from <code>.aidl</code> files.
   {param desc}
   The search path for import statements for the aidl command. 
   (This is the <code>-I</code> argument when invoking aidl 
-  from the command line.)
+  from the command line. For many apps it will be the base dir where all 
+  aidl files are, with project root as its parent, 
+  e.g. <code>app/src/main/aidl</code>. )
   {/param}
 {/call}
 
@@ -50,8 +52,6 @@ from <code>.aidl</code> files.
   A list of rules that must be built before this rule.  
   {/param}
 {/call}
-
-{call buck.visibility_arg /}
 
 {/param} // close args
 

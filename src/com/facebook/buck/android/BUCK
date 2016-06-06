@@ -4,36 +4,41 @@ EXCEPTION_SRCS = [
 java_library(
   name = 'exceptions',
   srcs = EXCEPTION_SRCS,
-  deps = [
-    '//third-party/java/jsr:jsr305',
-    '//src/com/facebook/buck/util:exceptions',
+  tests = [
+    '//test/com/facebook/buck/android:unit',
+    '//test/com/facebook/buck/android:integration',
   ],
+  autodeps = True,
   visibility = ['PUBLIC'],
 )
 
-PACKAGEABLE_SOURCES = [
+PACKAGEABLE_SRCS = [
   'AbstractAndroidPackageableCollection.java',
   'AndroidPackageable.java',
   'AndroidPackageableCollector.java',
 ]
 java_immutables_library(
   name = 'packageable',
-  srcs = PACKAGEABLE_SOURCES,
-  deps = [
-    '//third-party/java/guava:guava',
-    '//src/com/facebook/buck/cxx:platform',
-    '//src/com/facebook/buck/java:classhash',
-    '//src/com/facebook/buck/java:nativelinkable',
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/rules:build_rule',
-    '//src/com/facebook/buck/util:exceptions',
+  srcs = PACKAGEABLE_SRCS,
+  immutable_types = [
+    'AndroidPackageableCollection',
   ],
+  tests = [
+    '//test/com/facebook/buck/android:unit',
+    '//test/com/facebook/buck/android:aar-integration',
+    '//test/com/facebook/buck/android:binary-integration',
+    '//test/com/facebook/buck/android:build-config-integration',
+    '//test/com/facebook/buck/android:instrumentation-integration',
+    '//test/com/facebook/buck/android:integration',
+  ],
+  autodeps = True,
   visibility = ['PUBLIC'],
 )
 
 RULES_SRCS = [
   'AaptPackageResources.java',
   'AbstractAndroidGraphEnhancementResult.java',
+  'AbstractAndroidInstrumentationTestJVMArgs.java',
   'AndroidAar.java',
   'AndroidAarDescription.java',
   'AndroidBinaryGraphEnhancer.java',
@@ -50,17 +55,20 @@ RULES_SRCS = [
   'AndroidLibrary.java',
   'AndroidManifest.java',
   'AndroidManifestDescription.java',
+  'AndroidNativeLibsPackageableGraphEnhancer.java',
   'AndroidPrebuiltAar.java',
   'AndroidPrebuiltAarCollection.java',
   'AndroidPrebuiltAarDescription.java',
-  'AndroidPrebuiltAarGraphEnhancer.java',
   'AndroidResource.java',
   'AndroidResourceDescription.java',
   'AndroidResourceHelper.java',
+  'AndroidInstrumentationTest.java',
+  'AndroidInstrumentationTestDescription.java',
   'AndroidTransitiveDependencyGraph.java',
   'ApkGenrule.java',
   'ApkGenruleDescription.java',
   'AssembleDirectories.java',
+  'BootClasspathAppender.java',
   'ComputeExopackageDepsAbi.java',
   'CopyNativeLibraries.java',
   'DexProducedFromJavaLibrary.java',
@@ -85,58 +93,50 @@ RULES_SRCS = [
   'RobolectricTestDescription.java',
   'RobolectricTest.java',
   'RDotJava.java',
+  'StripLinkable.java',
+  'TrimUberRDotJava.java',
   'UnsortedAndroidResourceDeps.java',
+  'UnzipAar.java',
+  # This and the InstrumentationStep would make more sense in the steps
+  # library, but are added here to avoid circular dependencies.
+  'ApkInstallStep.java',
+  'InstrumentationStep.java',
+  'relinker/RelinkerRule.java',
+  'relinker/NativeRelinker.java',
+  'relinker/Symbols.java',
 ]
 java_immutables_library(
   name = 'rules',
   srcs = RULES_SRCS,
-  deps = [
-    ':exceptions',
-    ':packageable',
-    ':split_dex',
-    ':steps',
-    ':utils',
-    '//src/com/facebook/buck/android/aapt:aapt',
-    '//src/com/facebook/buck/cli:config',
-    '//src/com/facebook/buck/cxx:platform',
-    '//src/com/facebook/buck/cxx:rules',
-    '//src/com/facebook/buck/dalvik:dalvik',
-    '//src/com/facebook/buck/dalvik:steps',
-    '//src/com/facebook/buck/event:event',
-    '//src/com/facebook/buck/file:rules',
-    '//src/com/facebook/buck/graph:graph',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/java:classhash',
-    '//src/com/facebook/buck/java:nativelinkable',
-    '//src/com/facebook/buck/java:rules',
-    '//src/com/facebook/buck/java:steps',
-    '//src/com/facebook/buck/java:support',
-    '//src/com/facebook/buck/java/abi:protocol',
-    '//src/com/facebook/buck/java/classes:classes',
-    '//src/com/facebook/buck/log:api',
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/parser:rule_pattern',
-    '//src/com/facebook/buck/rules:build_rule',
-    '//src/com/facebook/buck/rules:rules',
-    '//src/com/facebook/buck/rules/macros:macros',
-    '//src/com/facebook/buck/shell:steps',
-    '//src/com/facebook/buck/shell:rules',
-    '//src/com/facebook/buck/step:step',
-    '//src/com/facebook/buck/step/fs:fs',
-    '//src/com/facebook/buck/util:constants',
-    '//src/com/facebook/buck/util:escaper',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/util:util',
-    '//src/com/facebook/buck/util/environment:platform',
-    '//src/com/facebook/buck/zip:steps',
-    '//third-party/java/aosp:aosp',
-    '//third-party/java/guava:guava',
-    '//third-party/java/infer-annotations:infer-annotations',
-    '//third-party/java/jackson:jackson-core',
-    '//third-party/java/jackson:jackson-databind',
-    '//third-party/java/jsr:jsr305',
+  immutable_types = [
+    'AndroidGraphEnhancementResult',
+    'AndroidInstrumentationTestJVMArgs',
+    'StrippedObjectDescription',
+  ],
+  tests = [
+    '//test/com/facebook/buck/android:unit',
+    '//test/com/facebook/buck/android:aar-integration',
+    '//test/com/facebook/buck/android:binary-integration',
+    '//test/com/facebook/buck/android:build-config-integration',
+    '//test/com/facebook/buck/android:instrumentation-integration',
+    '//test/com/facebook/buck/android:integration',
+  ],
+  autodeps = True,
+  resources = [
+    ':ddmlib.jar',
+    ':kxml2.jar',
   ],
   visibility = ['PUBLIC'],
+)
+
+export_file(
+  name = 'ddmlib.jar',
+  src = '//third-party/java/ddmlib:ddmlib',
+)
+
+export_file(
+  name = 'kxml2.jar',
+  src = '//third-party/java/kxml2:kxml2',
 )
 
 SPLIT_DEX_SRCS = [
@@ -147,13 +147,13 @@ SPLIT_DEX_SRCS = [
 java_library(
   name = 'split_dex',
   srcs = SPLIT_DEX_SRCS,
-  deps = [
-    '//third-party/java/guava:guava',
-    '//third-party/java/jsr:jsr305',
-    '//src/com/facebook/buck/dalvik:dalvik',
-    '//src/com/facebook/buck/util:util',
-    '//src/com/facebook/buck/rules:build_rule',
+  tests = [
+    '//test/com/facebook/buck/android:unit',
+    '//test/com/facebook/buck/android:binary-integration',
+    '//test/com/facebook/buck/android:instrumentation-integration',
+    '//test/com/facebook/buck/android:integration',
   ],
+  autodeps = True,
   visibility = [
     'PUBLIC',
   ],
@@ -161,35 +161,17 @@ java_library(
 
 HELPERS_SRCS = [
   'AdbHelper.java',
-  'AdbOptions.java',
   'ExopackageInstaller.java',
-  'TargetDeviceOptions.java',
 ]
 
 java_library(
   name = 'helpers',
   srcs = HELPERS_SRCS,
-  deps = [
-    ':exceptions',
-    ':steps',
-    ':utils',
-    '//src/com/facebook/buck/android/agent/util:util',
-    '//src/com/facebook/buck/rules:build_rule',
-    '//src/com/facebook/buck/step:step',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/util:io',
-    '//src/com/facebook/buck/util:util',
-    '//src/com/facebook/buck/event:event',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/log:api',
-    '//src/com/facebook/buck/log:log',
-    '//src/com/facebook/buck/rules:rules',
-    '//src/com/facebook/buck/util/concurrent:concurrent',
-    '//third-party/java/ddmlib:ddmlib',
-    '//third-party/java/guava:guava',
-    '//third-party/java/jsr:jsr305',
+  tests = [
+    '//test/com/facebook/buck/android:unit',
+    '//test/com/facebook/buck/android:integration',
   ],
+  autodeps = True,
   visibility = ['PUBLIC'],
 )
 
@@ -204,60 +186,26 @@ UTILS_SRCS = [
 java_library(
   name = 'utils',
   srcs = UTILS_SRCS,
-  deps = [
-    ':exceptions',
-    '//src/com/facebook/buck/util:util',
-    '//src/com/facebook/buck/util/environment:platform',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/io:io',  # While we move classes
-    '//third-party/java/guava:guava',
+  tests = [
+    '//test/com/facebook/buck/android:unit',
+    '//test/com/facebook/buck/android:integration',
   ],
+  autodeps = True,
   visibility = ['PUBLIC'],
 )
 
 java_immutables_library(
   name = 'steps',
   srcs = glob(['*.java'],
-              excludes = EXCEPTION_SRCS + PACKAGEABLE_SOURCES + RULES_SRCS + SPLIT_DEX_SRCS +
-	                 UTILS_SRCS + HELPERS_SRCS),
-  deps = [
-    ':exceptions',
-    ':split_dex',
-    ':utils',
-    '//src/com/facebook/buck/cxx:platform',
-    '//src/com/facebook/buck/dalvik/firstorder:firstorder',
-    '//src/com/facebook/buck/dalvik:dalvik',
-    '//src/com/facebook/buck/event:event',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/java:classhash',
-    '//src/com/facebook/buck/java/classes:classes',
-    '//src/com/facebook/buck/log:api',
-    '//src/com/facebook/buck/log:log',  # This should not be required.
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/rules:build_rule',
-    '//src/com/facebook/buck/shell:steps',
-    '//src/com/facebook/buck/step:step',
-    '//src/com/facebook/buck/step/fs:fs',
-    '//src/com/facebook/buck/util:escaper',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/util:io',
-    '//src/com/facebook/buck/util:util',
-    '//src/com/facebook/buck/util/concurrent:concurrent',
-    '//src/com/facebook/buck/util/environment:platform',
-    '//src/com/facebook/buck/zip:steps',
-    '//src/com/facebook/buck/zip:stream',
-    '//third-party/java/aosp:aosp',
-    '//third-party/java/asm:asm',
-    '//third-party/java/dx-from-kitkat:dx',
-    '//third-party/java/guava:guava',
-    '//third-party/java/jackson:jackson-core',
-    '//third-party/java/jackson:jackson-databind',
-    '//third-party/java/jsr:jsr305',
-    '//third-party/java/android:sdklib',
+              excludes = EXCEPTION_SRCS + PACKAGEABLE_SRCS + RULES_SRCS +
+                  SPLIT_DEX_SRCS + UTILS_SRCS + HELPERS_SRCS),
+  immutable_types = [
+    'NdkCxxPlatform',
   ],
-  exported_deps = [
-    '//src/com/facebook/buck/shell:steps',
-    '//src/com/facebook/buck/step:step',
+  tests = [
+    '//test/com/facebook/buck/android:steps',
+    '//test/com/facebook/buck/android:integration',
   ],
+  autodeps = True,
   visibility = ['PUBLIC'],
 )

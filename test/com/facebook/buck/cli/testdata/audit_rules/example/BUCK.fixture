@@ -1,0 +1,30 @@
+def my_genrule(
+    name,
+    out,
+    visibility = [],
+  ):
+  genrule(
+    name = name,
+    srcs = [
+      'foo.txt',
+      'bar.txt',
+      '//fake:rule',
+    ],
+    bash = 'cat $SRCS > $OUT',
+    out = out,
+    visibility = visibility,
+  )
+
+my_genrule(
+  name = 'example',
+  out = 'baz.txt',
+  visibility = [
+    'PUBLIC',
+  ],
+)
+
+keystore(
+  name = 'debug_keystore',
+  store = 'debug.keystore',
+  properties = 'debug.keystore.properties',
+)

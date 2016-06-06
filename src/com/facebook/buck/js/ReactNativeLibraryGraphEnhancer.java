@@ -23,16 +23,14 @@ import com.facebook.buck.model.ImmutableFlavor;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
-import com.facebook.buck.rules.PathSourcePath;
-import com.facebook.buck.rules.Sha1HashCode;
+import com.facebook.buck.rules.BuildTargetSourcePath;
+import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.Tool;
 import com.google.common.base.Optional;
-import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedSet;
-
-import java.nio.file.Path;
 
 public class ReactNativeLibraryGraphEnhancer {
 
@@ -58,14 +56,14 @@ public class ReactNativeLibraryGraphEnhancer {
     BuildTarget depsFinderTarget = BuildTarget.builder(originalBuildTarget)
         .addFlavors(REACT_NATIVE_DEPS_FLAVOR)
         .build();
-    BuildRuleParams paramsForDepsFinder = params.copyWithBuildTarget(depsFinderTarget);
     ReactNativeDeps depsFinder = new ReactNativeDeps(
-        paramsForDepsFinder,
+        params.copyWithBuildTarget(depsFinderTarget),
         sourcePathResolver,
-        buckConfig.getPackager(),
+        buckConfig.getPackager(resolver),
         args.srcs.get(),
         args.entryPath,
-        platform);
+        platform,
+        args.packagerFlags);
     return resolver.addToIndex(depsFinder);
   }
 
@@ -78,21 +76,27 @@ public class ReactNativeLibraryGraphEnhancer {
 
     SourcePathResolver sourcePathResolver = new SourcePathResolver(resolver);
 
+    Tool jsPackager = buckConfig.getPackager(resolver);
     BuildTarget originalBuildTarget = params.getBuildTarget();
-    BuildRuleParams paramsForBundle =
-        params.copyWithBuildTarget(
+    BuildRuleParams paramsForBundle = params
+        .copyWithBuildTarget(
             BuildTarget.builder(originalBuildTarget)
                 .addFlavors(REACT_NATIVE_BUNDLE_FLAVOR)
                 .build())
-            .copyWithExtraDeps(
-                Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of(reactNativeDeps)));
+        .appendExtraDeps(
+            ImmutableList.<BuildRule>builder()
+                .add(reactNativeDeps)
+                .addAll(jsPackager.getDeps(sourcePathResolver))
+                .build());
     ReactNativeBundle bundle = new ReactNativeBundle(
         paramsForBundle,
         sourcePathResolver,
         args.entryPath,
+        ReactNativeFlavors.useUnbundling(originalBuildTarget),
         ReactNativeFlavors.isDevMode(originalBuildTarget),
         args.bundleName,
-        buckConfig.getPackager(),
+        args.packagerFlags,
+        jsPackager,
         ReactNativePlatform.ANDROID,
         reactNativeDeps);
     resolver.addToIndex(bundle);
@@ -108,25 +112,22 @@ public class ReactNativeLibraryGraphEnhancer {
               .copyWithExtraDeps(Suppliers.ofInstance(
                       ImmutableSortedSet.<BuildRule>of(bundle, reactNativeDeps)));
 
+      SourcePath resources = new BuildTargetSourcePath(
+          bundle.getBuildTarget(),
+          bundle.getResources());
       BuildRule resource = new AndroidResource(
-              paramsForResource,
-              sourcePathResolver,
-              /* deps */ ImmutableSortedSet.<BuildRule>of(),
-              new PathSourcePath(params.getProjectFilesystem(), bundle.getResources()),
-              /* resSrcs */ ImmutableSortedSet.<Path>of(),
-              args.rDotJavaPackage.get(),
-              /* assets */ null,
-              /* assetsSrcs */ ImmutableSortedSet.<Path>of(),
-              /* manifest */ null,
-              /* hasWhitelistedStrings */ false,
-              Optional.of(
-                  Suppliers.memoize(
-                      new Supplier<Sha1HashCode>() {
-                        @Override
-                        public Sha1HashCode get() {
-                          return reactNativeDeps.getInputsHash();
-                        }
-                      })));
+          paramsForResource,
+          sourcePathResolver,
+          /* deps */ ImmutableSortedSet.<BuildRule>of(),
+          resources,
+          /* resSrcs */ ImmutableSortedSet.<SourcePath>of(),
+          Optional.of(resources),
+          args.rDotJavaPackage.get(),
+          /* assets */ null,
+          /* assetsSrcs */ ImmutableSortedSet.<SourcePath>of(),
+          Optional.<SourcePath>absent(),
+          /* manifest */ null,
+          /* hasWhitelistedStrings */ false);
       resolver.addToIndex(resource);
       extraDeps.add(resource);
     }
@@ -144,13 +145,21 @@ public class ReactNativeLibraryGraphEnhancer {
     ReactNativeDeps reactNativeDeps =
         createReactNativeDeps(params, resolver, args, ReactNativePlatform.IOS);
 
+    SourcePathResolver sourcePathResolver = new SourcePathResolver(resolver);
+    Tool jsPackager = buckConfig.getPackager(resolver);
     return new ReactNativeBundle(
-        params.appendExtraDeps(ImmutableList.of((BuildRule) reactNativeDeps)),
-        new SourcePathResolver(resolver),
+        params.appendExtraDeps(
+            ImmutableList.<BuildRule>builder()
+                .add(reactNativeDeps)
+                .addAll(jsPackager.getDeps(sourcePathResolver))
+                .build()),
+        sourcePathResolver,
         args.entryPath,
+        ReactNativeFlavors.useUnbundling(params.getBuildTarget()),
         ReactNativeFlavors.isDevMode(params.getBuildTarget()),
         args.bundleName,
-        buckConfig.getPackager(),
+        args.packagerFlags,
+        jsPackager,
         ReactNativePlatform.IOS,
         reactNativeDeps);
   }

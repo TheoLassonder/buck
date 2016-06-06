@@ -16,9 +16,11 @@
 
 package com.facebook.buck.rules;
 
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedSet;
 
@@ -33,16 +35,13 @@ public class FakeBuildRule extends AbstractBuildRule implements BuildRule {
   @Nullable
   private Path outputFile;
 
-  @Nullable
-  private RuleKey ruleKey;
-
   public FakeBuildRule(
       BuildTarget target,
       SourcePathResolver resolver,
       ImmutableSortedSet<BuildRule> deps) {
     this(
         new FakeBuildRuleParamsBuilder(target)
-            .setDeps(deps)
+            .setDeclaredDeps(deps)
             .build(), resolver);
   }
 
@@ -54,15 +53,20 @@ public class FakeBuildRule extends AbstractBuildRule implements BuildRule {
     this(new FakeBuildRuleParamsBuilder(buildTarget).build(), resolver);
   }
 
-  public FakeBuildRule(BuildTarget target, SourcePathResolver resolver, BuildRule... deps) {
+  public FakeBuildRule(
+      BuildTarget target,
+      ProjectFilesystem filesystem,
+      SourcePathResolver resolver,
+      BuildRule... deps) {
     this(
         new FakeBuildRuleParamsBuilder(target)
-            .setDeps(ImmutableSortedSet.copyOf(deps))
+            .setProjectFilesystem(filesystem)
+            .setDeclaredDeps(ImmutableSortedSet.copyOf(deps))
             .build(), resolver);
   }
 
   public FakeBuildRule(String target, SourcePathResolver resolver, BuildRule... deps) {
-    this(BuildTargetFactory.newInstance(target), resolver, deps);
+    this(BuildTargetFactory.newInstance(target), new FakeProjectFilesystem(), resolver, deps);
   }
 
   @Override
@@ -70,27 +74,14 @@ public class FakeBuildRule extends AbstractBuildRule implements BuildRule {
     return outputFile;
   }
 
-  public void setOutputFile(String outputFile) {
-    this.outputFile = Paths.get(outputFile);
-  }
-
-  public void setRuleKey(RuleKey ruleKey) {
-    this.ruleKey = ruleKey;
-  }
-
-  @Override
-  public RuleKey getRuleKey() {
-    if (ruleKey != null) {
-      return ruleKey;
-    } else {
-      throw new IllegalStateException("This method should not be called");
-    }
+  public void setOutputFile(@Nullable String outputFile) {
+    this.outputFile = outputFile == null ? null : Paths.get(outputFile);
   }
 
   @Override
   public ImmutableList<Step> getBuildSteps(
       BuildContext context,
       BuildableContext buildableContext) {
-    throw new UnsupportedOperationException();
+    return ImmutableList.of();
   }
 }

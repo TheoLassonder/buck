@@ -21,7 +21,9 @@ import static org.junit.Assert.assertTrue;
 
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetPattern;
+import com.facebook.buck.rules.coercer.DefaultTypeCoercerFactory;
 import com.facebook.buck.util.HumanReadableException;
+import com.facebook.buck.util.ObjectMappers;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
 
@@ -38,7 +40,9 @@ public class BuckPyFunctionTest {
 
   @Before
   public void setUpMarshaller() {
-    buckPyFunction = new BuckPyFunction(new ConstructorArgMarshaller());
+    buckPyFunction =
+        new BuckPyFunction(new ConstructorArgMarshaller(new DefaultTypeCoercerFactory(
+            ObjectMappers.newDefaultInstance())));
   }
 
   @Test

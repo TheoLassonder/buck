@@ -16,22 +16,27 @@
 
 package com.facebook.buck.cxx;
 
-import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
+import com.facebook.buck.rules.ExternalTestRunnerRule;
+import com.facebook.buck.rules.ExternalTestRunnerTestSpec;
 import com.facebook.buck.rules.HasRuntimeDeps;
 import com.facebook.buck.rules.Label;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.Tool;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.test.TestResultSummary;
+import com.facebook.buck.test.TestRunningOptions;
 import com.facebook.buck.test.result.type.ResultType;
 import com.facebook.buck.util.XmlDomParser;
 import com.google.common.base.Charsets;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Lists;
@@ -51,8 +56,10 @@ import java.util.Stack;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.annotation.Nullable;
+
 @SuppressWarnings("PMD.TestClassWithoutTestCases")
-public class CxxBoostTest extends CxxTest implements HasRuntimeDeps {
+public class CxxBoostTest extends CxxTest implements HasRuntimeDeps, ExternalTestRunnerRule {
 
   private static final Pattern SUITE_START = Pattern.compile("^Entering test suite \"(.*)\"$");
   private static final Pattern SUITE_END = Pattern.compile("^Leaving test suite \"(.*)\"$");
@@ -63,37 +70,57 @@ public class CxxBoostTest extends CxxTest implements HasRuntimeDeps {
 
   private static final Pattern ERROR = Pattern.compile("^.*\\(\\d+\\): error .*");
 
-  private final SourcePath binary;
-  private final ImmutableSortedSet<BuildRule> additionalDeps;
+  private final BuildRule binary;
+  private final Tool executable;
 
   public CxxBoostTest(
       BuildRuleParams params,
       SourcePathResolver resolver,
-      SourcePath binary,
-      ImmutableSortedSet<BuildRule> additionalDeps,
+      BuildRule binary,
+      Tool executable,
+      Supplier<ImmutableMap<String, String>> env,
+      Supplier<ImmutableList<String>> args,
+      ImmutableSortedSet<SourcePath> resources,
+      Supplier<ImmutableSortedSet<BuildRule>> additionalDeps,
       ImmutableSet<Label> labels,
       ImmutableSet<String> contacts,
-      ImmutableSet<BuildRule> sourceUnderTest) {
-    super(params, resolver, labels, contacts, sourceUnderTest);
+      ImmutableSet<BuildRule> sourceUnderTest,
+      boolean runTestSeparately,
+      Optional<Long> testRuleTimeoutMs) {
+    super(
+        params,
+        resolver,
+        executable.getEnvironment(resolver),
+        env,
+        args,
+        resources,
+        additionalDeps,
+        labels,
+        contacts,
+        sourceUnderTest,
+        runTestSeparately,
+        testRuleTimeoutMs);
     this.binary = binary;
-    this.additionalDeps = additionalDeps;
+    this.executable = executable;
+  }
+
+  @Nullable
+  @Override
+  public Path getPathToOutput() {
+    return binary.getPathToOutput();
   }
 
   @Override
-  protected ImmutableList<String> getShellCommand(
-      ExecutionContext context,
-      Path output) {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
-    String resolvedBinary = filesystem.resolve(getResolver().getPath(binary)).toString();
-    String resolvedOutput = filesystem.resolve(output).toString();
-    return ImmutableList.of(
-        resolvedBinary,
-        "--log_format=hrf",
-        "--log_level=test_suite",
-        "--report_format=xml",
-        "--report_level=detailed",
-        "--result_code=no",
-        "--report_sink=" + resolvedOutput);
+  protected ImmutableList<String> getShellCommand(Path output) {
+    return ImmutableList.<String>builder()
+        .addAll(executable.getCommandPrefix(getResolver()))
+        .add("--log_format=hrf")
+        .add("--log_level=test_suite")
+        .add("--report_format=xml")
+        .add("--report_level=detailed")
+        .add("--result_code=no")
+        .add("--report_sink=" + getProjectFilesystem().resolve(output))
+        .build();
   }
 
   private void visitTestSuite(
@@ -148,7 +175,6 @@ public class CxxBoostTest extends CxxTest implements HasRuntimeDeps {
 
   @Override
   protected ImmutableList<TestResultSummary> parseResults(
-      ExecutionContext context,
       Path exitCode,
       Path output,
       Path results)
@@ -195,7 +221,7 @@ public class CxxBoostTest extends CxxTest implements HasRuntimeDeps {
     }
 
     // Parse the XML result file for the actual test result summaries.
-    Document doc = XmlDomParser.parse(results.toFile());
+    Document doc = XmlDomParser.parse(results);
     Node testResult = doc.getElementsByTagName("TestResult").item(0);
     Node testSuite = testResult.getFirstChild();
     visitTestSuite(summariesBuilder, messages, stdout, times, "", testSuite);
@@ -208,8 +234,23 @@ public class CxxBoostTest extends CxxTest implements HasRuntimeDeps {
   @Override
   public ImmutableSortedSet<BuildRule> getRuntimeDeps() {
     return ImmutableSortedSet.<BuildRule>naturalOrder()
-        .addAll(getResolver().getRule(binary).asSet())
-        .addAll(additionalDeps)
+        .addAll(super.getRuntimeDeps())
+        .addAll(executable.getDeps(getResolver()))
+        .build();
+  }
+
+  @Override
+  public ExternalTestRunnerTestSpec getExternalTestRunnerSpec(
+      ExecutionContext executionContext,
+      TestRunningOptions testRunningOptions) {
+    return ExternalTestRunnerTestSpec.builder()
+        .setTarget(getBuildTarget())
+        .setType("boost")
+        .addAllCommand(executable.getCommandPrefix(getResolver()))
+        .addAllCommand(getArgs().get())
+        .putAllEnv(getEnv().get())
+        .addAllLabels(getLabels())
+        .addAllContacts(getContacts())
         .build();
   }
 

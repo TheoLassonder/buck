@@ -17,6 +17,9 @@
 package com.facebook.buck.cli;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
+
+import static org.hamcrest.Matchers.containsString;
 
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
@@ -42,7 +45,9 @@ public class AuditDependenciesCommandIntegrationTest {
     // Print all of the inputs to the rule.
     ProcessResult result = workspace.runBuckCommand("audit", "dependencies");
     result.assertFailure();
-    assertEquals("BUILD FAILED: Must specify at least one build target.\n", result.getStderr());
+    assertThat(
+        result.getStderr(),
+        containsString("Must specify at least one build target.\n"));
   }
 
   @Test
@@ -190,5 +195,69 @@ public class AuditDependenciesCommandIntegrationTest {
     assertEquals(
         workspace.getFileContents("stdout-one-two-three-transitive.json"),
         result.getStdout());
+  }
+
+  @Test
+  public void testOutputWithoutDuplicates() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "audit_dependencies", tmp);
+    workspace.setUp();
+
+    // Print all of the inputs to the rule.
+    ProcessResult result = workspace.runBuckCommand(
+        "audit",
+        "dependencies",
+        "//example:two",
+        "//example:three");
+    result.assertSuccess();
+    assertEquals(workspace.getFileContents("stdout-two-three"), result.getStdout());
+  }
+
+  @Test
+  public void testTransitiveDependenciesMultipleInputs() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "audit_dependencies", tmp);
+    workspace.setUp();
+
+    // Print all of the inputs to the rule.
+    ProcessResult result = workspace.runBuckCommand(
+        "audit",
+        "dependencies",
+        "--transitive",
+        "//example:two",
+        "//example:three");
+    result.assertSuccess();
+    assertEquals(workspace.getFileContents("stdout-two-three-transitive"), result.getStdout());
+  }
+
+  @Test
+  public void testDirectDependenciesIncludesExtraDependencies() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "audit_dependencies", tmp);
+    workspace.setUp();
+
+    // Print all of the inputs to the rule.
+    ProcessResult result = workspace.runBuckCommand(
+        "audit",
+        "dependencies",
+        "//example:app-target");
+    result.assertSuccess();
+    assertEquals(workspace.getFileContents("stdout-app-target-extra-deps"), result.getStdout());
+  }
+
+  @Test
+  public void testTransitiveDependenciesIncludesExtraDependencies() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "audit_dependencies", tmp);
+    workspace.setUp();
+
+    // Print all of the inputs to the rule.
+    ProcessResult result = workspace.runBuckCommand(
+        "audit",
+        "dependencies",
+        "--transitive",
+        "//example:app-library");
+    result.assertSuccess();
+    assertEquals(workspace.getFileContents("stdout-app-library-transitive"), result.getStdout());
   }
 }

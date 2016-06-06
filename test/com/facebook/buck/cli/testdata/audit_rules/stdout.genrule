@@ -5,13 +5,16 @@ genrule(
   bash = "cat $SRCS > $OUT",
   cmd = None,
   cmdExe = None,
+  executable = None,
+  licenses = [
+  ],
   out = "baz.txt",
   srcs = [
     "foo.txt",
     "bar.txt",
-  ],
-  deps = [
     "//fake:rule",
+  ],
+  tests = [
   ],
   visibility = [
     "PUBLIC",

@@ -16,12 +16,14 @@
 
 package com.facebook.buck.android;
 
-import static org.easymock.EasyMock.expect;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 
+import com.facebook.buck.android.StringResources.Gender;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
+import com.facebook.buck.step.TestExecutionContext;
+import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.facebook.buck.testutil.integration.TestDataHelper;
 import com.facebook.buck.util.XmlDomParser;
 import com.google.common.base.Function;
@@ -44,9 +46,11 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.attribute.FileAttribute;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -159,56 +163,101 @@ public class CompileStringsStepTest extends EasyMockSupport {
   @Test
   public void testScrapeStringNodes() throws IOException, SAXException {
     String xmlInput =
-          "<string name='name1'>Value1</string>" +
-          "<string name='name2'>Value with space</string>" +
-          "<string name='name3'>Value with \"quotes\"</string>" +
-          "<string name='name4'></string>" +
-          "<string name='name3'>IGNORE</string>" + // ignored because "name3" already found
-          "<string name='name5'>Value with %1$s</string>";
+          "<string name='name1' gender='unknown'>Value1</string>" +
+          "<string name='name1_f1gender' gender='female'>Value1_f1</string>" +
+          "<string name='name2' gender='unknown'>Value with space</string>" +
+          "<string name='name2_m2gender' gender='male'>Value with space m2</string>" +
+          "<string name='name3' gender='unknown'>Value with \"quotes\"</string>" +
+          "<string name='name4' gender='unknown'></string>" +
+          // ignored because "name3" already found
+          "<string name='name3' gender='unknown'>IGNORE</string>" +
+          "<string name='name5' gender='unknown'>Value with %1$s</string>";
     NodeList stringNodes = XmlDomParser.parse(createResourcesXml(xmlInput))
         .getElementsByTagName("string");
 
-    Map<Integer, String> stringsMap = Maps.newHashMap();
+    EnumMap<Gender, String> map1 = Maps.newEnumMap(Gender.class);
+    map1.put(Gender.unknown, "Value1");
+    map1.put(Gender.female, "Value1_f1");
+    EnumMap<Gender, String> map2 = Maps.newEnumMap(Gender.class);
+    map2.put(Gender.unknown, "Value with space");
+    map2.put(Gender.male, "Value with space m2");
+    EnumMap<Gender, String> map3 = Maps.newEnumMap(Gender.class);
+    map3.put(Gender.unknown, "Value with \"quotes\"");
+    EnumMap<Gender, String> map4 = Maps.newEnumMap(Gender.class);
+    map4.put(Gender.unknown, "");
+    EnumMap<Gender, String> map5 = Maps.newEnumMap(Gender.class);
+    map5.put(Gender.unknown, "Value with %1$s");
+
+    Map<Integer, EnumMap<Gender, String>> stringsMap = Maps.newHashMap();
     CompileStringsStep step = createNonExecutingStep();
-    step.addResourceNameToIdMap(ImmutableMap.of(
-        "name1", 1,
-        "name2", 2,
-        "name3", 3,
-        "name4", 4,
-        "name5", 5));
+    step.addStringResourceNameToIdMap(ImmutableMap.of(
+            "name1", 1,
+            "name2", 2,
+            "name3", 3,
+            "name4", 4,
+            "name5", 5));
     step.scrapeStringNodes(stringNodes, stringsMap);
 
     assertEquals(
         "Incorrect map of resource id to string values.",
         ImmutableMap.of(
-            1, "Value1",
-            2, "Value with space",
-            3, "Value with \"quotes\"",
-            4, "",
-            5, "Value with %1$s"),
-        stringsMap);
+            1, map1,
+            2, map2,
+            3, map3,
+            4, map4,
+            5, map5),
+            stringsMap);
   }
 
   @Test
   public void testScrapePluralsNodes() throws IOException, SAXException {
     String xmlInput =
-          "<plurals name='name1'>" +
+          "<plurals name='name1' gender='unknown'>" +
             "<item quantity='zero'>%d people saw this</item>" +
             "<item quantity='one'>%d person saw this</item>" +
             "<item quantity='many'>%d people saw this</item>" +
           "</plurals>" +
-          "<plurals name='name2'>" +
+          "<plurals name='name1_f1gender' gender='female'>" +
+            "<item quantity='zero'>%d people saw this f1</item>" +
+            "<item quantity='one'>%d person saw this f1</item>" +
+            "<item quantity='many'>%d people saw this f1</item>" +
+          "</plurals>" +
+          "<plurals name='name2' gender='unknown'>" +
             "<item quantity='zero'>%d people ate this</item>" +
             "<item quantity='many'>%d people ate this</item>" +
           "</plurals>" +
-          "<plurals name='name3'></plurals>" + // Test empty array.
-          "<plurals name='name2'></plurals>"; // Ignored since "name2" already found.
+          "<plurals name='name2_m2gender' gender='male'>" +
+            "<item quantity='zero'>%d people ate this m2</item>" +
+            "<item quantity='many'>%d people ate this m2</item>" +
+          "</plurals>" +
+          "<plurals name='name3' gender='unknown'></plurals>" + // Test empty array.
+          // Ignored since "name2" already found.
+          "<plurals name='name2' gender='unknown'></plurals>";
     NodeList pluralsNodes = XmlDomParser.parse(createResourcesXml(xmlInput))
         .getElementsByTagName("plurals");
 
-    Map<Integer, ImmutableMap<String, String>> pluralsMap = Maps.newHashMap();
+    EnumMap<Gender, ImmutableMap<String, String>> map1 = Maps.newEnumMap(Gender.class);
+    map1.put(Gender.unknown, ImmutableMap.of(
+            "zero", "%d people saw this",
+            "one", "%d person saw this",
+            "many", "%d people saw this"));
+    map1.put(Gender.female, ImmutableMap.of(
+            "zero", "%d people saw this f1",
+            "one", "%d person saw this f1",
+            "many", "%d people saw this f1"));
+    EnumMap<Gender, ImmutableMap<String, String>> map2 = Maps.newEnumMap(Gender.class);
+    map2.put(Gender.unknown, ImmutableMap.of(
+            "zero", "%d people ate this",
+            "many", "%d people ate this"));
+    map2.put(Gender.male, ImmutableMap.of(
+            "zero", "%d people ate this m2",
+            "many", "%d people ate this m2"));
+    EnumMap<Gender, ImmutableMap<String, String>> map3 = Maps.newEnumMap(Gender.class);
+    map3.put(Gender.unknown, ImmutableMap.<String, String>of());
+
+    Map<Integer, EnumMap<Gender, ImmutableMap<String, String>>> pluralsMap = Maps.newHashMap();
     CompileStringsStep step = createNonExecutingStep();
-    step.addResourceNameToIdMap(ImmutableMap.of(
+    step.addPluralsResourceNameToIdMap(ImmutableMap.of(
         "name1", 1,
         "name2", 2,
         "name3", 3));
@@ -217,14 +266,9 @@ public class CompileStringsStepTest extends EasyMockSupport {
     assertEquals(
         "Incorrect map of resource id to plural values.",
         ImmutableMap.of(
-            1, ImmutableMap.of(
-                "zero", "%d people saw this",
-                "one", "%d person saw this",
-                "many", "%d people saw this"),
-            2, ImmutableMap.of(
-                "zero", "%d people ate this",
-                "many", "%d people ate this"),
-            3, ImmutableMap.of()),
+            1, map1,
+            2, map2,
+            3, map3),
         pluralsMap
     );
   }
@@ -232,24 +276,37 @@ public class CompileStringsStepTest extends EasyMockSupport {
   @Test
   public void testScrapeStringArrayNodes() throws IOException, SAXException {
     String xmlInput =
-          "<string-array name='name1'>" +
+          "<string-array name='name1' gender='unknown'>" +
             "<item>Value12</item>" +
             "<item>Value11</item>" +
           "</string-array>" +
-          "<string-array name='name2'>" +
+          "<string-array name='name1_f1gender' gender='female'>" +
+            "<item>Value12 f1</item>" +
+            "<item>Value11 f1</item>" +
+           "</string-array>" +
+          "<string-array name='name2' gender='unknown'>" +
             "<item>Value21</item>" +
           "</string-array>" +
-          "<string-array name='name3'></string-array>" +
-          "<string-array name='name2'>" +
+          "<string-array name='name2_m2gender' gender='male'>" +
+            "<item>Value21 m2</item>" +
+          "</string-array>" +
+          "<string-array name='name3' gender='unknown'></string-array>" +
+          "<string-array name='name2' gender='unknown'>" +
             "<item>ignored</item>" + // Ignored because "name2" already found above.
           "</string-array>";
 
+    EnumMap<Gender, List<String>> map1 = Maps.newEnumMap(Gender.class);
+    map1.put(Gender.unknown, ImmutableList.of("Value12", "Value11"));
+    map1.put(Gender.female, ImmutableList.of("Value12 f1", "Value11 f1"));
+    EnumMap<Gender, List<String>> map2 = Maps.newEnumMap(Gender.class);
+    map2.put(Gender.unknown, ImmutableList.of("Value21"));
+    map2.put(Gender.male, ImmutableList.of("Value21 m2"));
     NodeList arrayNodes = XmlDomParser.parse(createResourcesXml(xmlInput))
         .getElementsByTagName("string-array");
 
-    Map<Integer, ImmutableList<String>> arraysMap = Maps.newTreeMap();
+    Map<Integer, EnumMap<Gender, ImmutableList<String>>> arraysMap = Maps.newTreeMap();
     CompileStringsStep step = createNonExecutingStep();
-    step.addResourceNameToIdMap(ImmutableMap.of(
+    step.addArrayResourceNameToIdMap(ImmutableMap.of(
         "name1", 1,
         "name2", 2,
         "name3", 3));
@@ -257,14 +314,80 @@ public class CompileStringsStepTest extends EasyMockSupport {
 
     assertEquals(
         "Incorrect map of resource id to string arrays.",
-        ImmutableMap.of(
-            1, ImmutableList.of("Value12", "Value11"),
-            2, ImmutableList.of("Value21")),
+        ImmutableMap.of(1, map1, 2, map2) ,
+        arraysMap);
+  }
+
+  @Test
+  public void testScrapeNodesWithSameName() throws IOException, SAXException {
+    String xmlInput =
+        "<string name='name1' gender='unknown'>1</string>" +
+        "<string name='name1_f1gender' gender='female'>1 f1</string>" +
+        "<plurals name='name1' gender='unknown'>" +
+          "<item quantity='one'>2</item>" +
+          "<item quantity='other'>3</item>" +
+        "</plurals>" +
+        "<plurals name='name1_f1gender' gender='female'>" +
+          "<item quantity='one'>2 f1</item>" +
+          "<item quantity='other'>3 f1</item>" +
+          "</plurals>" +
+        "<string-array name='name1' gender='unknown'>" +
+          "<item>4</item>" +
+          "<item>5</item>" +
+        "</string-array>" +
+        "<string-array name='name1_f1gender' gender='female'>" +
+          "<item>4 f1</item>" +
+          "<item>5 f1</item>" +
+          "</string-array>";
+
+
+    NodeList stringNodes = XmlDomParser.parse(createResourcesXml(xmlInput))
+        .getElementsByTagName("string");
+    NodeList pluralsNodes = XmlDomParser.parse(createResourcesXml(xmlInput))
+        .getElementsByTagName("plurals");
+    NodeList arrayNodes = XmlDomParser.parse(createResourcesXml(xmlInput))
+        .getElementsByTagName("string-array");
+
+    Map<Integer, EnumMap<Gender, String>> stringMap = Maps.newTreeMap();
+    Map<Integer, EnumMap<Gender, ImmutableMap<String, String>>> pluralsMap = Maps.newTreeMap();
+    Map<Integer, EnumMap<Gender, ImmutableList<String>>> arraysMap = Maps.newTreeMap();
+
+    EnumMap<Gender, String> map1 = Maps.newEnumMap(Gender.class);
+    map1.put(Gender.unknown, "1");
+    map1.put(Gender.female, "1 f1");
+    EnumMap<Gender, Map<String, String>> map2 = Maps.newEnumMap(Gender.class);
+    map2.put(Gender.unknown, ImmutableMap.of("one", "2", "other", "3"));
+    map2.put(Gender.female, ImmutableMap.of("one", "2 f1", "other", "3 f1"));
+    EnumMap<Gender, ImmutableList<String>> map3 = Maps.newEnumMap(Gender.class);
+    map3.put(Gender.unknown, ImmutableList.of("4", "5"));
+    map3.put(Gender.female, ImmutableList.of("4 f1", "5 f1"));
+
+    CompileStringsStep step = createNonExecutingStep();
+    step.addStringResourceNameToIdMap(ImmutableMap.of("name1", 1));
+    step.addPluralsResourceNameToIdMap(ImmutableMap.of("name1", 2));
+    step.addArrayResourceNameToIdMap(ImmutableMap.of("name1", 3));
+
+    step.scrapeStringNodes(stringNodes, stringMap);
+    step.scrapePluralsNodes(pluralsNodes, pluralsMap);
+    step.scrapeStringArrayNodes(arrayNodes, arraysMap);
+
+    assertEquals(
+        "Incorrect map of resource id to string.",
+        ImmutableMap.of(1, map1),
+        stringMap);
+    assertEquals(
+        "Incorrect map of resource id to plurals.",
+        ImmutableMap.of(2, map2),
+        pluralsMap);
+    assertEquals(
+        "Incorrect map of resource id to string arrays.",
+        ImmutableMap.of(3, map3),
         arraysMap);
   }
 
   private CompileStringsStep createNonExecutingStep() {
     return new CompileStringsStep(
+        new FakeProjectFilesystem(),
         ImmutableList.<Path>of(),
         createMock(Path.class),
         new Function<String, Path>() {
@@ -284,9 +407,8 @@ public class CompileStringsStepTest extends EasyMockSupport {
     final Path destinationDir = Paths.get("");
     Path rDotJavaSrcDir = Paths.get("");
 
-    ExecutionContext context = createMock(ExecutionContext.class);
+    ExecutionContext context = TestExecutionContext.newInstance();
     FakeProjectFileSystem fileSystem = new FakeProjectFileSystem();
-    expect(context.getProjectFilesystem()).andStubReturn(fileSystem);
 
     ImmutableList<Path> stringFiles = ImmutableList.of(
         firstFile,
@@ -297,6 +419,7 @@ public class CompileStringsStepTest extends EasyMockSupport {
 
     replayAll();
     CompileStringsStep step = new CompileStringsStep(
+        fileSystem,
         stringFiles,
         rDotJavaSrcDir,
         new Function<String, Path>() {
@@ -305,7 +428,7 @@ public class CompileStringsStepTest extends EasyMockSupport {
             return destinationDir.resolve(input + PackageStringAssets.STRING_ASSET_FILE_EXTENSION);
           }
         });
-    assertEquals(0, step.execute(context));
+    assertEquals(0, step.execute(context).getExitCode());
     Map<String, byte[]> fileContentsMap = fileSystem.getFileContents();
     assertEquals("Incorrect number of string files written.", 4, fileContentsMap.size());
     for (Map.Entry<String, byte[]> entry : fileContentsMap.entrySet()) {
@@ -335,7 +458,7 @@ public class CompileStringsStepTest extends EasyMockSupport {
               stream.writeByte(Integer.parseInt(value));
               break;
             case 't':
-              stream.write(value.getBytes());
+              stream.write(value.getBytes(StandardCharsets.UTF_8));
               break;
             default:
               throw new RuntimeException("Unexpected data type in .fbstr file: " + dataType);
@@ -353,12 +476,7 @@ public class CompileStringsStepTest extends EasyMockSupport {
     private ImmutableMap.Builder<String, byte[]> fileContentsMapBuilder = ImmutableMap.builder();
 
     public FakeProjectFileSystem() {
-      super(Paths.get("."));
-    }
-
-    @Override
-    public File getFileForRelativePath(Path path) {
-      return path.toFile();
+      super(Paths.get(".").toAbsolutePath());
     }
 
     @Override

@@ -1,40 +1,21 @@
 java_library(
   name = 'rules',
   srcs = [
+    'AbstractGenruleDescription.java',
     'ExportFile.java',
     'ExportFileDescription.java',
     'Genrule.java',
+    'GenruleBinary.java',
     'GenruleDescription.java',
     'ShBinary.java',
     'ShBinaryDescription.java',
     'ShTest.java',
     'ShTestDescription.java',
   ],
-  deps = [
-    ':steps',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/parser:rule_pattern',
-    '//src/com/facebook/buck/rules:build_rule',
-    '//src/com/facebook/buck/rules:rules',
-    '//src/com/facebook/buck/rules/macros:macros',
-    '//src/com/facebook/buck/step:step',
-    '//src/com/facebook/buck/step/fs:fs',
-    '//src/com/facebook/buck/test:test',
-    '//src/com/facebook/buck/test/selectors:selectors',
-    '//src/com/facebook/buck/util:constants',
-    '//src/com/facebook/buck/util:escaper',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/util/environment:platform',
-    '//src/com/facebook/buck/android:exceptions',
-    '//src/com/facebook/buck/android:utils',
-    '//third-party/java/guava:guava',
-    '//third-party/java/infer-annotations:infer-annotations',
-    '//third-party/java/jackson:jackson-core',
-    '//third-party/java/jackson:jackson-databind',
-    '//third-party/java/jsr:jsr305',
-    '//third-party/java/stringtemplate:stringtemplate',
+  tests = [
+    '//test/com/facebook/buck/shell:shell',
   ],
+  autodeps = True,
   visibility = ['PUBLIC'],
 )
 
@@ -44,33 +25,65 @@ java_library(
     'AbstractGenruleStep.java',
     'BashStep.java',
     'DefaultShellStep.java',
-    'EchoStep.java',
     'RunShTestAndRecordResultStep.java',
     'ShellStep.java',
     'SymlinkFilesIntoDirectoryStep.java',
     'Shell.java',
   ],
-  deps = [
-    '//src/com/facebook/buck/event:event',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/log:api',
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/rules:build_rule',
-    '//src/com/facebook/buck/step:step',
-    '//src/com/facebook/buck/test/result/type:type',
-    '//src/com/facebook/buck/test:test',
-    '//src/com/facebook/buck/util/environment:platform',
-    '//src/com/facebook/buck/util:escaper',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/util:io',
-    '//third-party/java/guava:guava',
-    '//third-party/java/jackson:jackson-core',
-    '//third-party/java/jackson:jackson-databind',
-    '//third-party/java/jsr:jsr305',
+  tests = [
+    '//test/com/facebook/buck/shell:shell',
   ],
+  autodeps = True,
   visibility = [
     'PUBLIC',
   ],
+)
+
+java_immutables_library(
+  name = 'worker',
+  srcs = [
+    'AbstractWorkerJobParams.java',
+    'WorkerShellStep.java',
+    'WorkerToolDescription.java',
+  ],
+  immutable_types = [
+    'WorkerJobParams',
+  ],
+  tests = [
+    '//test/com/facebook/buck/shell:shell',
+  ],
+  autodeps = True,
+  visibility = ['PUBLIC'],
+)
+
+java_library(
+  name = 'worker_tool',
+  srcs = [
+    'WorkerTool.java',
+  ],
+  tests = [
+    '//test/com/facebook/buck/shell:shell',
+  ],
+  autodeps = True,
+  visibility = ['PUBLIC'],
+)
+
+java_immutables_library(
+  name = 'worker_process',
+  srcs = [
+    'AbstractWorkerJobResult.java',
+    'WorkerProcess.java',
+    'WorkerProcessProtocol.java',
+    'WorkerProcessProtocolZero.java',
+  ],
+  immutable_types = [
+    'WorkerJobResult',
+  ],
+  tests = [
+    '//test/com/facebook/buck/shell:shell',
+  ],
+  autodeps = True,
+  visibility = ['PUBLIC'],
 )
 
 export_file(

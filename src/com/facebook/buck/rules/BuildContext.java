@@ -18,16 +18,18 @@ package com.facebook.buck.rules;
 
 import com.facebook.buck.android.AndroidPlatformTarget;
 import com.facebook.buck.android.NoAndroidSdkException;
+import com.facebook.buck.artifact_cache.ArtifactCache;
 import com.facebook.buck.event.BuckEventBus;
 import com.facebook.buck.event.ConsoleEvent;
 import com.facebook.buck.event.ThrowableConsoleEvent;
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.JavaPackageFinder;
+import com.facebook.buck.jvm.core.JavaPackageFinder;
 import com.facebook.buck.model.BuildId;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.step.StepRunner;
 import com.facebook.buck.timing.Clock;
 import com.facebook.buck.util.immutables.DeprecatedBuckStyleImmutable;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
@@ -70,19 +72,6 @@ public abstract class BuildContext {
   public abstract ActionGraph getActionGraph();
   public abstract StepRunner getStepRunner();
 
-  /**
-   * By design, there is no public getter for {@link ProjectFilesystem}. At the point where a
-   * {@link BuildRule} is using a {@link BuildContext} to generate its
-   * {@link com.facebook.buck.step.Step}s, it should not be doing any I/O on local disk. Any reads
-   * should be mediated through {@link OnDiskBuildInfo}, and {@link BuildInfoRecorder} will take
-   * care of writes after the fact. The {@link BuildRule} should be working with relative file paths
-   * so that builds can ultimately be distributed.
-   * <p>
-   * The primary reason this method exists is so that someone who blindly tries to add such a getter
-   * will encounter a compilation error and will [hopefully] discover this comment.
-   */
-  protected abstract ProjectFilesystem getProjectFilesystem();
-
   protected abstract Clock getClock();
   public abstract ArtifactCache getArtifactCache();
   public abstract JavaPackageFinder getJavaPackageFinder();
@@ -93,16 +82,18 @@ public abstract class BuildContext {
     return DEFAULT_ANDROID_BOOTCLASSPATH_SUPPLIER;
   }
 
-  @Value.Default
-  public BuildDependencies getBuildDependencies() {
-    return BuildDependencies.getDefault();
-  }
-
   protected abstract BuildId getBuildId();
+  protected abstract ObjectMapper getObjectMapper();
   protected abstract Map<String, String> getEnvironment();
 
-  public Path getProjectRoot() {
-    return getProjectFilesystem().getRootPath();
+  @Value.Default
+  public boolean isKeepGoing() {
+    return false;
+  }
+
+  @Value.Default
+  public boolean shouldReportAbsolutePaths() {
+    return false;
   }
 
   /**
@@ -111,8 +102,8 @@ public abstract class BuildContext {
    * This method should be visible to {@link AbstractBuildRule}, but not {@link BuildRule}s
    * in general.
    */
-  OnDiskBuildInfo createOnDiskBuildInfoFor(BuildTarget target) {
-    return new DefaultOnDiskBuildInfo(target, getProjectFilesystem());
+  OnDiskBuildInfo createOnDiskBuildInfoFor(BuildTarget target, ProjectFilesystem filesystem) {
+    return new DefaultOnDiskBuildInfo(target, filesystem, getObjectMapper());
   }
 
   /**
@@ -121,12 +112,13 @@ public abstract class BuildContext {
    * This method should be visible to {@link AbstractBuildRule}, but not {@link BuildRule}s
    * in general.
    */
-  BuildInfoRecorder createBuildInfoRecorder(BuildTarget buildTarget) {
+  BuildInfoRecorder createBuildInfoRecorder(BuildTarget buildTarget, ProjectFilesystem filesystem) {
     return new BuildInfoRecorder(
         buildTarget,
-        getProjectFilesystem(),
+        filesystem,
         getClock(),
         getBuildId(),
+        getObjectMapper(),
         ImmutableMap.copyOf(getEnvironment()));
   }
 

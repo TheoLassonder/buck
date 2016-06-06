@@ -10,36 +10,52 @@
     <content url="file://$MODULE_DIR$">
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/test" isTestSource="true" />
-      <sourceFolder url="file://$MODULE_DIR$/third-party/java/dx-from-kitkat/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/third-party/java/dx/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/build-ij/immutables" isTestSource="false" generated="true" />
       <sourceFolder url="file://$MODULE_DIR$/build-ij/immutables-test" isTestSource="true" generated="true" />
+      <sourceFolder url="file://$MODULE_DIR$/src-gen" isTestSource="false" generated="true" />
       <excludeFolder url="file://$MODULE_DIR$/buck-out" />
       <excludeFolder url="file://$MODULE_DIR$/build" />
       <excludeFolder url="file://$MODULE_DIR$/src/com/facebook/buck/android/support" />
       <excludeFolder url="file://$MODULE_DIR$/src/com/facebook/buck/cli/quickstart" />
-      <excludeFolder url="file://$MODULE_DIR$/src/com/facebook/buck/junit" />
-      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/android/agent/util/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/src/com/facebook/buck/event/listener/noos" />
+      <excludeFolder url="file://$MODULE_DIR$/src/com/facebook/buck/intellij/plugin" />
       <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/android/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/apple/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/apple/xcode/testdata" />
       <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/cli/bootstrapper/testdata" />
       <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/cli/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/crosscell/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/cxx/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/d/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/event/listener/integration/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/event/listener/noos" />
       <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/gwt/testdata" />
-      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/java/intellij/testdata" />
-      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/java/testdata" />
       <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/js/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/jvm/groovy/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/jvm/java/autodeps/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/jvm/java/intellij/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/jvm/java/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/ocaml/testdata" />
       <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/parser/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/python/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/rust/testdata" />
       <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/shell/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/test/labels/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/testrunner/testdata" />
+      <excludeFolder url="file://$MODULE_DIR$/test/com/facebook/buck/thrift/testdata" />
     </content>
     <orderEntry type="jdk" jdkName="1.7" jdkType="JavaSDK" />
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="library" name="buck-lib" level="project" />
     <orderEntry type="library" scope="TEST" name="test-lib" level="project" />
     <orderEntry type="module" module-name="aosp" />
+    <orderEntry type="library" name="concurrent-locks" level="project" />
     <orderEntry type="library" name="dd-plist" level="project" />
     <orderEntry type="library" name="gson-2.2.4" level="project" />
     <orderEntry type="library" name="infer-annotations" level="project" />
     <orderEntry type="library" name="jetty" level="project" />
     <orderEntry type="library" name="slf4j-api-1.7.2" level="project" />
-    <orderEntry type="library" name="slf4j-log4j12-1.7.2" level="project" />
     <orderEntry type="library" name="soy-no-guava" level="project" />
     <orderEntry type="library" name="xz-java-1.3" level="project" />
     <orderEntry type="library" name="eclipse" level="project" />
@@ -47,5 +63,12 @@
     <orderEntry type="library" name="infer-annotations" level="project" />
     <orderEntry type="library" name="jacoco" level="project" />
     <orderEntry type="library" name="immutables-annotations" level="project" />
+    <orderEntry type="library" name="maven-lib" level="project" />
+    <orderEntry type="library" name="android-tools-24.2.3" level="project" />
+    <orderEntry type="library" name="oracle-jdk-stubs" level="project" />
+    <orderEntry type="library" name="junit" level="project" />
+    <orderEntry type="library" name="testng" level="project" />
+    <orderEntry type="library" name="eden" level="project" />
+    <orderEntry type="library" name="java-thrift-dependencies" level="project" />
   </component>
 </module>

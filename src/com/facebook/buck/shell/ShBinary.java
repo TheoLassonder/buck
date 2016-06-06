@@ -16,7 +16,6 @@
 
 package com.facebook.buck.shell;
 
-import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.rules.AbstractBuildRule;
@@ -25,10 +24,14 @@ import com.facebook.buck.rules.BinaryBuildRule;
 import com.facebook.buck.rules.BuildContext;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
+import com.facebook.buck.rules.BuildTargetSourcePath;
 import com.facebook.buck.rules.BuildableContext;
+import com.facebook.buck.rules.CommandTool;
 import com.facebook.buck.rules.HasRuntimeDeps;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.Tool;
+import com.facebook.buck.rules.args.SourcePathArg;
 import com.facebook.buck.step.Step;
 import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
 import com.facebook.buck.step.fs.MakeExecutableStep;
@@ -74,6 +77,7 @@ public class ShBinary extends AbstractBuildRule implements BinaryBuildRule, HasR
 
     BuildTarget target = params.getBuildTarget();
     this.output = BuildTargets.getGenPath(
+        getProjectFilesystem(),
         target,
         String.format("__%%s__/%s.sh", target.getShortNameAndFlavorPostfix()));
   }
@@ -85,9 +89,10 @@ public class ShBinary extends AbstractBuildRule implements BinaryBuildRule, HasR
     buildableContext.recordArtifact(output);
 
     return ImmutableList.of(
-        new MakeCleanDirectoryStep(output.getParent()),
+        new MakeCleanDirectoryStep(getProjectFilesystem(), output.getParent()),
         new StringTemplateStep(
             TEMPLATE,
+            getProjectFilesystem(),
             output,
             new Function<ST, ST>() {
               @Override
@@ -103,18 +108,20 @@ public class ShBinary extends AbstractBuildRule implements BinaryBuildRule, HasR
                     .join(Collections.nCopies(levelsBelowRoot, ".."));
 
                 ImmutableList<String> resourceStrings = FluentIterable
-                    .from(getResolver().getAllPaths(resources))
+                    .from(getResolver().deprecatedAllPaths(resources))
                     .transform(Functions.toStringFunction())
                     .transform(Escaper.BASH_ESCAPER)
                     .toList();
 
                 return input
                     .add("path_back_to_root", pathBackToRoot)
-                    .add("script_to_run", Escaper.escapeAsBashString(getResolver().getPath(main)))
+                    .add(
+                        "script_to_run",
+                        Escaper.escapeAsBashString(getResolver().getRelativePath(main)))
                     .add("resources", resourceStrings);
               }
             }),
-        new MakeExecutableStep(output.toString()));
+        new MakeExecutableStep(getProjectFilesystem(), output));
   }
 
   @Override
@@ -123,8 +130,13 @@ public class ShBinary extends AbstractBuildRule implements BinaryBuildRule, HasR
   }
 
   @Override
-  public ImmutableList<String> getExecutableCommand(ProjectFilesystem projectFilesystem) {
-    return ImmutableList.of(projectFilesystem.resolve(output).toAbsolutePath().toString());
+  public Tool getExecutableCommand() {
+    return new CommandTool.Builder()
+        .addArg(
+            new SourcePathArg(getResolver(), new BuildTargetSourcePath(getBuildTarget(), output)))
+        .addInput(main)
+        .addInputs(resources)
+        .build();
   }
 
   // If the script is generated from another build rule, it needs to be available on disk

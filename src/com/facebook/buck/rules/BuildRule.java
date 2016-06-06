@@ -21,6 +21,7 @@ import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.HasBuildTarget;
 import com.facebook.buck.step.Step;
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedSet;
@@ -35,15 +36,15 @@ import javax.annotation.Nullable;
 public interface BuildRule extends Comparable<BuildRule>, HasBuildTarget {
 
   @Override
-  public BuildTarget getBuildTarget();
+  BuildTarget getBuildTarget();
 
   @JsonProperty("name")
-  public String getFullyQualifiedName();
+  String getFullyQualifiedName();
 
   @JsonProperty("type")
-  public String getType();
+  String getType();
 
-  public BuildableProperties getProperties();
+  BuildableProperties getProperties();
 
   /**
    * @return the set of rules that must be built before this rule. Normally, this matches the value
@@ -55,32 +56,30 @@ public interface BuildRule extends Comparable<BuildRule>, HasBuildTarget {
    *     original {@code deps} argument, as defined in the build file, must be accessed via a
    *     custom getter provided by the build rule.
    */
-  public ImmutableSortedSet<BuildRule> getDeps();
-
-  /**
-   * @return key based on the BuildRule's state, including the transitive closure of its
-   *     dependencies' keys.
-   */
-  public RuleKey getRuleKey();
-
-  /**
-   * Normally, a {@link RuleKey} is a function of the {@link RuleKey} of each of its deps as well as
-   * that of its inputs. This returns a {@link RuleKey} that is a function of only its inputs, which
-   * can be used to determine whether the definition or inputs of the rule changed independent of
-   * changes to its [transitive] deps.
-   * @return a non-null {@link RuleKey}.
-   */
-  public RuleKey getRuleKeyWithoutDeps();
+  ImmutableSortedSet<BuildRule> getDeps();
 
   /** @return the same value as {@link #getFullyQualifiedName()} */
   @Override
-  public String toString();
+  String toString();
 
-  public ImmutableList<Step> getBuildSteps(BuildContext context, BuildableContext buildableContext);
+  ImmutableList<Step> getBuildSteps(BuildContext context, BuildableContext buildableContext);
 
   @Nullable
-  public Path getPathToOutput();
+  Path getPathToOutput();
 
-  public ProjectFilesystem getProjectFilesystem();
+  ProjectFilesystem getProjectFilesystem();
+
+  /**
+   * Whether this {@link BuildRule} can be cached.
+   *
+   * Uncached build rules are never written out to cache, never read from cache, and does not count
+   * in cache statistics. This rule is useful for artifacts which cannot be easily normalized.
+   *
+   * Uncached rules are not always rebuilt, however, as long as the existing on-disk representation
+   * is up to date. This means that these rules can take advantage of
+   * {@link com.facebook.buck.rules.keys.SupportsInputBasedRuleKey} to prevent rebuilding.
+   */
+  @JsonIgnore
+  boolean isCacheable();
 
 }

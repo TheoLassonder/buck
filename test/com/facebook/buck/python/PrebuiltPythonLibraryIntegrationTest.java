@@ -37,7 +37,7 @@ import java.io.IOException;
 public class PrebuiltPythonLibraryIntegrationTest {
 
   @Rule
-  public DebuggableTemporaryFolder tmp = new DebuggableTemporaryFolder().doNotDeleteOnExit();
+  public DebuggableTemporaryFolder tmp = new DebuggableTemporaryFolder();
   public ProjectWorkspace workspace;
 
   @Before
@@ -49,7 +49,7 @@ public class PrebuiltPythonLibraryIntegrationTest {
 
     // EGGs are versioned to the version of Python they were built it, but the EGG for this test
     // doesn't actually matter.
-    String version = new PythonBuckConfig(new FakeBuckConfig(), new ExecutableFinder())
+    String version = new PythonBuckConfig(FakeBuckConfig.builder().build(), new ExecutableFinder())
         .getPythonEnvironment(
             new ProcessExecutor(
                 new Console(
@@ -58,17 +58,21 @@ public class PrebuiltPythonLibraryIntegrationTest {
                     new CapturingPrintStream(),
                     Ansi.withoutTty())))
         .getPythonVersion()
-        .getVersionString()
-        .substring("Python ".length());
-    if (!version.equals("2.6")) {
-      workspace.move("dist/package-0.1-py2.6.egg", "dist/package-0.1-py" + version + ".egg");
+        .getVersionString();
+    if (!version.startsWith("2.6")) {
+      workspace.move(
+          "dist/package-0.1-py2.6.egg",
+          "dist/package-0.1-py" + version.substring(0, 3) + ".egg");
     }
   }
 
   @Test
   public void testRunPexWithEggDependency() throws IOException {
-    ProcessResult results = workspace.runBuckCommand("run", "//:main");
-    results.assertSuccess();
+    ProcessResult eggResults = workspace.runBuckCommand("run", "//:main_egg");
+    eggResults.assertSuccess();
+
+    ProcessResult whlResults = workspace.runBuckCommand("run", "//:main_whl");
+    whlResults.assertSuccess();
   }
 
 }

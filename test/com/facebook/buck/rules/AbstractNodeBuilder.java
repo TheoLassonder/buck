@@ -16,18 +16,26 @@
 
 package com.facebook.buck.rules;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
-import com.facebook.buck.model.BuildTargetPattern;
 import com.facebook.buck.parser.NoSuchBuildTargetException;
+import com.facebook.buck.rules.coercer.DefaultTypeCoercerFactory;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
+import com.facebook.buck.util.HumanReadableException;
+import com.facebook.buck.util.ObjectMappers;
 import com.google.common.base.Optional;
 import com.google.common.base.Throwables;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.hash.HashCode;
+import com.google.common.hash.Hashing;
 
 import java.lang.reflect.Field;
+import java.nio.file.Path;
+
+import javax.annotation.Nullable;
 
 /**
  * Support class for writing builders for nodes of a {@link TargetGraph}
@@ -39,47 +47,87 @@ public abstract class AbstractNodeBuilder<A> {
   protected final BuildRuleFactoryParams factoryParams;
   protected final BuildTarget target;
   protected final A arg;
+  private final CellPathResolver cellRoots;
+  @Nullable
+  private final HashCode rawHashCode;
 
   protected AbstractNodeBuilder(
       Description<A> description,
       BuildTarget target) {
+    this(description, target, new FakeProjectFilesystem(), null);
+  }
+
+  protected AbstractNodeBuilder(
+      Description<A> description,
+      BuildTarget target,
+      ProjectFilesystem projectFilesystem) {
+    this(description, target, projectFilesystem, null);
+  }
+
+  protected AbstractNodeBuilder(
+      Description<A> description,
+      BuildTarget target,
+      ProjectFilesystem projectFilesystem,
+      HashCode hashCode) {
     this.description = description;
     this.factoryParams = NonCheckingBuildRuleFactoryParams.createNonCheckingBuildRuleFactoryParams(
-        target);
+        target,
+        projectFilesystem);
     this.target = target;
+    this.rawHashCode = hashCode;
+
+    this.cellRoots = new CellPathResolver() {
+      @Override
+      public Path getCellPath(Optional<String> input) {
+        if (input.isPresent()) {
+          throw new HumanReadableException("Can't find the cell");
+        }
+        return factoryParams.getProjectFilesystem().getRootPath();
+      }
+    };
+
     this.arg = description.createUnpopulatedConstructorArg();
     populateWithDefaultValues(this.arg);
   }
 
-  public final BuildRule build(BuildRuleResolver resolver) {
+  public final BuildRule build(BuildRuleResolver resolver) throws NoSuchBuildTargetException {
     return build(resolver, new FakeProjectFilesystem(), TargetGraph.EMPTY);
   }
 
-  public final BuildRule build(BuildRuleResolver resolver, ProjectFilesystem filesystem) {
+  public final BuildRule build(BuildRuleResolver resolver, ProjectFilesystem filesystem)
+      throws NoSuchBuildTargetException {
     return build(resolver, filesystem, TargetGraph.EMPTY);
   }
 
   public final BuildRule build(
       BuildRuleResolver resolver,
       ProjectFilesystem filesystem,
-      TargetGraph targetGraph) {
+      TargetGraph targetGraph) throws NoSuchBuildTargetException {
 
     // The BuildRule determines its deps by extracting them from the rule parameters.
-    BuildRuleParams params = createBuildRuleParams(resolver, filesystem, targetGraph);
+    BuildRuleParams params = createBuildRuleParams(resolver, filesystem);
 
-    BuildRule rule = description.createBuildRule(params, resolver, arg);
+    BuildRule rule = description.createBuildRule(targetGraph, params, resolver, arg);
     resolver.addToIndex(rule);
     return rule;
   }
 
   public TargetNode<A> build() {
     try {
+      HashCode hash = rawHashCode == null ?
+          Hashing.sha1().hashString(factoryParams.target.getFullyQualifiedName(), UTF_8) :
+          rawHashCode;
+
       return new TargetNode<>(
+          // This hash will do in a pinch.
+          hash,
           description,
           arg,
+          new DefaultTypeCoercerFactory(ObjectMappers.newDefaultInstance()),
           factoryParams,
           getDepsFromArg(),
-          ImmutableSet.<BuildTargetPattern>of());
+          ImmutableSet.<VisibilityPattern>of(),
+          cellRoots);
     } catch (NoSuchBuildTargetException | TargetNode.InvalidSourcePathInputException e) {
       throw Throwables.propagate(e);
     }
@@ -87,13 +135,11 @@ public abstract class AbstractNodeBuilder<A> {
 
   public BuildRuleParams createBuildRuleParams(
       BuildRuleResolver resolver,
-      ProjectFilesystem filesystem,
-      TargetGraph targetGraph) {
+      ProjectFilesystem filesystem) {
     TargetNode<?> node = build();
     return new FakeBuildRuleParamsBuilder(target)
         .setProjectFilesystem(filesystem)
-        .setTargetGraph(targetGraph)
-        .setDeps(resolver.getAllRules(node.getDeps()))
+        .setDeclaredDeps(resolver.getAllRules(node.getDeclaredDeps()))
         .setExtraDeps(resolver.getAllRules(node.getExtraDeps()))
         .build();
   }
@@ -140,18 +186,30 @@ public abstract class AbstractNodeBuilder<A> {
     return Optional.of(toReturn.build());
   }
 
+  /**
+   * Populate optional fields of this constructor arg with their default values.
+   */
   private void populateWithDefaultValues(A arg) {
     try {
-      new ConstructorArgMarshaller().populate(
-          new FakeProjectFilesystem(),
+      new ConstructorArgMarshaller(
+          new DefaultTypeCoercerFactory(ObjectMappers.newDefaultInstance())).populateDefaults(
+          cellRoots,
+          factoryParams.getProjectFilesystem(),
           factoryParams,
-          arg,
-          ImmutableSet.<BuildTarget>builder(),
-          ImmutableMap.<String, Object>of(),
-          true);
+          arg);
     } catch (ConstructorArgMarshalException error) {
       throw Throwables.propagate(error);
     }
+  }
+
+  @SuppressWarnings("unchecked")
+  public Iterable<BuildTarget> findImplicitDeps() {
+    ImplicitDepsInferringDescription<A> desc = (ImplicitDepsInferringDescription<A>) description;
+    return desc.findDepsForTargetFromConstructorArgs(target, cellRoots, arg);
+  }
+
+  public BuildTarget getTarget() {
+    return target;
   }
 
 }

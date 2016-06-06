@@ -1,0 +1,19 @@
+java_test(
+  name = 'integration',
+  srcs = glob(["*IntegrationTest.java"]),
+  autodeps = True,
+)
+
+java_test(
+  name = 'unit',
+  srcs = glob(["*Test.java"], excludes=["*IntegrationTest.java"]),
+  autodeps = True,
+)
+
+java_library(
+  name = 'assumptions',
+  srcs = [
+    'RustAssumptions.java'
+  ],
+  autodeps = True,
+)

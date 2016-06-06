@@ -34,14 +34,16 @@ public class BuildTargetSourcePathTest {
 
   @Test
   public void shouldThrowAnExceptionIfRuleDoesNotHaveAnOutput() {
-    BuildRuleResolver resolver = new BuildRuleResolver();
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     SourcePathResolver pathResolver = new SourcePathResolver(resolver);
-    BuildRule rule = new FakeBuildRule(target, pathResolver);
+    FakeBuildRule rule = new FakeBuildRule(target, pathResolver);
+    rule.setOutputFile(null);
     resolver.addToIndex(rule);
     BuildTargetSourcePath path = new BuildTargetSourcePath(rule.getBuildTarget());
 
     try {
-      pathResolver.getPath(path);
+      pathResolver.deprecatedGetPath(path);
       fail();
     } catch (HumanReadableException e) {
       assertEquals("No known output for: " + target.getFullyQualifiedName(), e.getMessage());
@@ -50,7 +52,8 @@ public class BuildTargetSourcePathTest {
 
   @Test
   public void mustUseProjectFilesystemToResolvePathToFile() {
-    BuildRuleResolver resolver = new BuildRuleResolver();
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     SourcePathResolver pathResolver = new SourcePathResolver(resolver);
     BuildRule rule = new FakeBuildRule(target, pathResolver) {
       @Override
@@ -62,7 +65,7 @@ public class BuildTargetSourcePathTest {
 
     BuildTargetSourcePath path = new BuildTargetSourcePath(rule.getBuildTarget());
 
-    Path resolved = pathResolver.getPath(path);
+    Path resolved = pathResolver.deprecatedGetPath(path);
 
     assertEquals(Paths.get("cheese"), resolved);
   }
@@ -77,7 +80,11 @@ public class BuildTargetSourcePathTest {
 
   @Test
   public void explicitlySetPath() {
-    SourcePathResolver pathResolver = new SourcePathResolver(new BuildRuleResolver());
+    SourcePathResolver pathResolver =
+        new SourcePathResolver(
+            new BuildRuleResolver(
+                TargetGraph.EMPTY,
+                new DefaultTargetNodeToBuildRuleTransformer()));
     BuildTarget target = BuildTargetFactory.newInstance("//foo/bar:baz");
     FakeBuildRule rule = new FakeBuildRule(target, pathResolver);
     Path path = Paths.get("blah");
@@ -85,12 +92,16 @@ public class BuildTargetSourcePathTest {
         rule.getBuildTarget(),
         path);
     assertEquals(target, buildTargetSourcePath.getTarget());
-    assertEquals(path, pathResolver.getPath(buildTargetSourcePath));
+    assertEquals(path, pathResolver.deprecatedGetPath(buildTargetSourcePath));
   }
 
   @Test
   public void sameBuildTargetsWithDifferentPathsAreDifferent() {
-    SourcePathResolver pathResolver = new SourcePathResolver(new BuildRuleResolver());
+    SourcePathResolver pathResolver =
+        new SourcePathResolver(
+            new BuildRuleResolver(
+                TargetGraph.EMPTY,
+                new DefaultTargetNodeToBuildRuleTransformer()));
     BuildTarget target = BuildTargetFactory.newInstance("//foo/bar:baz");
     FakeBuildRule rule = new FakeBuildRule(target, pathResolver);
     BuildTargetSourcePath path1 =

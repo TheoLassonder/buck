@@ -31,7 +31,8 @@ public class Console {
   private final DirtyPrintStreamDecorator stdErr;
   private final Ansi ansi;
 
-  public Console(Verbosity verbosity,
+  public Console(
+      Verbosity verbosity,
       PrintStream stdOut,
       PrintStream stdErr,
       Ansi ansi) {
@@ -93,8 +94,16 @@ public class Console {
    * @see #printBuildFailure(String)
    */
   public void printBuildFailureWithoutStacktrace(Throwable t) {
+    printBuildFailureWithoutStacktraceDontUnwrap(Throwables.getRootCause(t));
+  }
+
+  /**
+   * Prints the message of the {@link Throwable} as a build failure.
+   * @see #printBuildFailure(String)
+   */
+  public void printBuildFailureWithoutStacktraceDontUnwrap(Throwable t) {
     LOG.warn(t, "Build error caused by exception");
-    printBuildFailureInternal(Throwables.getRootCause(t).getMessage());
+    printBuildFailureInternal(t.getMessage());
   }
 
   /**

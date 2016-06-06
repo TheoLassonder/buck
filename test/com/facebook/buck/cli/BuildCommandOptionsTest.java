@@ -17,12 +17,14 @@
 package com.facebook.buck.cli;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
 
-import com.facebook.buck.java.DefaultJavaPackageFinder;
+import com.facebook.buck.jvm.java.DefaultJavaPackageFinder;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 
+import org.hamcrest.Matchers;
 import org.junit.Test;
 import org.kohsuke.args4j.CmdLineException;
 
@@ -30,10 +32,10 @@ public class BuildCommandOptionsTest {
 
   @Test
   public void testCreateJavaPackageFinder() {
-    BuckConfig buckConfig = new FakeBuckConfig(
+    BuckConfig buckConfig = FakeBuckConfig.builder().setSections(
         ImmutableMap.of(
             "java",
-            ImmutableMap.of("src_roots", "src, test")));
+            ImmutableMap.of("src_roots", "src, test"))).build();
     DefaultJavaPackageFinder javaPackageFinder = buckConfig.createDefaultJavaPackageFinder();
     assertEquals(ImmutableSortedSet.of(), javaPackageFinder.getPathsFromRoot());
     assertEquals(ImmutableSet.of("src", "test"), javaPackageFinder.getPathElements());
@@ -41,48 +43,22 @@ public class BuildCommandOptionsTest {
 
   @Test
   public void testCreateJavaPackageFinderFromEmptyBuckConfig() {
-    BuckConfig buckConfig = new FakeBuckConfig();
+    BuckConfig buckConfig = FakeBuckConfig.builder().build();
     DefaultJavaPackageFinder javaPackageFinder = buckConfig.createDefaultJavaPackageFinder();
     assertEquals(ImmutableSortedSet.<String>of(), javaPackageFinder.getPathsFromRoot());
     assertEquals(ImmutableSet.of(), javaPackageFinder.getPathsFromRoot());
   }
 
   @Test
-  public void testShouldSetNumberOfThreadsFromBuckConfig() throws CmdLineException {
-    BuckConfig buckConfig = new FakeBuckConfig(ImmutableMap.of(
-        "build",
-        ImmutableMap.of("threads", "3")));
-    BuildCommand command = new BuildCommand();
-    AdditionalOptionsCmdLineParser parser = new AdditionalOptionsCmdLineParser(command);
-    parser.parseArgument();
-
-    int count = command.getNumThreads(buckConfig);
-
-    assertEquals(3, count);
-  }
-
-  @Test
-  public void testDefaultsNumberOfBuildThreadsToOneAndAQuarterTheNumberOfAvailableProcessors()
-      throws CmdLineException {
-    BuckConfig buckConfig = new FakeBuckConfig();
-    BuildCommand command = new BuildCommand();
-    AdditionalOptionsCmdLineParser parser = new AdditionalOptionsCmdLineParser(command);
-    parser.parseArgument();
-
-    int expected = (int) (Runtime.getRuntime().availableProcessors() * 1.25);
-
-    assertEquals(expected, command.getNumThreads(buckConfig));
-  }
-
-  @Test
   public void testCommandLineOptionOverridesOtherBuildThreadSettings() throws CmdLineException {
-    BuckConfig buckConfig = new FakeBuckConfig();
     BuildCommand command = new BuildCommand();
 
     AdditionalOptionsCmdLineParser parser = new AdditionalOptionsCmdLineParser(command);
-    parser.parseArgument("--num-threads", "5");
+    parser.parseArgument("--num-threads", "42");
 
-    assertEquals(5, command.getNumThreads(buckConfig));
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(command.getConfigOverrides())
+        .build();
+    assertThat(buckConfig.getNumThreads(), Matchers.equalTo(42));
   }
-
 }

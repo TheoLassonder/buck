@@ -1,4 +1,5 @@
-from buck import glob_internal, LazyBuildEnvPartial
+from buck import format_watchman_query_params, glob_internal, LazyBuildEnvPartial
+from buck import subdir_glob, flatten_dicts, BuildFileContext
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import os
 import shutil
@@ -45,7 +46,6 @@ class TestBuckPlatformBase(object):
                 includes=['*.java'],
                 excludes=[],
                 include_dotfiles=False,
-                allow_empty=False,
                 search_base=search_base))
 
     def test_glob_includes_sort(self):
@@ -58,7 +58,6 @@ class TestBuckPlatformBase(object):
                 includes=['*.java'],
                 excludes=[],
                 include_dotfiles=False,
-                allow_empty=False,
                 search_base=search_base))
 
     def test_glob_includes_multi(self):
@@ -74,7 +73,6 @@ class TestBuckPlatformBase(object):
                 includes=['bar/*.java', 'baz/*.java'],
                 excludes=[],
                 include_dotfiles=False,
-                allow_empty=False,
                 search_base=search_base))
 
     def test_glob_excludes_double_star(self):
@@ -89,7 +87,6 @@ class TestBuckPlatformBase(object):
                 includes=['**/*.java'],
                 excludes=['**/*Test.java'],
                 include_dotfiles=False,
-                allow_empty=False,
                 search_base=search_base))
 
     def test_glob_excludes_multi(self):
@@ -105,8 +102,45 @@ class TestBuckPlatformBase(object):
                 includes=['bar/*.java', 'baz/*.java'],
                 excludes=['*/[AC].java'],
                 include_dotfiles=False,
-                allow_empty=False,
                 search_base=search_base))
+
+    def test_subdir_glob(self):
+        build_env = BuildFileContext(None, None, None, None, None, None, None, None, None)
+        search_base = self.fake_path(
+            'foo',
+            glob_results={
+                'lib/bar/*.h': ['lib/bar/A.h', 'lib/bar/B.h'],
+                'lib/baz/*.h': ['lib/baz/C.h', 'lib/baz/D.h'],
+            })
+        self.assertGlobMatches(
+            {
+                'bar/B.h': 'lib/bar/B.h',
+                'bar/A.h': 'lib/bar/A.h',
+                'baz/D.h': 'lib/baz/D.h',
+                'baz/C.h': 'lib/baz/C.h',
+            },
+            subdir_glob([
+                ('lib', 'bar/*.h'),
+                ('lib', 'baz/*.h')],
+                build_env=build_env,
+                search_base=search_base))
+
+    def test_subdir_glob_with_prefix(self):
+        build_env = BuildFileContext(None, None, None, None, None, None, None, None, None)
+        search_base = self.fake_path(
+            'foo',
+            glob_results={
+                'lib/bar/*.h': ['lib/bar/A.h', 'lib/bar/B.h'],
+            })
+        self.assertGlobMatches(
+            {
+                'Prefix/bar/B.h': 'lib/bar/B.h',
+                'Prefix/bar/A.h': 'lib/bar/A.h',
+            },
+            subdir_glob([('lib', 'bar/*.h')],
+                        prefix='Prefix',
+                        build_env=build_env,
+                        search_base=search_base))
 
     def test_glob_excludes_relative(self):
         search_base = self.fake_path(
@@ -120,7 +154,6 @@ class TestBuckPlatformBase(object):
                 includes=['**/*.java'],
                 excludes=['bar/*.java'],
                 include_dotfiles=False,
-                allow_empty=False,
                 search_base=search_base))
 
     def test_glob_includes_skips_dotfiles(self):
@@ -133,7 +166,6 @@ class TestBuckPlatformBase(object):
                 includes=['*.java'],
                 excludes=[],
                 include_dotfiles=False,
-                allow_empty=False,
                 search_base=search_base))
 
     def test_glob_includes_does_not_skip_dotfiles_if_include_dotfiles(self):
@@ -146,7 +178,6 @@ class TestBuckPlatformBase(object):
                 includes=['*.java'],
                 excludes=[],
                 include_dotfiles=True,
-                allow_empty=False,
                 search_base=search_base))
 
     def test_lazy_build_env_partial(self):
@@ -166,33 +197,6 @@ class TestBuckPlatformBase(object):
             ('HAL', [1, 2, 3], {'abc': 789}),
             testLazy.invoke(name='HAL', deps=[1, 2, 3]))
 
-    def test_glob_errors_empty_results(self):
-        search_base = self.fake_path(
-            'foo',
-            glob_results={'*.java': []})
-        self.assertRaises(
-            AssertionError,
-            lambda:
-            glob_internal(
-                includes=['*.java'],
-                excludes=[],
-                include_dotfiles=False,
-                allow_empty=False,
-                search_base=search_base))
-
-    def test_glob_allows_empty_results_with_flag(self):
-        search_base = self.fake_path(
-            'foo',
-            glob_results={'*.java': []})
-        self.assertGlobMatches(
-            [],
-            glob_internal(
-                includes=['*.java'],
-                excludes=[],
-                include_dotfiles=False,
-                allow_empty=True,
-                search_base=search_base))
-
     def test_explicit_exclude_with_file_separator_excludes(self):
         search_base = self.fake_path(
             'foo',
@@ -203,7 +207,6 @@ class TestBuckPlatformBase(object):
                 includes=['java/**/*.java'],
                 excludes=['java/Exclude.java'],
                 include_dotfiles=False,
-                allow_empty=False,
                 search_base=search_base))
 
 
@@ -223,9 +226,15 @@ class TestBuckWindows(TestBuckPlatformBase, unittest.TestCase):
 
     def assertGlobMatches(self, expected, actual):
         # Fix the path separator to make test writing easier
-        fixed_expected = []
-        for path in expected:
-            fixed_expected.append(path.replace('/', '\\'))
+        fixed_expected = None
+        if isinstance(expected, list):
+            fixed_expected = []
+            for path in expected:
+                fixed_expected.append(path.replace('/', '\\'))
+        else:
+            fixed_expected = {}
+            for key, value in expected.items():
+                fixed_expected.update({key.replace('/', '\\'): value.replace('/', '\\')})
         self.assertEqual(fixed_expected, actual)
 
 
@@ -253,7 +262,6 @@ class TestBuck(unittest.TestCase):
                     includes=['b/a/**/*.java'],
                     excludes=['**/*Test.java'],
                     include_dotfiles=False,
-                    allow_empty=False,
                     search_base=Path(d)))
         finally:
             shutil.rmtree(d)
@@ -272,10 +280,98 @@ class TestBuck(unittest.TestCase):
                     includes=['java/Main.java'],
                     excludes=[],
                     include_dotfiles=False,
-                    allow_empty=False,
                     search_base=Path(d)))
         finally:
             shutil.rmtree(d)
+
+    def test_watchman_query_params_includes(self):
+        query_params = format_watchman_query_params(
+            ['**/*.java'],
+            [],
+            False,
+            '/path/to/glob')
+        self.assertEquals(
+            {
+                'relative_root': '/path/to/glob',
+                'path': [''],
+                'fields': ['name'],
+                'expression': [
+                    'allof',
+                    'exists',
+                    ['anyof', ['type', 'f'], ['type', 'l']],
+                    ['anyof', ['match', '**/*.java', 'wholename', {}]],
+                ]
+            },
+            query_params)
+
+    def test_watchman_query_params_includes_and_excludes(self):
+        query_params = format_watchman_query_params(
+            ['**/*.java'],
+            ['**/*Test.java'],
+            False,
+            '/path/to/glob')
+        self.assertEquals(
+            {
+                'relative_root': '/path/to/glob',
+                'path': [''],
+                'fields': ['name'],
+                'expression': [
+                    'allof',
+                    'exists',
+                    ['anyof', ['type', 'f'], ['type', 'l']],
+                    ['anyof', ['match', '**/*.java', 'wholename', {}]],
+                    ['not', ['anyof', ['match', '**/*Test.java', 'wholename', {}]]],
+                ]
+            },
+            query_params)
+
+    def test_flatten_dicts_overrides_earlier_keys_with_later_ones(self):
+        base = {
+            'a': 'foo',
+            'b': 'bar',
+        }
+        override = {
+            'a': 'baz',
+        }
+        override2 = {
+            'a': 42,
+            'c': 'new',
+        }
+        self.assertEquals(
+                {
+                    'a': 'baz',
+                    'b': 'bar',
+                },
+                flatten_dicts(base, override))
+        self.assertEquals(
+                {
+                    'a': 42,
+                    'b': 'bar',
+                    'c': 'new',
+                },
+                flatten_dicts(base, override, override2)
+        )
+        # assert none of the input dicts were changed:
+        self.assertEquals(
+                {
+                    'a': 'foo',
+                    'b': 'bar',
+                },
+                base
+        )
+        self.assertEquals(
+                {
+                    'a': 'baz',
+                },
+                override
+        )
+        self.assertEquals(
+                {
+                    'a': 42,
+                    'c': 'new',
+                },
+                override2
+        )
 
 
 if __name__ == '__main__':

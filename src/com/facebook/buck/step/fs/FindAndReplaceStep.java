@@ -19,6 +19,7 @@ package com.facebook.buck.step.fs;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.google.common.base.Function;
 
 import java.io.BufferedReader;
@@ -30,31 +31,24 @@ import java.nio.file.Path;
 
 public class FindAndReplaceStep implements Step {
 
+  private final ProjectFilesystem filesystem;
   private final Path input;
   private final Path output;
   private final Function<String, String> replacer;
 
-  public FindAndReplaceStep(Path input, Path output, Function<String, String> replacer) {
+  public FindAndReplaceStep(
+      ProjectFilesystem filesystem,
+      Path input,
+      Path output,
+      Function<String, String> replacer) {
+    this.filesystem = filesystem;
     this.input = input;
     this.output = output;
     this.replacer = replacer;
   }
 
-  public FindAndReplaceStep(Path input, Path output, final String pattern, final String replace) {
-    this(
-        input,
-        output,
-        new Function<String, String>() {
-          @Override
-          public String apply(String input) {
-            return input.replace(pattern, replace);
-          }
-        });
-  }
-
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
     try (BufferedReader reader = new BufferedReader(
              new InputStreamReader(filesystem.newFileInputStream(input)));
          BufferedWriter writer = new BufferedWriter(
@@ -67,9 +61,9 @@ public class FindAndReplaceStep implements Step {
       }
     } catch (IOException e) {
       context.logError(e, "error replacing %s -> %s", input, output);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   @Override

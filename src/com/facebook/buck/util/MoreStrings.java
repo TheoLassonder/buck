@@ -39,7 +39,7 @@ public final class MoreStrings {
   /** Utility class: do not instantiate. */
   private MoreStrings() {}
 
-  public static final boolean isEmpty(CharSequence sequence) {
+  public static boolean isEmpty(CharSequence sequence) {
     return sequence.length() == 0;
   }
 
@@ -104,12 +104,6 @@ public final class MoreStrings {
   public static Optional<String> stripPrefix(String s, String prefix) {
     return s.startsWith(prefix) ?
         Optional.of(s.substring(prefix.length(), s.length())) :
-        Optional.<String>absent();
-  }
-
-  public static Optional<String> stripSuffix(String s, String suffix) {
-    return s.endsWith(suffix) ?
-        Optional.of(s.substring(0, s.length() - suffix.length())) :
         Optional.<String>absent();
   }
 

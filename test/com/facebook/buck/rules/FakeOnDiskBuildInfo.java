@@ -16,8 +16,10 @@
 
 package com.facebook.buck.rules;
 
+import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
 
 import java.io.IOException;
@@ -27,6 +29,19 @@ import java.util.Map;
 
 public class FakeOnDiskBuildInfo implements OnDiskBuildInfo {
 
+  /**
+   * Takes a string and uses it to construct a {@link Sha1HashCode}.
+   * <p>
+   * Is likely particularly useful with {@link Optional#transform(Function)}.
+   */
+  private static final Function<String, Sha1HashCode> TO_SHA1 =
+      new Function<String, Sha1HashCode>() {
+        @Override
+        public Sha1HashCode apply(String hash) {
+          return Sha1HashCode.of(hash);
+        }
+      };
+
   private Map<String, String> metadata = Maps.newHashMap();
   private Map<String, ImmutableList<String>> metadataValues = Maps.newHashMap();
   private Map<Path, ImmutableList<String>> pathsToContents = Maps.newHashMap();
@@ -34,13 +49,6 @@ public class FakeOnDiskBuildInfo implements OnDiskBuildInfo {
   /** @return this */
   public FakeOnDiskBuildInfo setRuleKey(RuleKey ruleKey) {
     return putMetadata(BuildInfo.METADATA_KEY_FOR_RULE_KEY, ruleKey.toString());
-  }
-
-  /** @return this */
-  public FakeOnDiskBuildInfo setRuleKeyWithoutDeps(RuleKey ruleKeyWithoutDeps) {
-    return putMetadata(
-        BuildInfo.METADATA_KEY_FOR_RULE_KEY_WITHOUT_DEPS,
-        ruleKeyWithoutDeps.toString());
   }
 
   @Override
@@ -70,8 +78,13 @@ public class FakeOnDiskBuildInfo implements OnDiskBuildInfo {
   }
 
   @Override
+  public Optional<ImmutableMap<String, String>> getMap(String key) {
+    return Optional.absent();
+  }
+
+  @Override
   public Optional<Sha1HashCode> getHash(String key) {
-    return getValue(key).transform(Sha1HashCode.TO_SHA1);
+    return getValue(key).transform(TO_SHA1);
   }
 
   @Override

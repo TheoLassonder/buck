@@ -21,27 +21,28 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
-import com.facebook.buck.android.AndroidLibrary;
-import com.facebook.buck.android.AndroidLibraryDescription;
 import com.facebook.buck.android.FakeAndroidDirectoryResolver;
+import com.facebook.buck.cli.BuckConfig;
 import com.facebook.buck.cli.FakeBuckConfig;
-import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.DefaultJavaLibrary;
-import com.facebook.buck.java.ExternalJavac;
-import com.facebook.buck.java.JavaLibraryDescription;
-import com.facebook.buck.java.Javac;
-import com.facebook.buck.java.Jsr199Javac;
+import com.facebook.buck.cxx.CxxBuckConfig;
+import com.facebook.buck.cxx.CxxPlatform;
+import com.facebook.buck.cxx.CxxPlatformUtils;
+import com.facebook.buck.cxx.DefaultCxxPlatforms;
+import com.facebook.buck.io.MorePaths;
+import com.facebook.buck.jvm.java.DefaultJavaLibrary;
+import com.facebook.buck.jvm.java.JavaLibraryDescription;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.model.Flavor;
+import com.facebook.buck.model.FlavorDomain;
+import com.facebook.buck.model.ImmutableFlavor;
 import com.facebook.buck.parser.NoSuchBuildTargetException;
-import com.facebook.buck.python.PythonEnvironment;
-import com.facebook.buck.python.PythonVersion;
 import com.facebook.buck.rules.keys.DefaultRuleKeyBuilderFactory;
+import com.facebook.buck.testutil.FakeFileHashCache;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.util.FakeProcess;
 import com.facebook.buck.util.FakeProcessExecutor;
-import com.facebook.buck.util.NullFileHashCache;
 import com.facebook.buck.util.ProcessExecutor;
 import com.facebook.buck.util.ProcessExecutorParams;
 import com.google.common.base.Optional;
@@ -49,6 +50,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.hash.Hashing;
 
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
@@ -58,7 +60,7 @@ import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -67,14 +69,31 @@ public class KnownBuildRuleTypesTest {
   @ClassRule public static TemporaryFolder folder = new TemporaryFolder();
   @Rule public DebuggableTemporaryFolder temporaryFolder = new DebuggableTemporaryFolder();
 
-  private static final PythonEnvironment DUMMY_PYTHON_ENVIRONMENT =
-      new PythonEnvironment(Paths.get("fake_python"), PythonVersion.of("Python 2.7"));
-
   private static final String FAKE_XCODE_DEV_PATH = "/Fake/Path/To/Xcode.app/Contents/Developer";
+  private static final ImmutableMap<String, String> environment =
+      ImmutableMap.copyOf(System.getenv());
+
+  private static final ImmutableMap<Flavor, CxxPlatform> FAKE_CXX_PLATFORMS =
+      ImmutableMap.<Flavor, CxxPlatform>of(
+          ImmutableFlavor.of("foo"),
+          CxxPlatform.builder()
+              .from(CxxPlatformUtils.DEFAULT_PLATFORM)
+              .setFlavor(ImmutableFlavor.of("foo"))
+              .setSharedLibraryExtension(".foo")
+              .build(),
+          ImmutableFlavor.of("bar"),
+          CxxPlatform.builder()
+              .from(CxxPlatformUtils.DEFAULT_PLATFORM)
+              .setFlavor(ImmutableFlavor.of("bar"))
+              .setSharedLibraryExtension(".bar")
+              .build());
 
   private static BuildRuleParams buildRuleParams;
 
-  private static class TestDescription implements Description<Object> {
+  private static class TestDescription implements Description<TestDescription.Arg> {
+
+    static class Arg extends AbstractDescriptionArg {
+    };
 
     public static final BuildRuleType TYPE = BuildRuleType.of("known_rule_test");
 
@@ -94,12 +113,13 @@ public class KnownBuildRuleTypesTest {
     }
 
     @Override
-    public Object createUnpopulatedConstructorArg() {
-      return new Object();
+    public Arg createUnpopulatedConstructorArg() {
+      return new Arg();
     }
 
     @Override
-    public <A> BuildRule createBuildRule(
+    public <A extends Arg> BuildRule createBuildRule(
+        TargetGraph targetGraph,
         BuildRuleParams params,
         BuildRuleResolver resolver,
         A args) {
@@ -133,6 +153,7 @@ public class KnownBuildRuleTypesTest {
     arg.providedDeps = Optional.of(ImmutableSortedSet.<BuildTarget>of());
     arg.exportedDeps = Optional.of(ImmutableSortedSet.<BuildTarget>of());
     arg.deps = Optional.of(ImmutableSortedSet.<BuildTarget>of());
+    arg.tests = Optional.of(ImmutableSortedSet.<BuildTarget>of());
   }
 
   private DefaultJavaLibrary createJavaLibrary(KnownBuildRuleTypes buildRuleTypes) {
@@ -141,168 +162,76 @@ public class KnownBuildRuleTypesTest {
 
     JavaLibraryDescription.Arg arg = new JavaLibraryDescription.Arg();
     populateJavaArg(arg);
-    return (DefaultJavaLibrary) description.createBuildRule(
-        buildRuleParams,
-        new BuildRuleResolver(),
-        arg);
-  }
-
-  @Test
-  public void whenJavacIsNotSetInBuckConfigConfiguredRulesCreateJavaLibraryRuleWithJsr199Javac()
-      throws IOException, NoSuchBuildTargetException, InterruptedException {
-    ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
-    FakeBuckConfig buckConfig = new FakeBuckConfig();
-
-    KnownBuildRuleTypes buildRuleTypes = KnownBuildRuleTypes.createBuilder(
-        buckConfig,
-        projectFilesystem,
-        createExecutor(),
-        new FakeAndroidDirectoryResolver(),
-        DUMMY_PYTHON_ENVIRONMENT).build();
-    DefaultJavaLibrary libraryRule = createJavaLibrary(buildRuleTypes);
-
-    Javac javac = libraryRule.getJavacOptions().getJavac();
-    assertTrue(javac.getClass().toString(), javac instanceof Jsr199Javac);
-  }
-
-  @Test
-  public void whenJavacIsSetInBuckConfigConfiguredRulesCreateJavaLibraryRuleWithJavacSet()
-      throws IOException, NoSuchBuildTargetException, InterruptedException {
-    ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
-    final File javac = temporaryFolder.newFile();
-    javac.setExecutable(true);
-
-    ImmutableMap<String, ImmutableMap<String, String>> sections = ImmutableMap.of(
-        "tools", ImmutableMap.of("javac", javac.toString()));
-    FakeBuckConfig buckConfig = new FakeBuckConfig(sections);
-
-    ProcessExecutor processExecutor = createExecutor(javac.toString(), "");
-
-    KnownBuildRuleTypes buildRuleTypes = KnownBuildRuleTypes.createBuilder(
-        buckConfig,
-        projectFilesystem,
-        processExecutor,
-        new FakeAndroidDirectoryResolver(),
-        DUMMY_PYTHON_ENVIRONMENT)
-        .build();
-
-    DefaultJavaLibrary libraryRule = createJavaLibrary(buildRuleTypes);
-    assertEquals(
-        javac.toPath(),
-        ((ExternalJavac) libraryRule.getJavacOptions().getJavac()).getPath());
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
+    return (DefaultJavaLibrary) description
+        .createBuildRule(TargetGraph.EMPTY, buildRuleParams, resolver, arg);
   }
 
   @Test
   public void whenJavacIsSetInBuckConfigConfiguredRulesCreateJavaLibraryRuleWithDifferentRuleKey()
       throws IOException, NoSuchBuildTargetException, InterruptedException {
-    ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
     final File javac = temporaryFolder.newFile();
     assertTrue(javac.setExecutable(true));
 
     ImmutableMap<String, ImmutableMap<String, String>> sections = ImmutableMap.of(
         "tools", ImmutableMap.of("javac", javac.toString()));
-    FakeBuckConfig buckConfig = new FakeBuckConfig(sections);
+    BuckConfig buckConfig = FakeBuckConfig.builder().setSections(sections).build();
 
     KnownBuildRuleTypes buildRuleTypes =
-        DefaultKnownBuildRuleTypes.getDefaultKnownBuildRuleTypes(new FakeProjectFilesystem());
+        DefaultKnownBuildRuleTypes.getDefaultKnownBuildRuleTypes(
+            new FakeProjectFilesystem(), environment);
     DefaultJavaLibrary libraryRule = createJavaLibrary(buildRuleTypes);
 
     ProcessExecutor processExecutor = createExecutor(javac.toString(), "fakeVersion 0.1");
     KnownBuildRuleTypes configuredBuildRuleTypes = KnownBuildRuleTypes.createBuilder(
         buckConfig,
-        projectFilesystem,
         processExecutor,
         new FakeAndroidDirectoryResolver(),
-        DUMMY_PYTHON_ENVIRONMENT)
+        Optional.<Path>absent())
         .build();
     DefaultJavaLibrary configuredRule = createJavaLibrary(configuredBuildRuleTypes);
 
-    SourcePathResolver resolver = new SourcePathResolver(new BuildRuleResolver());
-    DefaultRuleKeyBuilderFactory factory =
-        new DefaultRuleKeyBuilderFactory(new NullFileHashCache(), resolver);
-    RuleKey configuredKey = factory.newInstance(configuredRule).build();
-    RuleKey libraryKey = factory.newInstance(libraryRule).build();
+    SourcePathResolver resolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+     );
+    Path javacPath = javac.toPath();
+    FakeFileHashCache hashCache = new FakeFileHashCache(
+        ImmutableMap.of(javacPath, MorePaths.asByteSource(javacPath).hash(Hashing.sha1())));
+    RuleKey configuredKey = new DefaultRuleKeyBuilderFactory(0, hashCache, resolver).build(
+        configuredRule);
+    RuleKey libraryKey = new DefaultRuleKeyBuilderFactory(0, hashCache, resolver).build(
+        libraryRule);
 
     assertNotEquals(libraryKey, configuredKey);
   }
 
   @Test
-  public void whenJavacIsNotSetInBuckConfigConfiguredRulesCreateAndroidLibraryRuleWithJsr199Javac()
-      throws IOException, NoSuchBuildTargetException, InterruptedException {
-    ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
-    FakeBuckConfig buckConfig = new FakeBuckConfig();
-
-    KnownBuildRuleTypes buildRuleTypes = KnownBuildRuleTypes.createBuilder(
-        buckConfig,
-        projectFilesystem,
-        createExecutor(),
-        new FakeAndroidDirectoryResolver(),
-        new PythonEnvironment(
-            Paths.get("fake_python"),
-            PythonVersion.of("Python 2.7"))).build();
-    AndroidLibraryDescription description =
-        (AndroidLibraryDescription) buildRuleTypes.getDescription(AndroidLibraryDescription.TYPE);
-
-    AndroidLibraryDescription.Arg arg = new AndroidLibraryDescription.Arg();
-    populateJavaArg(arg);
-    arg.manifest = Optional.absent();
-    AndroidLibrary rule = (AndroidLibrary) description.createBuildRule(
-        buildRuleParams,
-        new BuildRuleResolver(),
-        arg);
-
-
-    Javac javac = rule.getJavacOptions().getJavac();
-    assertTrue(javac.getClass().toString(), javac instanceof Jsr199Javac);
-  }
-
-  @Test
-  public void whenJavacIsSetInBuckConfigConfiguredRulesCreateAndroidLibraryBuildRuleWithJavacSet()
-      throws IOException, NoSuchBuildTargetException, InterruptedException {
-    ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
-    final File javac = temporaryFolder.newFile();
-    javac.setExecutable(true);
-
-    ImmutableMap<String, ImmutableMap<String, String>> sections = ImmutableMap.of(
-        "tools", ImmutableMap.of("javac", javac.toString()));
-    FakeBuckConfig buckConfig = new FakeBuckConfig(sections);
-
-    ProcessExecutor processExecutor = createExecutor(javac.toString(), "");
-
-    KnownBuildRuleTypes buildRuleTypes = KnownBuildRuleTypes.createBuilder(
-        buckConfig,
-        projectFilesystem,
-        processExecutor,
-    new FakeAndroidDirectoryResolver(),
-        DUMMY_PYTHON_ENVIRONMENT)
-        .build();
-    AndroidLibraryDescription description =
-        (AndroidLibraryDescription) buildRuleTypes.getDescription(AndroidLibraryDescription.TYPE);
-
-    AndroidLibraryDescription.Arg arg = new AndroidLibraryDescription.Arg();
-    populateJavaArg(arg);
-    arg.manifest = Optional.absent();
-    AndroidLibrary rule = (AndroidLibrary) description.createBuildRule(
-        buildRuleParams,
-        new BuildRuleResolver(),
-        arg);
-    assertEquals(javac.toPath(), ((ExternalJavac) rule.getJavacOptions().getJavac()).getPath());
-  }
-
-  @Test
   public void whenRegisteringDescriptionsLastOneWins()
       throws IOException, NoSuchBuildTargetException {
+    FlavorDomain<CxxPlatform> cxxPlatforms = FlavorDomain.of("C/C++ platform");
+    CxxPlatform defaultPlatform = CxxPlatformUtils.DEFAULT_PLATFORM;
 
     KnownBuildRuleTypes.Builder buildRuleTypesBuilder = KnownBuildRuleTypes.builder();
     buildRuleTypesBuilder.register(new TestDescription("Foo"));
     buildRuleTypesBuilder.register(new TestDescription("Bar"));
     buildRuleTypesBuilder.register(new TestDescription("Raz"));
 
+    buildRuleTypesBuilder.setCxxPlatforms(
+        cxxPlatforms);
+    buildRuleTypesBuilder.setDefaultCxxPlatform(defaultPlatform);
+
     KnownBuildRuleTypes buildRuleTypes = buildRuleTypesBuilder.build();
 
     assertEquals(
         "Only one description should have wound up in the final KnownBuildRuleTypes",
-        KnownBuildRuleTypes.builder().build().getAllDescriptions().size() + 1,
+        KnownBuildRuleTypes.builder()
+            .setCxxPlatforms(cxxPlatforms)
+            .setDefaultCxxPlatform(defaultPlatform)
+            .build()
+            .getAllDescriptions()
+            .size() +
+            1,
         buildRuleTypes.getAllDescriptions().size());
 
     boolean foundTestDescription = false;
@@ -321,28 +250,25 @@ public class KnownBuildRuleTypesTest {
   @Test
   public void createInstanceShouldReturnDifferentInstancesIfCalledWithDifferentParameters()
       throws IOException, InterruptedException {
-    ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
     KnownBuildRuleTypes knownBuildRuleTypes1 = KnownBuildRuleTypes.createInstance(
-        new FakeBuckConfig(),
-        projectFilesystem,
+        FakeBuckConfig.builder().build(),
         createExecutor(),
         new FakeAndroidDirectoryResolver(),
-        DUMMY_PYTHON_ENVIRONMENT);
+        Optional.<Path>absent());
 
     final File javac = temporaryFolder.newFile();
     javac.setExecutable(true);
     ImmutableMap<String, ImmutableMap<String, String>> sections = ImmutableMap.of(
         "tools", ImmutableMap.of("javac", javac.toString()));
-    FakeBuckConfig buckConfig = new FakeBuckConfig(sections);
+    BuckConfig buckConfig = FakeBuckConfig.builder().setSections(sections).build();
 
     ProcessExecutor processExecutor = createExecutor(javac.toString(), "");
 
     KnownBuildRuleTypes knownBuildRuleTypes2 = KnownBuildRuleTypes.createInstance(
         buckConfig,
-        projectFilesystem,
         processExecutor,
         new FakeAndroidDirectoryResolver(),
-        DUMMY_PYTHON_ENVIRONMENT);
+        Optional.<Path>absent());
 
     assertNotEquals(knownBuildRuleTypes1, knownBuildRuleTypes2);
   }
@@ -350,19 +276,47 @@ public class KnownBuildRuleTypesTest {
   @Test
   public void canSetDefaultPlatformToDefault() throws IOException,
         InterruptedException {
-    ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
     ImmutableMap<String, ImmutableMap<String, String>> sections = ImmutableMap.of(
         "cxx", ImmutableMap.of("default_platform", "default"));
-    FakeBuckConfig buckConfig = new FakeBuckConfig(sections);
+    BuckConfig buckConfig = FakeBuckConfig.builder().setSections(sections).build();
 
     // This would throw if "default" weren't available as a platform.
     KnownBuildRuleTypes.createBuilder(
         buckConfig,
-        projectFilesystem,
         createExecutor(),
         new FakeAndroidDirectoryResolver(),
-        DUMMY_PYTHON_ENVIRONMENT).build();
+        Optional.<Path>absent()).build();
   }
+
+  @Test
+  public void canOverrideHostPlatform() throws IOException,
+      InterruptedException {
+    ImmutableMap<String, ImmutableMap<String, String>> sections = ImmutableMap.of(
+        "cxx", ImmutableMap.of("host_platform", "foo"));
+    BuckConfig buckConfig = FakeBuckConfig.builder().setSections(sections).build();
+    CxxPlatform hostPlatform =
+        KnownBuildRuleTypes.getHostCxxPlatformFromConfig(
+            new CxxBuckConfig(buckConfig),
+            FAKE_CXX_PLATFORMS,
+            CxxPlatformUtils.DEFAULT_PLATFORM);
+    assertEquals(DefaultCxxPlatforms.FLAVOR, hostPlatform.getFlavor());
+    assertEquals(".foo", hostPlatform.getSharedLibraryExtension());
+  }
+
+  @Test
+  public void hostPlatformReturnsDefaultIfNotFound() throws IOException,
+      InterruptedException {
+    ImmutableMap<String, ImmutableMap<String, String>> sections = ImmutableMap.of(
+        "cxx", ImmutableMap.of("host_platform", "baz"));
+    BuckConfig buckConfig = FakeBuckConfig.builder().setSections(sections).build();
+    CxxPlatform hostPlatform =
+        KnownBuildRuleTypes.getHostCxxPlatformFromConfig(
+            new CxxBuckConfig(buckConfig),
+            FAKE_CXX_PLATFORMS,
+            CxxPlatformUtils.DEFAULT_PLATFORM);
+    assertEquals(CxxPlatformUtils.DEFAULT_PLATFORM, hostPlatform);
+  }
+
 
   private ProcessExecutor createExecutor() throws IOException {
     File javac = temporaryFolder.newFile();
@@ -373,13 +327,17 @@ public class KnownBuildRuleTypesTest {
   private ProcessExecutor createExecutor(String javac, String version) {
     Map<ProcessExecutorParams, FakeProcess> processMap = new HashMap<>();
 
-      FakeProcess process = new FakeProcess(0, "", version);
-      ProcessExecutorParams params = ProcessExecutorParams.builder()
-          .setCommand(ImmutableList.of(javac, "-version"))
-          .build();
-      processMap.put(params, process);
+    FakeProcess process = new FakeProcess(0, "", version);
+    ProcessExecutorParams params = ProcessExecutorParams.builder()
+        .setCommand(ImmutableList.of(javac, "-version"))
+        .build();
+    processMap.put(params, process);
 
     addXcodeSelectProcess(processMap, FAKE_XCODE_DEV_PATH);
+
+    processMap.putAll(
+        DefaultKnownBuildRuleTypes.getPythonProcessMap(
+            DefaultKnownBuildRuleTypes.getPaths(environment)));
 
     return new FakeProcessExecutor(processMap);
   }

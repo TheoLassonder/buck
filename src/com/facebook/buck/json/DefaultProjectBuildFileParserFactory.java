@@ -17,50 +17,32 @@
 package com.facebook.buck.json;
 
 import com.facebook.buck.event.BuckEventBus;
-import com.facebook.buck.rules.Description;
+import com.facebook.buck.rules.ConstructorArgMarshaller;
 import com.facebook.buck.util.Console;
+import com.facebook.buck.util.ProcessExecutor;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
-
-import java.nio.file.Path;
 
 public class DefaultProjectBuildFileParserFactory implements ProjectBuildFileParserFactory {
-  private final Path projectRoot;
-  private final String pythonInterpreter;
-  private final boolean allowEmptyGlobs;
-  private final String buildFileName;
-  private final Iterable<String> defaultIncludes;
-  private final ImmutableSet<Description<?>> descriptions;
+  private final ProjectBuildFileParserOptions options;
 
-  public DefaultProjectBuildFileParserFactory(
-      Path projectRoot,
-      String pythonInterpreter,
-      boolean allowEmptyGlobs,
-      String buildFileName,
-      Iterable<String> defaultIncludes,
-      ImmutableSet<Description<?>> descriptions) {
-    this.projectRoot = projectRoot;
-    this.pythonInterpreter = pythonInterpreter;
-    this.allowEmptyGlobs = allowEmptyGlobs;
-    this.buildFileName = buildFileName;
-    this.defaultIncludes = defaultIncludes;
-    this.descriptions = descriptions;
+  public DefaultProjectBuildFileParserFactory(ProjectBuildFileParserOptions options) {
+    this.options = options;
   }
 
   @Override
   public ProjectBuildFileParser createParser(
+      ConstructorArgMarshaller marshaller,
       Console console,
       ImmutableMap<String, String> environment,
-      BuckEventBus buckEventBus) {
+      BuckEventBus buckEventBus,
+      boolean ignoreBuckAutodepsFiles) {
     return new ProjectBuildFileParser(
-        projectRoot,
-        pythonInterpreter,
-        allowEmptyGlobs,
-        buildFileName,
-        defaultIncludes,
-        descriptions,
-        console,
+        options,
+        marshaller,
         environment,
-        buckEventBus);
+        options.getRawConfig(),
+        buckEventBus,
+        new ProcessExecutor(console),
+        ignoreBuckAutodepsFiles);
   }
 }

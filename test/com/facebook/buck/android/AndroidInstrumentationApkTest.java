@@ -16,20 +16,25 @@
 
 package com.facebook.buck.android;
 
-import static com.facebook.buck.java.JavaCompilationConstants.DEFAULT_JAVAC_OPTIONS;
+import static com.facebook.buck.jvm.java.JavaCompilationConstants.DEFAULT_JAVAC_OPTIONS;
 import static org.junit.Assert.assertEquals;
 
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.cli.FakeBuckConfig;
-import com.facebook.buck.java.FakeJavaLibrary;
-import com.facebook.buck.java.JavaLibrary;
-import com.facebook.buck.java.KeystoreBuilder;
+import com.facebook.buck.cxx.CxxPlatformUtils;
+import com.facebook.buck.jvm.java.FakeJavaLibrary;
+import com.facebook.buck.jvm.java.JavaLibrary;
+import com.facebook.buck.jvm.java.KeystoreBuilder;
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
+import com.facebook.buck.rules.FakeSourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.facebook.buck.rules.TestSourcePath;
+import com.facebook.buck.rules.TargetGraph;
 import com.google.common.base.Optional;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableMap;
@@ -41,19 +46,19 @@ import com.google.common.util.concurrent.MoreExecutors;
 import org.junit.Test;
 
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 public class AndroidInstrumentationApkTest {
 
   @Test
-  public void testAndroidInstrumentationApkExcludesClassesFromInstrumentedApk() {
-    BuildRuleResolver ruleResolver = new BuildRuleResolver();
+  public void testAndroidInstrumentationApkExcludesClassesFromInstrumentedApk() throws Exception {
+    BuildRuleResolver ruleResolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     SourcePathResolver pathResolver = new SourcePathResolver(ruleResolver);
     final FakeJavaLibrary javaLibrary1 = new FakeJavaLibrary(
-        BuildTarget.builder("//java/com/example", "lib1").build(), pathResolver);
+        BuildTargetFactory.newInstance("//java/com/example:lib1"), pathResolver);
 
     FakeJavaLibrary javaLibrary2 = new FakeJavaLibrary(
-        BuildTarget.builder("//java/com/example", "lib2").build(),
+        BuildTargetFactory.newInstance("//java/com/example:lib2"),
         pathResolver,
         /* deps */ ImmutableSortedSet.of((BuildRule) javaLibrary1)) {
       @Override
@@ -67,10 +72,10 @@ public class AndroidInstrumentationApkTest {
     };
 
     final FakeJavaLibrary javaLibrary3 = new FakeJavaLibrary(
-        BuildTarget.builder("//java/com/example", "lib3").build(), pathResolver);
+        BuildTargetFactory.newInstance("//java/com/example:lib3"), pathResolver);
 
     FakeJavaLibrary javaLibrary4 = new FakeJavaLibrary(
-        BuildTarget.builder("//java/com/example", "lib4").build(),
+        BuildTargetFactory.newInstance("//java/com/example:lib4"),
         pathResolver,
         /* deps */ ImmutableSortedSet.of((BuildRule) javaLibrary3)) {
       @Override
@@ -89,19 +94,19 @@ public class AndroidInstrumentationApkTest {
     ruleResolver.addToIndex(javaLibrary4);
 
     BuildRule keystore = KeystoreBuilder.createBuilder(
-        BuildTarget.builder("//keystores", "debug").build())
-        .setProperties(Paths.get("keystores/debug.properties"))
-        .setStore(Paths.get("keystores/debug.keystore"))
+        BuildTargetFactory.newInstance("//keystores:debug"))
+        .setProperties(new FakeSourcePath("keystores/debug.properties"))
+        .setStore(new FakeSourcePath("keystores/debug.keystore"))
         .build(ruleResolver);
 
     // AndroidBinaryRule transitively depends on :lib1, :lib2, and :lib3.
     AndroidBinaryBuilder androidBinaryBuilder = AndroidBinaryBuilder.createBuilder(
-        BuildTarget.builder("//apps", "app").build());
+        BuildTargetFactory.newInstance("//apps:app"));
     ImmutableSortedSet<BuildTarget> originalDepsTargets = ImmutableSortedSet.of(
         javaLibrary2.getBuildTarget(),
         javaLibrary3.getBuildTarget());
     androidBinaryBuilder
-        .setManifest(new TestSourcePath("apps/AndroidManifest.xml"))
+        .setManifest(new FakeSourcePath("apps/AndroidManifest.xml"))
         .setKeystore(keystore.getBuildTarget())
         .setOriginalDeps(originalDepsTargets);
     AndroidBinary androidBinary = (AndroidBinary) androidBinaryBuilder.build(ruleResolver);
@@ -113,40 +118,54 @@ public class AndroidInstrumentationApkTest {
     AndroidInstrumentationApkDescription.Arg arg = new AndroidInstrumentationApkDescription.Arg();
     arg.apk = androidBinary.getBuildTarget();
     arg.deps = Optional.of(apkOriginalDepsTargets);
-    arg.manifest = new TestSourcePath("apps/InstrumentationAndroidManifest.xml");
+    arg.manifest = new FakeSourcePath("apps/InstrumentationAndroidManifest.xml");
 
     BuildRuleParams params = new FakeBuildRuleParamsBuilder(
-        BuildTarget.builder("//apps", "instrumentation").build())
-        .setDeps(ruleResolver.getAllRules(apkOriginalDepsTargets))
+        BuildTargetFactory.newInstance("//apps:instrumentation"))
+        .setDeclaredDeps(ruleResolver.getAllRules(apkOriginalDepsTargets))
         .setExtraDeps(ImmutableSortedSet.<BuildRule>of(androidBinary))
         .build();
     AndroidInstrumentationApk androidInstrumentationApk = (AndroidInstrumentationApk)
         new AndroidInstrumentationApkDescription(
-            new ProGuardConfig(new FakeBuckConfig()),
+            new ProGuardConfig(FakeBuckConfig.builder().build()),
             DEFAULT_JAVAC_OPTIONS,
             ImmutableMap.<NdkCxxPlatforms.TargetCpuType, NdkCxxPlatform>of(),
-            MoreExecutors.newDirectExecutorService())
-                .createBuildRule(params, ruleResolver, arg);
+            MoreExecutors.newDirectExecutorService(),
+            CxxPlatformUtils.DEFAULT_CONFIG)
+            .createBuildRule(TargetGraph.EMPTY, params, ruleResolver, arg);
 
     assertEquals(
         "//apps:app should have three JAR files to dex.",
         ImmutableSet.of(
-            Paths.get("buck-out/gen/java/com/example/lib1.jar"),
-            Paths.get("buck-out/gen/java/com/example/lib2.jar"),
-            Paths.get("buck-out/gen/java/com/example/lib3.jar")),
+            BuildTargets.getGenPath(
+                javaLibrary1.getProjectFilesystem(),
+                javaLibrary1.getBuildTarget(),
+                "%s.jar"),
+            BuildTargets.getGenPath(
+                javaLibrary2.getProjectFilesystem(),
+                javaLibrary2.getBuildTarget(),
+                "%s.jar"),
+            BuildTargets.getGenPath(
+                javaLibrary3.getProjectFilesystem(),
+                javaLibrary3.getBuildTarget(),
+                "%s.jar")),
         FluentIterable
             .from(androidBinary.getAndroidPackageableCollection().getClasspathEntriesToDex())
-            .transform(pathResolver.getPathFunction())
+            .transform(pathResolver.deprecatedPathFunction())
             .toSet());
     assertEquals(
         "//apps:instrumentation should have one JAR file to dex.",
-        ImmutableSet.of(Paths.get("buck-out/gen/java/com/example/lib4.jar")),
+        ImmutableSet.of(
+            BuildTargets.getGenPath(
+                javaLibrary4.getProjectFilesystem(),
+                javaLibrary4.getBuildTarget(),
+                "%s.jar")),
         FluentIterable
             .from(
                 androidInstrumentationApk
                     .getAndroidPackageableCollection()
                     .getClasspathEntriesToDex())
-            .transform(pathResolver.getPathFunction())
+            .transform(pathResolver.deprecatedPathFunction())
             .toSet());
   }
 }

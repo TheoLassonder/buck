@@ -16,48 +16,56 @@
 
 package com.facebook.buck.cli;
 
+import static com.facebook.buck.rules.TestCellBuilder.createCellRoots;
 import static org.junit.Assert.assertEquals;
 
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.parser.BuildFileSpec;
 import com.facebook.buck.parser.BuildTargetPatternTargetNodeParser;
 import com.facebook.buck.parser.BuildTargetSpec;
 import com.facebook.buck.parser.TargetNodePredicateSpec;
+import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.google.common.base.Predicates;
-import com.google.common.collect.ImmutableSet;
 
 import org.junit.Test;
 
-import java.nio.file.Path;
 import java.nio.file.Paths;
 
 public class CommandLineTargetNodeSpecParserTest {
 
   private static final CommandLineTargetNodeSpecParser PARSER =
       new CommandLineTargetNodeSpecParser(
-          new FakeBuckConfig(),
-          new BuildTargetPatternTargetNodeParser(ImmutableSet.<Path>of()));
+          FakeBuckConfig.builder().build(),
+          new BuildTargetPatternTargetNodeParser());
 
   @Test
   public void trailingDotDotDot() {
+    ProjectFilesystem root = new FakeProjectFilesystem();
     assertEquals(
         TargetNodePredicateSpec.of(
             Predicates.alwaysTrue(),
-            BuildFileSpec.fromRecursivePath(Paths.get("hello"))),
-        PARSER.parse("//hello/..."));
+            BuildFileSpec.fromRecursivePath(
+                Paths.get("hello").toAbsolutePath(),
+                root.getRootPath())),
+        PARSER.parse(createCellRoots(root), "//hello/..."));
     assertEquals(
         TargetNodePredicateSpec.of(
             Predicates.alwaysTrue(),
-            BuildFileSpec.fromRecursivePath(Paths.get(""))),
-        PARSER.parse("//..."));
+            BuildFileSpec.fromRecursivePath(
+                Paths.get("").toAbsolutePath(),
+                root.getRootPath())),
+        PARSER.parse(createCellRoots(root), "//..."));
     assertEquals(
         TargetNodePredicateSpec.of(
             Predicates.alwaysTrue(),
-            BuildFileSpec.fromRecursivePath(Paths.get(""))),
-        PARSER.parse("..."));
+            BuildFileSpec.fromRecursivePath(
+                Paths.get("").toAbsolutePath(),
+                root.getRootPath())),
+        PARSER.parse(createCellRoots(root), "..."));
     assertEquals(
         BuildTargetSpec.from(BuildTargetFactory.newInstance("//hello:...")),
-        PARSER.parse("//hello:..."));
+        PARSER.parse(createCellRoots(root), "//hello:..."));
   }
 
   @Test
@@ -65,8 +73,10 @@ public class CommandLineTargetNodeSpecParserTest {
     assertEquals(
         TargetNodePredicateSpec.of(
             Predicates.alwaysTrue(),
-            BuildFileSpec.fromPath(Paths.get("hello"))),
-        PARSER.parse("//hello:"));
+            BuildFileSpec.fromPath(
+                Paths.get("hello").toAbsolutePath(),
+                Paths.get("").toAbsolutePath())),
+        PARSER.parse(createCellRoots(null), "//hello:"));
   }
 
   @Test
@@ -75,6 +85,13 @@ public class CommandLineTargetNodeSpecParserTest {
     assertEquals("//:", PARSER.normalizeBuildTargetString(":"));
     assertEquals("//...", PARSER.normalizeBuildTargetString("//..."));
     assertEquals("//...", PARSER.normalizeBuildTargetString("..."));
+  }
+
+  @Test
+  public void crossCellTargets(){
+    assertEquals("@other//:", PARSER.normalizeBuildTargetString("@other//:"));
+    assertEquals("+other//...", PARSER.normalizeBuildTargetString("+other//..."));
+    assertEquals("other//:", PARSER.normalizeBuildTargetString("other//"));
   }
 
 }

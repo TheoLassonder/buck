@@ -19,23 +19,39 @@ package com.facebook.buck.hashing;
 import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
-import com.google.common.hash.Funnels;
 import com.google.common.hash.Hasher;
-import com.google.common.io.ByteStreams;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Set;
 
 public class PathHashing {
   // Utility class, do not instantiate.
   private PathHashing() { }
 
   private static final Path EMPTY_PATH = Paths.get("");
+
+  public static ImmutableSet<Path> hashPath(
+      Hasher hasher,
+      FileHashLoader fileHashLoader,
+      ProjectFilesystem projectFilesystem,
+      Path root) throws IOException {
+    Preconditions.checkArgument(
+        !root.equals(EMPTY_PATH),
+        "Path to hash (%s) must not be empty",
+        root);
+    ImmutableSet.Builder<Path> children = ImmutableSet.builder();
+    for (Path path : ImmutableSortedSet.copyOf(projectFilesystem.getFilesUnderPath(root))) {
+      StringHashing.hashStringAndLength(hasher, MorePaths.pathWithUnixSeparators(path));
+      if (!root.equals(path)) {
+        children.add(root.relativize(path));
+      }
+      hasher.putBytes(fileHashLoader.get(projectFilesystem.resolve(path)).asBytes());
+    }
+    return children.build();
+  }
 
   /**
    * Iterates recursively over all files under {@code paths}, sorts
@@ -44,31 +60,12 @@ public class PathHashing {
    */
   public static void hashPaths(
       Hasher hasher,
+      FileHashLoader fileHashLoader,
       ProjectFilesystem projectFilesystem,
-      Set<Path> paths) throws IOException {
-    Preconditions.checkArgument(
-        !paths.contains(EMPTY_PATH),
-        "Paths to hash (%s) must not contain empty path",
-        paths
-    );
-    try (final OutputStream hasherOutputStream = Funnels.asOutputStream(hasher)) {
-      for (Path path : walkedPathsInSortedOrder(projectFilesystem, paths)) {
-        StringHashing.hashStringAndLength(hasher, MorePaths.pathWithUnixSeparators(path));
-        hasher.putLong(projectFilesystem.getFileSize(path));
-        try (InputStream inputStream = projectFilesystem.newFileInputStream(path)) {
-          ByteStreams.copy(inputStream, hasherOutputStream);
-        }
-      }
+      ImmutableSortedSet<Path> paths) throws IOException {
+    for (Path path : paths) {
+      hashPath(hasher, fileHashLoader, projectFilesystem, path);
     }
   }
 
-  private static ImmutableSortedSet<Path> walkedPathsInSortedOrder(
-      ProjectFilesystem projectFilesystem,
-      Set<Path> pathsToWalk) throws IOException {
-    final ImmutableSortedSet.Builder<Path> walkedPaths = ImmutableSortedSet.naturalOrder();
-    for (Path pathToWalk : pathsToWalk) {
-      walkedPaths.addAll(projectFilesystem.getFilesUnderPath(pathToWalk));
-    }
-    return walkedPaths.build();
-  }
 }

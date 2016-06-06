@@ -111,6 +111,10 @@ a {
   padding: 0 20px !important;
 }
 
+.warning {
+  color: #A00;
+}
+
 header:after, section.content:after, footer:after {
   clear: both;
   content: ".";
@@ -300,6 +304,16 @@ footer {
 
 .faq_q {
   font-weight: bold;
+}
+
+.inline-link {
+  font-size: small;
+  vertical-align: top;
+  display: none;
+}
+
+:hover > .inline-link {
+  display: inline;
 }
 
 /* For use in a <td> */

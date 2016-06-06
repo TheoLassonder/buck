@@ -17,18 +17,18 @@
 package com.facebook.buck.step;
 
 import com.facebook.buck.event.BuckEventBusFactory;
-import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.FakeJavaPackageFinder;
-import com.facebook.buck.testutil.IdentityPathAbsolutifier;
+import com.facebook.buck.jvm.java.FakeJavaPackageFinder;
 import com.facebook.buck.testutil.TestConsole;
 import com.facebook.buck.util.ClassLoaderCache;
+import com.facebook.buck.util.ObjectMappers;
 import com.facebook.buck.util.environment.Platform;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.base.Function;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.util.concurrent.ListeningExecutorService;
+import com.google.common.util.concurrent.MoreExecutors;
 
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.Executors;
 
 public class TestExecutionContext {
 
@@ -41,25 +41,18 @@ public class TestExecutionContext {
   private static ClassLoaderCache testClassLoaderCache = new ClassLoaderCache();
 
   public static ExecutionContext.Builder newBuilder() {
+    Map<ExecutionContext.ExecutorPool, ListeningExecutorService> executors = new HashMap<>();
+    executors.put(ExecutionContext.ExecutorPool.CPU, MoreExecutors.listeningDecorator(
+        Executors.newCachedThreadPool()));
     return ExecutionContext.builder()
         .setConsole(new TestConsole())
-        .setProjectFilesystem(
-            new ProjectFilesystem(Paths.get(".")) {
-              @Override
-              public Path resolve(Path path) {
-                return path;
-              }
-              @Override
-              public Function<Path, Path> getAbsolutifier() {
-                return IdentityPathAbsolutifier.getIdentityAbsolutifier();
-              }
-            })
-        .setEventBus(BuckEventBusFactory.newInstance())
+        .setBuckEventBus(BuckEventBusFactory.newInstance())
         .setPlatform(Platform.detect())
         .setEnvironment(ImmutableMap.copyOf(System.getenv()))
         .setJavaPackageFinder(new FakeJavaPackageFinder())
-        .setObjectMapper(new ObjectMapper())
-        .setClassLoaderCache(testClassLoaderCache);
+        .setObjectMapper(ObjectMappers.newDefaultInstance())
+        .setClassLoaderCache(testClassLoaderCache)
+        .setExecutors(executors);
   }
 
   public static ExecutionContext newInstance() {

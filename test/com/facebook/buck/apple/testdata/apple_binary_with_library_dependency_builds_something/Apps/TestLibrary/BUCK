@@ -1,6 +1,0 @@
-apple_library(
-  name = 'TestLibrary',
-  srcs = ['lib.c'],
-  exported_headers = ['lib.h'],
-  visibility = ['//Apps/...'],
-)

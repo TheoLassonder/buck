@@ -17,8 +17,8 @@
 package com.facebook.buck.python;
 
 import com.facebook.buck.model.BuildTarget;
-import com.facebook.buck.rules.RuleKey;
 import com.facebook.buck.rules.RuleKeyAppendable;
+import com.facebook.buck.rules.RuleKeyObjectSink;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.util.HumanReadableException;
 import com.facebook.buck.util.immutables.BuckStyleImmutable;
@@ -67,10 +67,10 @@ abstract class AbstractPythonPackageComponents implements RuleKeyAppendable {
   public abstract Optional<Boolean> isZipSafe();
 
   @Override
-  public final RuleKey.Builder appendToRuleKey(RuleKey.Builder builder) {
+  public final void appendToRuleKey(RuleKeyObjectSink sink) {
     // Hash all the input components here so we can detect changes in both input file content
     // and module name mappings.
-    // TODO(agallagher): Change the types of these fields from Map to SortedMap so that we don't
+    // TODO(andrewjcg): Change the types of these fields from Map to SortedMap so that we don't
     // have to do all this weird stuff to ensure the key is stable. Please update
     // getInputsToCompareToOutput() as well once this is fixed.
     for (ImmutableMap.Entry<String, Map<Path, SourcePath>> part : ImmutableMap.of(
@@ -78,11 +78,9 @@ abstract class AbstractPythonPackageComponents implements RuleKeyAppendable {
         "resource", getResources(),
         "nativeLibraries", getNativeLibraries()).entrySet()) {
       for (Path name : ImmutableSortedSet.copyOf(part.getValue().keySet())) {
-        builder.setReflectively(part.getKey() + ":" + name, part.getValue().get(name));
+        sink.setReflectively(part.getKey() + ":" + name, part.getValue().get(name));
       }
     }
-
-    return builder;
   }
 
   public static PythonPackageComponents of() {
@@ -164,6 +162,16 @@ abstract class AbstractPythonPackageComponents implements RuleKeyAppendable {
 
     public Builder addResources(Map<Path, SourcePath> sources, BuildTarget from) {
       return add("resource", resources, resourceSources, sources, from);
+    }
+
+    public Builder addNativeLibraries(Path destination, SourcePath source, BuildTarget from) {
+      return add(
+          "native library",
+          nativeLibraries,
+          nativeLibrarySources,
+          destination,
+          source,
+          from);
     }
 
     public Builder addNativeLibraries(Map<Path, SourcePath> sources, BuildTarget from) {

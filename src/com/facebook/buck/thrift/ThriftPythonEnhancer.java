@@ -20,6 +20,7 @@ import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.Flavor;
 import com.facebook.buck.model.ImmutableFlavor;
 import com.facebook.buck.python.PythonLibrary;
+import com.facebook.buck.python.PythonPlatform;
 import com.facebook.buck.python.PythonUtil;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
@@ -27,7 +28,10 @@ import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.BuildTargetSourcePath;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.util.HumanReadableException;
+import com.google.common.base.Function;
+import com.google.common.base.Functions;
 import com.google.common.base.Optional;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
@@ -37,15 +41,18 @@ import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.io.Files;
 
 import java.nio.file.Path;
+import java.nio.file.Paths;
 
 public class ThriftPythonEnhancer implements ThriftLanguageSpecificEnhancer {
 
   private static final Flavor PYTHON_FLAVOR = ImmutableFlavor.of("py");
   private static final Flavor PYTHON_TWISTED_FLAVOR = ImmutableFlavor.of("py-twisted");
+  private static final Flavor PYTHON_ASYNCIO_FLAVOR = ImmutableFlavor.of("py-asyncio");
 
   public enum Type {
     NORMAL,
     TWISTED,
+    ASYNCIO,
   }
 
   private final ThriftBuckConfig thriftBuckConfig;
@@ -63,17 +70,38 @@ public class ThriftPythonEnhancer implements ThriftLanguageSpecificEnhancer {
 
   @Override
   public Flavor getFlavor() {
-    return type == Type.TWISTED ? PYTHON_TWISTED_FLAVOR : PYTHON_FLAVOR;
+    switch (type) {
+      case NORMAL:
+        return PYTHON_FLAVOR;
+      case TWISTED:
+        return PYTHON_TWISTED_FLAVOR;
+      case ASYNCIO:
+        return PYTHON_ASYNCIO_FLAVOR;
+    }
+    throw new IllegalStateException();
   }
 
-  private ImmutableList<String> getGeneratedThriftSources(ImmutableList<String> services) {
-    ImmutableList.Builder<String> sources = ImmutableList.builder();
+  @Override
+  public ImmutableSortedSet<String> getGeneratedSources(
+      BuildTarget target,
+      ThriftConstructorArg args,
+      String thriftName,
+      ImmutableList<String> services) {
 
-    sources.add("constants.py");
-    sources.add("ttypes.py");
+    Path prefix =
+        PythonUtil.getBasePath(target, getBaseModule(args))
+            .resolve(Files.getNameWithoutExtension(thriftName));
+
+    ImmutableSortedSet.Builder<String> sources = ImmutableSortedSet.naturalOrder();
+
+    sources.add(prefix.resolve("constants.py").toString());
+    sources.add(prefix.resolve("ttypes.py").toString());
 
     for (String service : services) {
-      sources.add(service + ".py");
+      sources.add(prefix.resolve(service + ".py").toString());
+      if (type == Type.NORMAL) {
+        sources.add(prefix.resolve(service + "-remote").toString());
+      }
     }
 
     return sources.build();
@@ -85,37 +113,36 @@ public class ThriftPythonEnhancer implements ThriftLanguageSpecificEnhancer {
         return args.pyBaseModule;
       case TWISTED:
         return args.pyTwistedBaseModule;
-      default:
-        throw new IllegalStateException(String.format("Unexpected python thrift type: %s", type));
+      case ASYNCIO:
+        return args.pyAsyncioBaseModule;
     }
+    throw new IllegalStateException(String.format("Unexpected python thrift type: %s", type));
   }
 
   @Override
   public PythonLibrary createBuildRule(
+      TargetGraph targetGraph,
       BuildRuleParams params,
       BuildRuleResolver resolver,
       ThriftConstructorArg args,
       ImmutableMap<String, ThriftSource> sources,
       ImmutableSortedSet<BuildRule> deps) {
 
-    Path baseModule = PythonUtil.getBasePath(params.getBuildTarget(), getBaseModule(args));
-
     ImmutableMap.Builder<Path, SourcePath> modulesBuilder = ImmutableMap.builder();
 
     // Iterate over all the thrift source, finding the python modules they generate and
     // building up a map of them.
     for (ImmutableMap.Entry<String, ThriftSource> ent : sources.entrySet()) {
-      String thriftBaseName = Files.getNameWithoutExtension(ent.getKey());
       ThriftSource source = ent.getValue();
       Path outputDir = source.getOutputDir();
 
-      for (String partialName : getGeneratedThriftSources(source.getServices())) {
-        Path module = baseModule.resolve(thriftBaseName).resolve(partialName);
+      for (String module :
+           getGeneratedSources(params.getBuildTarget(), args, ent.getKey(), source.getServices())) {
         Path path = outputDir
             .resolve("gen-" + getLanguage())
             .resolve(module);
         modulesBuilder.put(
-            module,
+            Paths.get(module.endsWith(".py") ? module : module + ".py"),
             new BuildTargetSourcePath(source.getCompileRule().getBuildTarget(), path));
       }
 
@@ -131,11 +158,13 @@ public class ThriftPythonEnhancer implements ThriftLanguageSpecificEnhancer {
 
     // Construct a python library and return it as our language specific build rule.  Dependents
     // will use this to pull the generated sources into packages/PEXs.
+    Function<? super PythonPlatform, ImmutableMap<Path, SourcePath>> resources =
+        Functions.constant(ImmutableMap.<Path, SourcePath>of());
     return new PythonLibrary(
         langParams,
         new SourcePathResolver(resolver),
-        modules,
-        ImmutableMap.<Path, SourcePath>of(),
+        Functions.constant(modules),
+        resources,
         Optional.of(true));
   }
 
@@ -146,6 +175,8 @@ public class ThriftPythonEnhancer implements ThriftLanguageSpecificEnhancer {
 
     if (type == Type.TWISTED) {
       implicitDeps.add(thriftBuckConfig.getPythonTwistedDep());
+    } else if (type == Type.ASYNCIO) {
+      implicitDeps.add(thriftBuckConfig.getPythonAsyncioDep());
     }
 
     return implicitDeps.build();
@@ -167,8 +198,8 @@ public class ThriftPythonEnhancer implements ThriftLanguageSpecificEnhancer {
 
     if (args.pyOptions.isPresent()) {
 
-      // Don't allow the "twisted" parameter to be pass via the options parameter, as
-      // use a dedicated flavor to handle it.
+      // Don't allow the "twisted" or "asyncio" parameters to be passed in via the options
+      // parameter, as we use dedicated flavors to handle them.
       if (args.pyOptions.get().contains("twisted")) {
         throw new HumanReadableException(
             "%s: parameter \"py_options\": cannot specify \"twisted\" as an option" +
@@ -176,12 +207,21 @@ public class ThriftPythonEnhancer implements ThriftLanguageSpecificEnhancer {
             target,
             PYTHON_TWISTED_FLAVOR);
       }
+      if (args.pyOptions.get().contains("asyncio")) {
+        throw new HumanReadableException(
+            "%s: parameter \"py_options\": cannot specify \"asyncio\" as an option" +
+                " -- use the \"#%s\" flavor instead",
+            target,
+            PYTHON_ASYNCIO_FLAVOR);
+      }
 
       options.addAll(args.pyOptions.get());
     }
 
     if (type == Type.TWISTED) {
       options.add("twisted");
+    } else if (type == Type.ASYNCIO) {
+      options.add("asyncio");
     }
 
     return options.build();

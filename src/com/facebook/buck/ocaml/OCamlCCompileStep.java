@@ -16,12 +16,16 @@
 
 package com.facebook.buck.ocaml;
 
-import com.facebook.buck.rules.RuleKey;
+import com.facebook.buck.cxx.CxxHeaders;
 import com.facebook.buck.rules.RuleKeyAppendable;
+import com.facebook.buck.rules.RuleKeyObjectSink;
 import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.Tool;
 import com.facebook.buck.shell.ShellStep;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.util.MoreIterables;
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -33,45 +37,12 @@ import java.nio.file.Path;
  */
 public class OCamlCCompileStep extends ShellStep {
 
-  public static class Args implements RuleKeyAppendable {
-    public final Path ocamlCompiler;
-    public final ImmutableList<String> cCompiler;
-    public final ImmutableList<String> flags;
-    public final Path output;
-    public final Path input;
-    private final ImmutableMap<Path, SourcePath> includes;
-
-    public Args(
-        ImmutableList<String> cCompiler,
-        Path ocamlCompiler,
-        Path output,
-        Path input,
-        ImmutableList<String> flags,
-        ImmutableMap<Path, SourcePath> includes) {
-      this.cCompiler = cCompiler;
-      this.ocamlCompiler = ocamlCompiler;
-      this.output = output;
-      this.input = input;
-      this.flags = flags;
-      this.includes = includes;
-    }
-
-    @Override
-    public RuleKey.Builder appendToRuleKey(RuleKey.Builder builder) {
-      builder.setReflectively("cCompiler", cCompiler);
-      builder.setReflectively("ocamlCompiler", ocamlCompiler);
-      // TODO(user): Ensure that this is not an absolute path.
-      builder.setReflectively("output", output.toString());
-      builder.setReflectively("input", input);
-      builder.setReflectively("flags", flags);
-      builder.setReflectively("includes", includes);
-      return builder;
-    }
-  }
-
+  private final SourcePathResolver resolver;
   private final Args args;
 
-  OCamlCCompileStep(Args args) {
+  OCamlCCompileStep(SourcePathResolver resolver, Path workingDirectory, Args args) {
+    super(workingDirectory);
+    this.resolver = resolver;
     this.args = args;
   }
 
@@ -82,9 +53,15 @@ public class OCamlCCompileStep extends ShellStep {
 
   @Override
   protected ImmutableList<String> getShellCommandInternal(ExecutionContext context) {
-    return ImmutableList.<String>builder()
-        .add(args.ocamlCompiler.toString())
-        .addAll(OCamlCompilables.DEFAULT_OCAML_FLAGS)
+    ImmutableList.Builder<String> cmd = ImmutableList.<String>builder()
+        .addAll(args.ocamlCompiler.getCommandPrefix(resolver))
+        .addAll(OCamlCompilables.DEFAULT_OCAML_FLAGS);
+
+    if (args.stdlib.isPresent()) {
+      cmd.add("-nostdlib", OCamlCompilables.OCAML_INCLUDE_FLAG, args.stdlib.get());
+    }
+
+    return cmd
         .add("-cc", args.cCompiler.get(0))
         .addAll(
             MoreIterables.zipAndConcat(
@@ -98,8 +75,54 @@ public class OCamlCCompileStep extends ShellStep {
         .add("-ccopt", "-Wextra")
         .add("-ccopt", String.format("-o %s", args.output.toString()))
         .addAll(args.flags)
-        .add(args.input.toString())
+        .add(resolver.getAbsolutePath(args.input).toString())
         .build();
+  }
+
+  @Override
+  public ImmutableMap<String, String> getEnvironmentVariables(ExecutionContext context) {
+    return args.environment;
+  }
+
+  public static class Args implements RuleKeyAppendable {
+    public final ImmutableMap<String, String> environment;
+    public final Tool ocamlCompiler;
+    public final ImmutableList<String> cCompiler;
+    public final ImmutableList<String> flags;
+    public final Optional<String> stdlib;
+    public final Path output;
+    public final SourcePath input;
+    public final ImmutableList<CxxHeaders> includes;
+
+    public Args(
+        ImmutableMap<String, String> environment,
+        ImmutableList<String> cCompiler,
+        Tool ocamlCompiler,
+        Optional<String> stdlib,
+        Path output,
+        SourcePath input,
+        ImmutableList<String> flags,
+        ImmutableList<CxxHeaders> includes) {
+      this.environment = environment;
+      this.cCompiler = cCompiler;
+      this.ocamlCompiler = ocamlCompiler;
+      this.stdlib = stdlib;
+      this.output = output;
+      this.input = input;
+      this.flags = flags;
+      this.includes = includes;
+    }
+
+    @Override
+    public void appendToRuleKey(RuleKeyObjectSink sink) {
+      sink.setReflectively("cCompiler", cCompiler);
+      sink.setReflectively("ocamlCompiler", ocamlCompiler);
+      sink.setReflectively("stdlib", stdlib);
+      sink.setReflectively("output", output.toString());
+      sink.setReflectively("input", input);
+      sink.setReflectively("flags", flags);
+      sink.setReflectively("includes", includes);
+    }
   }
 
 }

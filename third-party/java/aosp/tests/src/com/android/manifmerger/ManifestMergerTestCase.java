@@ -193,7 +193,7 @@ abstract class ManifestMergerTestCase extends TestCase {
   @NonNull
   TestFiles loadTestData(@NonNull String filename) throws Exception {
 
-    String resName = "data" + File.separator + filename;
+    String resName = "data/" + filename;
     InputStream is = null;
     BufferedReader reader = null;
     BufferedWriter writer = null;
@@ -400,8 +400,9 @@ abstract class ManifestMergerTestCase extends TestCase {
     String expectedErrors = testFiles.getExpectedErrors().trim();
     StringBuilder actualErrors = new StringBuilder();
     for (String s : log.getMessages()) {
-      actualErrors.append(s);
-      if (!s.endsWith("\n")) {
+      String messageWithStrippedFilePath = s.replaceAll("[^\\s\\[]*[/\\\\]([^/\\\\]*\\.xml)", "$1");
+      actualErrors.append(messageWithStrippedFilePath);
+      if (!messageWithStrippedFilePath.endsWith("\n")) {
         actualErrors.append('\n');
       }
     }

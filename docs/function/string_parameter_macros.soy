@@ -10,7 +10,7 @@
     {/param}
     {param content}
 
-{call buck.rule}
+{call buck.function}
 {param status: 'UNFROZEN' /}
 {param overview}
 Some rules allow the use of specialized macros embedded within the strings
@@ -34,7 +34,7 @@ any time to prevent expansion (e.g. <code>\$(dirname ...)</code>).
 
 {param examples}
 
-The following example uses a string parameter macros in a <code>genrule()</code>
+The following example uses a string parameter macros in a <code>genrule()</code>{sp}
 to copy the output of another rule:
 {literal}<pre class="prettyprint lang-py">
 genrule(
@@ -60,7 +60,7 @@ genrule(
 
 {/param}
 
-{/call} // buck.rule
+{/call} // buck.function
     {/param} // content
   {/call}
 {/template}

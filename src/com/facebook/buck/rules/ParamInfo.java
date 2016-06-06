@@ -30,7 +30,10 @@ import java.util.Map;
 
 import javax.annotation.Nullable;
 
-class ParamInfo<T> implements Comparable<ParamInfo<T>> {
+/**
+ * Represents a single field that can be represented in buck build files.
+ */
+public class ParamInfo implements Comparable<ParamInfo> {
 
   private final TypeCoercer<?> typeCoercer;
 
@@ -81,12 +84,23 @@ class ParamInfo<T> implements Comparable<ParamInfo<T>> {
     return typeCoercer.getOutputClass();
   }
 
-  public void traverse(Traversal traversal, T dto) {
+  /**
+   * Traverse the value of the field on {@code dto} that is represented by this instance.
+   *
+   * If this field has a top level Optional type, traversal begins at the Optional value, or not at
+   * all if the field is empty.
+   *
+   * @param traversal traversal to apply on the values.
+   * @param dto the object whose field will be traversed.
+   *
+   * @see TypeCoercer#traverse(Object, TypeCoercer.Traversal)
+   */
+  public void traverse(Traversal traversal, Object dto) {
     traverseHelper(typeCoercer, traversal, dto);
   }
 
   @SuppressWarnings("unchecked")
-  private <U> void traverseHelper(TypeCoercer<U> typeCoercer, Traversal traversal, T dto) {
+  private <U> void traverseHelper(TypeCoercer<U> typeCoercer, Traversal traversal, Object dto) {
     U object;
     try {
       if (isOptional) {
@@ -109,12 +123,14 @@ class ParamInfo<T> implements Comparable<ParamInfo<T>> {
   }
 
   public void setFromParams(
+      CellPathResolver cellRoots,
       ProjectFilesystem filesystem,
       BuildRuleFactoryParams params,
       Object arg,
       Map<String, ?> instance
       ) throws ParamInfoException {
     set(
+        cellRoots,
         filesystem,
         params.target.getBasePath(),
         arg,
@@ -123,13 +139,15 @@ class ParamInfo<T> implements Comparable<ParamInfo<T>> {
 
   /**
    * Sets a single property of the {@code dto}, coercing types as necessary.
-   * @param filesystem {@link com.facebook.buck.io.ProjectFilesystem} used to ensure
-   *        {@link java.nio.file.Path}s exist.
+   * @param cellRoots
+   * @param filesystem {@link ProjectFilesystem} used to ensure
+   *        {@link Path}s exist.
    * @param pathRelativeToProjectRoot The path relative to the project root that this DTO is for.
    * @param dto The constructor DTO on which the value should be set.
    * @param value The value, which may be coerced depending on the type on {@code dto}.
    */
   public void set(
+      CellPathResolver cellRoots,
       ProjectFilesystem filesystem,
       Path pathRelativeToProjectRoot,
       Object dto,
@@ -149,6 +167,7 @@ class ParamInfo<T> implements Comparable<ParamInfo<T>> {
     } else {
       try {
         result = typeCoercer.coerce(
+            cellRoots,
             filesystem,
             pathRelativeToProjectRoot,
             value);
@@ -171,7 +190,11 @@ class ParamInfo<T> implements Comparable<ParamInfo<T>> {
    * Only valid when comparing {@link ParamInfo} instances from the same description.
    */
   @Override
-  public int compareTo(ParamInfo<T> that) {
+  public int compareTo(ParamInfo that) {
+    if (this == that) {
+      return 0;
+    }
+
     return this.name.compareTo(that.name);
   }
 
@@ -186,7 +209,7 @@ class ParamInfo<T> implements Comparable<ParamInfo<T>> {
       return false;
     }
 
-    ParamInfo<?> that = (ParamInfo<?>) obj;
+    ParamInfo that = (ParamInfo) obj;
     return name.equals(that.getName());
   }
 

@@ -19,29 +19,57 @@ package com.facebook.buck.event;
 import static com.facebook.buck.event.TestEventConfigerator.configureTestEvent;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.fail;
 
 import com.facebook.buck.model.BuildTargetFactory;
+import com.google.common.base.Optional;
 
+import org.hamcrest.Matchers;
 import org.junit.Test;
 
 public class InstallEventTest {
   @Test
   public void testEquals() throws Exception {
-    InstallEvent started = configureTestEvent(
+    InstallEvent.Started started = configureTestEvent(
         InstallEvent.started(BuildTargetFactory.newInstance("//foo:bar")));
-    InstallEvent startedTwo = configureTestEvent(
+    InstallEvent.Started startedTwo = configureTestEvent(
         InstallEvent.started(BuildTargetFactory.newInstance("//foo:bar")));
+    InstallEvent.Started startedDifferentEvent = configureTestEvent(
+        InstallEvent.started(BuildTargetFactory.newInstance("//foo:raz")));
     InstallEvent finished = configureTestEvent(
-        InstallEvent.finished(BuildTargetFactory.newInstance("//foo:bar"), true));
+        InstallEvent.finished(
+            started,
+            true,
+            Optional.<Long>absent(),
+            Optional.<String>absent()));
     InstallEvent finishedDifferentEvent = configureTestEvent(
-        InstallEvent.finished(BuildTargetFactory.newInstance("//foo:raz"), true));
+        InstallEvent.finished(
+            startedDifferentEvent,
+            true,
+            Optional.<Long>absent(),
+            Optional.<String>absent()));
     InstallEvent finishedFail = configureTestEvent(
-        InstallEvent.finished(BuildTargetFactory.newInstance("//foo:bar"), false));
+        InstallEvent.finished(
+            started,
+            false,
+            Optional.<Long>absent(),
+            Optional.<String>absent()));
 
-    assertEquals(started, startedTwo);
+    assertNotEquals(started, startedTwo);
     assertNotEquals(finished, finishedDifferentEvent);
     assertNotEquals(started, finished);
-    assertNotEquals(finished, finishedFail);
+    try {
+      finished.equals(finishedFail);
+      fail("Expected an UnsupportedOperationException.");
+    } catch (UnsupportedOperationException e) {
+      assertThat(e.toString(), Matchers.stringContainsInOrder("conflicting", "events"));
+    }
 
+    assertThat(started.isRelatedTo(finished), Matchers.is(true));
+    assertThat(started.isRelatedTo(startedTwo), Matchers.is(false));
+
+    assertNotEquals(started.getEventKey(), startedTwo.getEventKey());
+    assertEquals(started.getEventKey(), finished.getEventKey());
   }
 }

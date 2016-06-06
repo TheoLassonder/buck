@@ -16,11 +16,18 @@
 
 package com.facebook.buck.android;
 
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeThat;
 
 import com.facebook.buck.cxx.CxxPreprocessMode;
+import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
 import com.facebook.buck.testutil.integration.TestDataHelper;
@@ -30,7 +37,6 @@ import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
-import com.google.common.io.Files;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -50,33 +56,36 @@ public class NdkCxxPlatformIntegrationTest {
   @Parameterized.Parameters(name = "{0},{1},{2},{3}")
   public static Collection<Object[]> data() {
     List<Object[]> data = Lists.newArrayList();
-    for (String arch : ImmutableList.of("arm", "armv7", "x86")) {
+    for (String arch : ImmutableList.of("arm", "armv7", "x86", "x86_64")) {
       for (CxxPreprocessMode mode : CxxPreprocessMode.values()) {
         data.add(
             new Object[]{
-                NdkCxxPlatforms.Compiler.Type.GCC,
+                NdkCxxPlatformCompiler.Type.GCC,
                 NdkCxxPlatforms.CxxRuntime.GNUSTL,
                 arch,
                 mode});
-        data.add(
-            new Object[]{
-                NdkCxxPlatforms.Compiler.Type.CLANG,
-                NdkCxxPlatforms.CxxRuntime.GNUSTL,
-                arch,
-                mode});
-        data.add(
-            new Object[]{
-                NdkCxxPlatforms.Compiler.Type.CLANG,
-                NdkCxxPlatforms.CxxRuntime.LIBCXX,
-                arch,
-                mode});
+        // We don't support 64-bit clang yet.
+        if (!arch.equals("x86_64")) {
+          data.add(
+              new Object[]{
+                  NdkCxxPlatformCompiler.Type.CLANG,
+                  NdkCxxPlatforms.CxxRuntime.GNUSTL,
+                  arch,
+                  mode});
+          data.add(
+              new Object[]{
+                  NdkCxxPlatformCompiler.Type.CLANG,
+                  NdkCxxPlatforms.CxxRuntime.LIBCXX,
+                  arch,
+                  mode});
+        }
       }
     }
     return data;
   }
 
   @Parameterized.Parameter
-  public NdkCxxPlatforms.Compiler.Type compiler;
+  public NdkCxxPlatformCompiler.Type compiler;
 
   @Parameterized.Parameter(value = 1)
   public NdkCxxPlatforms.CxxRuntime cxxRuntime;
@@ -96,7 +105,12 @@ public class NdkCxxPlatformIntegrationTest {
     workspace.writeContentsToPath(
         String.format(
             "[cxx]\n  preprocess_mode = %s\n" +
-            "[ndk]\n  compiler = %s\n  cxx_runtime = %s\n",
+            "[ndk]\n" +
+            "  compiler = %s\n" +
+            "  gcc_version = 4.9\n" +
+            "  cxx_runtime = %s\n" +
+            "  cpu_abis = arm, armv7, x86, x86_64\n" +
+            "  app_platform = android-21\n",
             mode.toString().toLowerCase(),
             compiler,
             cxxRuntime),
@@ -105,12 +119,13 @@ public class NdkCxxPlatformIntegrationTest {
   }
 
   private Path getNdkRoot() {
-    ProjectFilesystem projectFilesystem = new ProjectFilesystem(Paths.get("."));
+    ProjectFilesystem projectFilesystem = new ProjectFilesystem(Paths.get(".").toAbsolutePath());
     DefaultAndroidDirectoryResolver resolver = new DefaultAndroidDirectoryResolver(
         projectFilesystem,
         Optional.<String>absent(),
+        Optional.<String>absent(),
         new DefaultPropertyFinder(projectFilesystem, ImmutableMap.copyOf(System.getenv())));
-    Optional<Path> ndkDir = resolver.findAndroidNdkDir();
+    Optional<Path> ndkDir = resolver.getNdkOrAbsent();
     assertTrue(ndkDir.isPresent());
     assertTrue(java.nio.file.Files.exists(ndkDir.get()));
     return ndkDir.get();
@@ -129,6 +144,9 @@ public class NdkCxxPlatformIntegrationTest {
 
   @Test
   public void changedPlatformTarget() throws IOException {
+    // 64-bit only works with platform 21, so we can't change the platform to anything else.
+    assumeThat("skip this test for 64-bit, for now", arch, not(equalTo("x86_64")));
+
     ProjectWorkspace workspace = setupWorkspace("ndk_app_platform");
 
     String target = String.format("//:main#android-%s", arch);
@@ -145,18 +163,22 @@ public class NdkCxxPlatformIntegrationTest {
   @Test
   public void testWorkingDirectoryAndNdkHeaderPathsAreSanitized() throws IOException {
     ProjectWorkspace workspace = setupWorkspace("ndk_debug_paths");
-    workspace.runBuckBuild(String.format("//:lib#android-%s,static", arch)).assertSuccess();
-    java.io.File lib =
-        workspace.getFile(String.format("buck-out/gen/lib#android-%s,static/liblib.a", arch));
+    ProjectFilesystem filesystem = new ProjectFilesystem(workspace.getDestPath());
+    BuildTarget target =
+        BuildTargetFactory.newInstance(String.format("//:lib#android-%s,static", arch));
+    workspace.runBuckBuild(target.getFullyQualifiedName()).assertSuccess();
+    Path lib =
+        workspace.getPath(
+            BuildTargets.getGenPath(filesystem, target, "%s/lib" + target.getShortName() + ".a"));
     String contents =
-        Files.asByteSource(lib)
+        MorePaths.asByteSource(lib)
             .asCharSource(Charsets.ISO_8859_1)
             .read();
 
     // Verify that the working directory is sanitized.
     assertFalse(contents.contains(tmp.getRootPath().toString()));
 
-    // TODO(user): We don't currently support fixing up debug paths for the combined flow.
+    // TODO(7534323): We don't currently support fixing up debug paths for the combined flow.
     if (mode != CxxPreprocessMode.COMBINED) {
 
       // Verify that we don't have any references to the build toolchain in the debug info.

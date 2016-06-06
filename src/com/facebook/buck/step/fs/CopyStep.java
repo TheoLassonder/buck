@@ -16,13 +16,16 @@
 
 package com.facebook.buck.step.fs;
 
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.io.ProjectFilesystem.CopySourceMode;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 
@@ -51,11 +54,17 @@ public class CopyStep implements Step {
       DIRECTORY_AND_CONTENTS
   }
 
+  private final ProjectFilesystem filesystem;
   private final Path source;
   private final Path destination;
   private final CopySourceMode copySourceMode;
 
-  private CopyStep(Path source, Path destination, CopySourceMode copySourceMode) {
+  private CopyStep(
+      ProjectFilesystem filesystem,
+      Path source,
+      Path destination,
+      CopySourceMode copySourceMode) {
+    this.filesystem = filesystem;
     this.source = source;
     this.destination = destination;
     this.copySourceMode = copySourceMode;
@@ -65,8 +74,8 @@ public class CopyStep implements Step {
    * Creates a CopyStep which copies a single file from 'source' to
    * 'destination'.
    */
-  public static CopyStep forFile(Path source, Path destination) {
-    return new CopyStep(source, destination, CopySourceMode.FILE);
+  public static CopyStep forFile(ProjectFilesystem filesystem, Path source, Path destination) {
+    return new CopyStep(filesystem, source, destination, CopySourceMode.FILE);
   }
 
   /**
@@ -75,6 +84,7 @@ public class CopyStep implements Step {
    * to control the copy.
    */
   public static CopyStep forDirectory(
+      ProjectFilesystem filesystem,
       Path source,
       Path destination,
       DirectoryMode directoryMode) {
@@ -89,7 +99,7 @@ public class CopyStep implements Step {
       default:
         throw new IllegalArgumentException("Invalid directory mode: " + directoryMode);
     }
-    return new CopyStep(source, destination, copySourceMode);
+    return new CopyStep(filesystem, source, destination, copySourceMode);
   }
 
   @Override
@@ -120,7 +130,7 @@ public class CopyStep implements Step {
         // N.B., on Windows, java.nio.AbstractPath does not resolve *
         // as a path, causing InvalidPathException. Since this is purely a
         // description, manually create the source argument.
-        args.add(source.toString() + "/*");
+        args.add(source.toString() + File.separator + "*");
         break;
     }
     args.add(destination.toString());
@@ -142,13 +152,13 @@ public class CopyStep implements Step {
   }
 
   @Override
-  public int execute(ExecutionContext context) {
+  public StepExecutionResult execute(ExecutionContext context) {
     try {
-      context.getProjectFilesystem().copy(source, destination, copySourceMode);
-      return 0;
+      filesystem.copy(source, destination, copySourceMode);
+      return StepExecutionResult.SUCCESS;
     } catch (IOException e) {
       context.logError(e, "Failed when trying to copy: %s", getDescription(context));
-      return 1;
+      return StepExecutionResult.ERROR;
     }
   }
 }

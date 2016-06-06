@@ -21,6 +21,7 @@ import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.log.Logger;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -28,27 +29,30 @@ import java.nio.file.Path;
 public class UnzipStep implements Step {
   private static final Logger LOG = Logger.get(UnzipStep.class);
 
+  private final ProjectFilesystem filesystem;
   private final Path zipFile;
   private final Path destinationDirectory;
 
-  public UnzipStep(Path zipFile, Path destinationDirectory) {
+  public UnzipStep(ProjectFilesystem filesystem, Path zipFile, Path destinationDirectory) {
+    this.filesystem = filesystem;
     this.zipFile = zipFile;
     this.destinationDirectory = destinationDirectory;
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
-    Path zip = filesystem.getPathForRelativeExistingPath(zipFile).toAbsolutePath();
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
+    Path zip = zipFile.isAbsolute() ?
+        zipFile :
+        filesystem.getPathForRelativeExistingPath(zipFile).toAbsolutePath();
     Path out = filesystem.getPathForRelativeExistingPath(destinationDirectory).toAbsolutePath();
 
     try {
       Unzip.extractZipFile(zip, out, Unzip.ExistingFileMode.OVERWRITE);
     } catch (IOException e) {
       LOG.warn(e, "Unable to unpack zip: %s", zipFile);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   @Override
@@ -58,10 +62,9 @@ public class UnzipStep implements Step {
 
   @Override
   public String getDescription(ExecutionContext context) {
-    ProjectFilesystem projectFilesystem = context.getProjectFilesystem();
     return String.format(
         "unzip %s -d %s",
-        MorePaths.pathWithUnixSeparators(projectFilesystem.resolve(zipFile)),
-        MorePaths.pathWithUnixSeparators(projectFilesystem.resolve(destinationDirectory)));
+        MorePaths.pathWithUnixSeparators(filesystem.resolve(zipFile)),
+        MorePaths.pathWithUnixSeparators(filesystem.resolve(destinationDirectory)));
   }
 }

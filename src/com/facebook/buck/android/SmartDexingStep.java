@@ -23,12 +23,14 @@ import com.facebook.buck.step.CompositeStep;
 import com.facebook.buck.step.DefaultStepRunner;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.step.StepFailedException;
+import com.facebook.buck.step.StepRunner;
 import com.facebook.buck.step.fs.RmStep;
 import com.facebook.buck.step.fs.WriteFileStep;
 import com.facebook.buck.step.fs.XzStep;
 import com.facebook.buck.zip.RepackZipEntriesStep;
-import com.facebook.buck.zip.ZipStep;
+import com.facebook.buck.zip.ZipCompressionLevel;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Charsets;
 import com.google.common.base.Functions;
@@ -57,6 +59,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Semaphore;
 
 import javax.annotation.Nullable;
 
@@ -72,11 +75,29 @@ import javax.annotation.Nullable;
 public class SmartDexingStep implements Step {
 
   public static final String SHORT_NAME = "smart_dex";
+  private static final String SECONDARY_SOLID_DEX_FILENAME = "secondary.dex.jar.xzs";
 
-  public static interface DexInputHashesProvider {
+  private static final int[] XZ_MEMORY_USAGE_MB = {
+      1,
+      1,
+      1,
+      5,
+      10,
+      20,
+      40,
+      85,
+      175,
+      600
+  };
+  private static final int MAX_MEMORY =
+      (int) (Runtime.getRuntime().maxMemory() / 2 / 1024 / 1024);
+  private static final Semaphore memorySemaphore = new Semaphore(MAX_MEMORY);
+
+  public interface DexInputHashesProvider {
     ImmutableMap<Path, Sha1HashCode> getDexInputHashes();
   }
 
+  private final ProjectFilesystem filesystem;
   private final Supplier<Multimap<Path, Path>> outputToInputsSupplier;
   private final Optional<Path> secondaryOutputDir;
   private final DexInputHashesProvider dexInputHashesProvider;
@@ -99,6 +120,7 @@ public class SmartDexingStep implements Step {
    * @param executorService The thread pool to execute the dx command on.
    */
   public SmartDexingStep(
+      ProjectFilesystem filesystem,
       final Path primaryOutputPath,
       final Supplier<Set<Path>> primaryInputsToDex,
       Optional<Path> secondaryOutputDir,
@@ -108,6 +130,7 @@ public class SmartDexingStep implements Step {
       EnumSet<Option> dxOptions,
       ListeningExecutorService executorService,
       Optional<Integer> xzCompressionLevel) {
+    this.filesystem = filesystem;
     this.outputToInputsSupplier = Suppliers.memoize(
         new Supplier<Multimap<Path, Path>>() {
           @Override
@@ -129,12 +152,23 @@ public class SmartDexingStep implements Step {
   }
 
   public static int determineOptimalThreadCount() {
-    return (int) (1.25 * Runtime.getRuntime().availableProcessors());
+    return Runtime.getRuntime().availableProcessors();
+  }
+
+  private static void acquireMemory(int xzCompressionLevel) {
+    try {
+      memorySemaphore.acquire(XZ_MEMORY_USAGE_MB[xzCompressionLevel]);
+    } catch (InterruptedException exp) {
+      // ignore it
+    }
+  }
+
+  private static void releaseMemory(int xzCompressionLevel) {
+    memorySemaphore.release(XZ_MEMORY_USAGE_MB[xzCompressionLevel]);
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
-    ProjectFilesystem projectFilesystem = context.getProjectFilesystem();
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
     try {
       Multimap<Path, Path> outputToInputs = outputToInputsSupplier.get();
       runDxCommands(context, outputToInputs);
@@ -142,14 +176,55 @@ public class SmartDexingStep implements Step {
         removeExtraneousSecondaryArtifacts(
             secondaryOutputDir.get(),
             outputToInputs.keySet(),
-            projectFilesystem);
+            filesystem);
+
+        // Concatenate if solid compression is specified.
+        ImmutableList.Builder<Path> secondaryDexJarsBuilder = ImmutableList.builder();
+        for (Path p : outputToInputs.keySet()) {
+          if (DexStore.XZS.matchesPath(p)) {
+            secondaryDexJarsBuilder.add(p);
+          }
+        }
+        ImmutableList<Path> secondaryDexJars = secondaryDexJarsBuilder.build();
+        if (!secondaryDexJars.isEmpty()) {
+          // Construct the output path for our solid blob and its compressed form.
+          Path secondaryBlobOutput = Paths.get(
+              secondaryOutputDir.get().toString(),
+              "secondary.blob");
+          Path secondaryCompressedBlobOutput = Paths.get(
+              secondaryOutputDir.get().toString(),
+              SECONDARY_SOLID_DEX_FILENAME);
+          // Concatenate the jars into a blob and compress it.
+          StepRunner stepRunner = new DefaultStepRunner(context);
+          Step concatStep = new ConcatStep(filesystem, secondaryDexJars, secondaryBlobOutput);
+          Step xzStep;
+
+          if (xzCompressionLevel.isPresent()) {
+            xzStep = new XzStep(
+                filesystem,
+                secondaryBlobOutput,
+                secondaryCompressedBlobOutput,
+                xzCompressionLevel.get().intValue());
+          } else {
+            xzStep = new XzStep(filesystem, secondaryBlobOutput, secondaryCompressedBlobOutput);
+          }
+          stepRunner.runStepForBuildTarget(concatStep, Optional.<BuildTarget>absent());
+
+          int compressionLevel = xzCompressionLevel.or(XzStep.DEFAULT_COMPRESSION_LEVEL);
+          try {
+            acquireMemory(compressionLevel);
+            stepRunner.runStepForBuildTarget(xzStep, Optional.<BuildTarget>absent());
+          } finally {
+            releaseMemory(compressionLevel);
+          }
+        }
       }
     } catch (StepFailedException | IOException e) {
       context.logError(e, "There was an error in smart dexing step.");
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   private void runDxCommands(ExecutionContext context, Multimap<Path, Path> outputToInputs)
@@ -157,7 +232,7 @@ public class SmartDexingStep implements Step {
     DefaultStepRunner stepRunner = new DefaultStepRunner(context);
     // Invoke dx commands in parallel for maximum thread utilization.  In testing, dx revealed
     // itself to be CPU (and not I/O) bound making it a good candidate for parallelization.
-    List<Step> dxSteps = generateDxCommands(context.getProjectFilesystem(), outputToInputs);
+    List<Step> dxSteps = generateDxCommands(filesystem, outputToInputs);
     stepRunner.runStepsInParallelAndWait(
         dxSteps,
         Optional.<BuildTarget>absent(),
@@ -321,8 +396,15 @@ public class SmartDexingStep implements Step {
 
       List<Step> steps = Lists.newArrayList();
 
-      steps.add(createDxStepForDxPseudoRule(srcs, outputPath, dxOptions, xzCompressionLevel));
-      steps.add(new WriteFileStep(newInputsHash, outputHashPath));
+      steps.add(
+          createDxStepForDxPseudoRule(
+              filesystem,
+              srcs,
+              outputPath,
+              dxOptions,
+              xzCompressionLevel));
+      steps.add(
+          new WriteFileStep(filesystem, newInputsHash, outputHashPath, /* executable */ false));
 
       // Use a composite step to ensure that runDxSteps can still make use of
       // runStepsInParallelAndWait.  This is necessary to keep the DxStep and
@@ -338,7 +420,9 @@ public class SmartDexingStep implements Step {
    * compressed and uncompressed size of the dex; this information is useful later, in applications,
    * when unpacking.
    */
-  static Step createDxStepForDxPseudoRule(Collection<Path> filesToDex,
+  static Step createDxStepForDxPseudoRule(
+      ProjectFilesystem filesystem,
+      Collection<Path> filesToDex,
       Path outputPath,
       EnumSet<Option> dxOptions,
       Optional<Integer> xzCompressionLevel) {
@@ -348,33 +432,59 @@ public class SmartDexingStep implements Step {
 
     if (DexStore.XZ.matchesPath(outputPath)) {
       Path tempDexJarOutput = Paths.get(output.replaceAll("\\.jar\\.xz$", ".tmp.jar"));
-      steps.add(new DxStep(tempDexJarOutput, filesToDex, dxOptions));
+      steps.add(new DxStep(filesystem, tempDexJarOutput, filesToDex, dxOptions));
       // We need to make sure classes.dex is STOREd in the .dex.jar file, otherwise .XZ
       // compression won't be effective.
       Path repackedJar = Paths.get(output.replaceAll("\\.xz$", ""));
-      steps.add(new RepackZipEntriesStep(
-          tempDexJarOutput,
-          repackedJar,
-          ImmutableSet.of("classes.dex"),
-          ZipStep.MIN_COMPRESSION_LEVEL));
-      steps.add(new RmStep(tempDexJarOutput, true));
+      steps.add(
+          new RepackZipEntriesStep(
+              filesystem,
+              tempDexJarOutput,
+              repackedJar,
+              ImmutableSet.of("classes.dex"),
+              ZipCompressionLevel.MIN_COMPRESSION_LEVEL));
+      steps.add(new RmStep(filesystem, tempDexJarOutput, true));
       steps.add(
           new DexJarAnalysisStep(
+              filesystem,
               repackedJar,
               repackedJar.resolveSibling(
                   repackedJar.getFileName() + ".meta")));
-
       if (xzCompressionLevel.isPresent()) {
-        steps.add(new XzStep(repackedJar, xzCompressionLevel.get().intValue()));
+        steps.add(new XzStep(filesystem, repackedJar, xzCompressionLevel.get().intValue()));
       } else {
-        steps.add(new XzStep(repackedJar));
+        steps.add(new XzStep(filesystem, repackedJar));
       }
+    } else if (DexStore.XZS.matchesPath(outputPath)) {
+      // Essentially the same logic as the XZ case above, except we compress later.
+      // The differences in output file names make it worth separating into a different case.
+
+      // Ensure classes.dex is stored.
+      Path tempDexJarOutput = Paths.get(output.replaceAll("\\.jar\\.xzs\\.tmp~$", ".tmp.jar"));
+      steps.add(new DxStep(filesystem, tempDexJarOutput, filesToDex, dxOptions));
+      steps.add(
+          new RepackZipEntriesStep(
+              filesystem,
+              tempDexJarOutput,
+              outputPath,
+              ImmutableSet.of("classes.dex"),
+              ZipCompressionLevel.MIN_COMPRESSION_LEVEL));
+      steps.add(new RmStep(filesystem, tempDexJarOutput, true));
+
+      // Write a .meta file.
+      steps.add(
+          new DexJarAnalysisStep(
+              filesystem,
+              outputPath,
+              outputPath.resolveSibling(
+                  outputPath.getFileName() + ".meta")));
     } else if (DexStore.JAR.matchesPath(outputPath) || DexStore.RAW.matchesPath(outputPath) ||
         output.endsWith("classes.dex")) {
-      steps.add(new DxStep(outputPath, filesToDex, dxOptions));
+      steps.add(new DxStep(filesystem, outputPath, filesToDex, dxOptions));
       if (DexStore.JAR.matchesPath(outputPath)) {
         steps.add(
             new DexJarAnalysisStep(
+                filesystem,
                 outputPath,
                 outputPath.resolveSibling(
                   outputPath.getFileName() + ".meta")));

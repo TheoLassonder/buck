@@ -17,15 +17,21 @@
 package com.facebook.buck.android;
 
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.rules.AbstractDescriptionArg;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.BuildRuleType;
 import com.facebook.buck.rules.Description;
+import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.SourcePaths;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.util.HumanReadableException;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.base.Optional;
+import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.Ordering;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -47,13 +53,16 @@ public class PrebuiltNativeLibraryDescription
 
   @Override
   public <A extends Arg> PrebuiltNativeLibrary createBuildRule(
+      TargetGraph targetGraph,
       BuildRuleParams params,
       BuildRuleResolver resolver,
       A args) {
-    ImmutableSortedSet<Path> librarySources;
+    ImmutableSortedSet<SourcePath> librarySources;
     try {
-      librarySources = ImmutableSortedSet.copyOf(
-          params.getProjectFilesystem().getFilesUnderPath(args.nativeLibs));
+      librarySources =
+          FluentIterable.from(params.getProjectFilesystem().getFilesUnderPath(args.nativeLibs))
+          .transform(SourcePaths.toSourcePath(params.getProjectFilesystem()))
+          .toSortedSet(Ordering.<SourcePath>natural());
     } catch (IOException e) {
       throw new HumanReadableException(e, "Error traversing directory %s.", args.nativeLibs);
     }
@@ -68,7 +77,7 @@ public class PrebuiltNativeLibraryDescription
   }
 
   @SuppressFieldNotInitialized
-  public static class Arg {
+  public static class Arg extends AbstractDescriptionArg {
     public Optional<Boolean> isAsset;
     public Path nativeLibs;
 

@@ -22,12 +22,19 @@ import static java.nio.channels.FileChannel.MapMode.READ_WRITE;
 import static java.nio.file.StandardOpenOption.READ;
 import static java.nio.file.StandardOpenOption.WRITE;
 
+import com.facebook.buck.log.Logger;
+import com.facebook.buck.util.ByteBufferReplacer;
 import com.google.common.base.Charsets;
 import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
+import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableBiMap;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 
 import java.io.IOException;
@@ -36,6 +43,9 @@ import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+
+import javax.annotation.Nonnull;
 
 /**
  * Encapsulates all the logic to sanitize debug paths in native code.  Currently, this just
@@ -51,6 +61,17 @@ public class DebugPathSanitizer {
   private final char separator;
   private final Path compilationDirectory;
   private final ImmutableBiMap<Path, Path> other;
+
+  private final LoadingCache<Path, ImmutableBiMap<Path, Path>> pathCache =
+      CacheBuilder
+          .newBuilder()
+          .softValues()
+          .build(new CacheLoader<Path, ImmutableBiMap<Path, Path>>() {
+            @Override
+            public ImmutableBiMap<Path, Path> load(@Nonnull Path key) {
+              return getAllPathsWork(key);
+            }
+          });
 
   /**
    * @param pathSize fix paths to this size for in-place replacements.
@@ -78,10 +99,23 @@ public class DebugPathSanitizer {
   }
 
   private ImmutableBiMap<Path, Path> getAllPaths(Optional<Path> workingDir) {
-    ImmutableBiMap.Builder<Path, Path> builder = ImmutableBiMap.builder();
-    if (workingDir.isPresent()) {
-      builder.put(workingDir.get(), compilationDirectory);
+    if (!workingDir.isPresent()) {
+      return other;
     }
+
+    try {
+      return pathCache.get(workingDir.get());
+    } catch (ExecutionException e) {
+      Logger.get(DebugPathSanitizer.class).error(
+          "Problem loading paths into cache",
+          e);
+      return getAllPathsWork(workingDir.get());
+    }
+  }
+
+  private ImmutableBiMap<Path, Path> getAllPathsWork(Path workingDir) {
+    ImmutableBiMap.Builder<Path, Path> builder = ImmutableBiMap.builder();
+    builder.put(workingDir, compilationDirectory);
     builder.putAll(other);
     return builder.build();
   }
@@ -90,38 +124,38 @@ public class DebugPathSanitizer {
     return getExpandedPath(compilationDirectory);
   }
 
-  public Function<String, String> sanitize(
-      final Optional<Path> workingDir,
-      final boolean expandPaths) {
+  public Function<String, String> sanitize(final Optional<Path> workingDir) {
     return new Function<String, String>() {
       @Override
       public String apply(String input) {
-        return DebugPathSanitizer.this.sanitize(workingDir, input, expandPaths);
+        return DebugPathSanitizer.this.sanitize(workingDir, input);
       }
     };
+  }
+
+  public ImmutableList<String> sanitizeFlags(Iterable<String> flags) {
+    return FluentIterable.from(flags)
+        .transform(sanitize(Optional.<Path>absent()))
+        .toList();
   }
 
   /**
    * @param workingDir the current working directory, if applicable.
    * @param contents the string to sanitize.
-   * @param expandPaths whether to pad sanitized paths to {@code pathSize}.
    * @return a string with all matching paths replaced with their sanitized versions.
    */
-  public String sanitize(Optional<Path> workingDir, String contents, boolean expandPaths) {
+  public String sanitize(Optional<Path> workingDir, String contents) {
     for (Map.Entry<Path, Path> entry : getAllPaths(workingDir).entrySet()) {
-      String replacement;
-      if (expandPaths) {
-        replacement = getExpandedPath(entry.getValue());
-      } else {
-        replacement = entry.getValue().toString();
+      String replacement = entry.getValue().toString();
+      String pathToReplace = entry.getKey().toString();
+      if (contents.contains(pathToReplace)) {
+        // String.replace creates a number of objects, and creates a fair
+        // amount of object churn at this level, so we avoid doing it if
+        // it's essentially going to be a no-op.
+        contents = contents.replace(pathToReplace, replacement);
       }
-      contents = contents.replace(entry.getKey().toString(), replacement);
     }
     return contents;
-  }
-
-  public String sanitize(Optional<Path> workingDir, String contents) {
-    return sanitize(workingDir, contents, /* expandPaths */ true);
   }
 
   public String restore(Optional<Path> workingDir, String contents) {

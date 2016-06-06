@@ -3,12 +3,22 @@
 
 # IntelliJ build
 /build-ij/
+/build-ij/plugin/out
+src/com/facebook/buck/intellij/plugin/*.zip
+
+# IntelliJ Plugin
+src/com/facebook/buck/intellij/plugin/buck-out
+src/com/facebook/buck/intellij/plugin/buck-cache
+src/com/facebook/buck/intellij/plugin/.buckd/
+src/com/facebook/buck/intellij/plugin/third-party/*.iml
 
 # Buck
 /buck-out
 /local.properties
 /.buckconfig.local
 /.buckd
+.buckversion
+.fakebuckversion
 
 # Compiled Python
 *.pyc
@@ -33,12 +43,27 @@
 /.idea/misc.xml
 /.idea/runConfigurations
 /.idea/copyright/profiles_settings.xml
+src/com/facebook/buck/intellij/plugin/.idea/ant.xml
+src/com/facebook/buck/intellij/plugin/.idea/dictionaries
+src/com/facebook/buck/intellij/plugin/.idea/inspectionProfiles
+src/com/facebook/buck/intellij/plugin/.idea/tasks.xml
+src/com/facebook/buck/intellij/plugin/.idea/uiDesigner.xml
+src/com/facebook/buck/intellij/plugin/.idea/workspace.xml
+src/com/facebook/buck/intellij/plugin/.idea/misc.xml
+src/com/facebook/buck/intellij/plugin/.idea/runConfigurations
+src/com/facebook/buck/intellij/plugin/.idea/copyright/profiles_settings.xml
+
 
 # From building Emma with Ant.
 /third-party/java/emma-2.0.5312/out/
 
 # From building Jacoco with Ant.
 /third-party/java/jacoco-0.6.4/report-generator-build/
+
+# From building pywatchman with Ant.
+/third-party/py/pywatchman/build/
+/third-party/py/pywatchman/pywatchman.egg-info/
+/third-party/py/pywatchman/dist/
 
 # OS X
 .DS_Store
@@ -51,3 +76,7 @@
 # Emacs backup files
 *~
 \#*
+
+# IntelliJ plugin generated syntax source files
+src/com/facebook/buck/intellij/plugin/src/com/facebook/buck/intellij/plugin/lang/_BuckLexer.java
+src/com/facebook/buck/intellij/plugin/gen

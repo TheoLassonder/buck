@@ -31,13 +31,13 @@ import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.step.AbstractExecutionStep;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Functions;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableBiMap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -63,9 +63,12 @@ public class ResourcesFilter extends AbstractBuildRule
   private static final String RES_DIRECTORIES_KEY = "res_directories";
   private static final String STRING_FILES_KEY = "string_files";
 
-  static enum ResourceCompressionMode {
+  enum ResourceCompressionMode {
     DISABLED(/* isCompressResources */ false, /* isStoreStringsAsAssets */ false),
     ENABLED(/* isCompressResources */ true, /* isStoreStringsAsAssets */ false),
+    ENABLED_STRINGS_ONLY(
+        /* isCompressResources */ false,
+        /* isStoreStringsAsAssets */ true),
     ENABLED_WITH_STRINGS_AS_ASSETS(
       /* isCompressResources */ true,
       /* isStoreStringsAsAssets */ true),
@@ -74,7 +77,7 @@ public class ResourcesFilter extends AbstractBuildRule
     private final boolean isCompressResources;
     private final boolean isStoreStringsAsAssets;
 
-    private ResourceCompressionMode(boolean isCompressResources, boolean isStoreStringsAsAssets) {
+    ResourceCompressionMode(boolean isCompressResources, boolean isStoreStringsAsAssets) {
       this.isCompressResources = isCompressResources;
       this.isStoreStringsAsAssets = isStoreStringsAsAssets;
     }
@@ -135,8 +138,8 @@ public class ResourcesFilter extends AbstractBuildRule
 
     final ImmutableList.Builder<Path> filteredResDirectoriesBuilder = ImmutableList.builder();
     ImmutableSet<Path> whitelistedStringPaths =
-        ImmutableSet.copyOf(getResolver().getAllPaths(whitelistedStringDirs));
-    ImmutableList<Path> resPaths = getResolver().getAllPaths(resDirectories);
+        ImmutableSet.copyOf(getResolver().deprecatedAllPaths(whitelistedStringDirs));
+    ImmutableList<Path> resPaths = getResolver().deprecatedAllPaths(resDirectories);
     final FilterResourcesStep filterResourcesStep = createFilterResourcesStep(
         resPaths,
         whitelistedStringPaths,
@@ -148,9 +151,9 @@ public class ResourcesFilter extends AbstractBuildRule
     // The list of strings.xml files is only needed to build string assets
     if (resourceCompressionMode.isStoreStringsAsAssets()) {
       GetStringsFilesStep getStringsFilesStep = new GetStringsFilesStep(
+          getProjectFilesystem(),
           resPaths,
-          stringFilesBuilder,
-          whitelistedStringPaths);
+          stringFilesBuilder);
       steps.add(getStringsFilesStep);
     }
 
@@ -161,14 +164,18 @@ public class ResourcesFilter extends AbstractBuildRule
 
     steps.add(new AbstractExecutionStep("record_build_output") {
       @Override
-      public int execute(ExecutionContext context) {
+      public StepExecutionResult execute(ExecutionContext context) {
         buildableContext.addMetadata(
             RES_DIRECTORIES_KEY,
-            Iterables.transform(filteredResDirectories, Functions.toStringFunction()));
+            FluentIterable.from(filteredResDirectories)
+                .transform(Functions.toStringFunction())
+                .toList());
         buildableContext.addMetadata(
             STRING_FILES_KEY,
-            Iterables.transform(stringFilesBuilder.build(), Functions.toStringFunction()));
-        return 0;
+            FluentIterable.from(stringFilesBuilder.build())
+                .transform(Functions.toStringFunction())
+                .toList());
+        return StepExecutionResult.SUCCESS;
       }
     });
 
@@ -206,6 +213,7 @@ public class ResourcesFilter extends AbstractBuildRule
 
     ImmutableBiMap<Path, Path> resSourceToDestDirMap = filteredResourcesDirMapBuilder.build();
     FilterResourcesStep.Builder filterResourcesStepBuilder = FilterResourcesStep.builder()
+        .setProjectFilesystem(getProjectFilesystem())
         .setInResToOutResDirMap(resSourceToDestDirMap)
         .setResourceFilter(resourceFilter);
 
@@ -220,7 +228,8 @@ public class ResourcesFilter extends AbstractBuildRule
   }
 
   private String getResDestinationBasePath() {
-    return BuildTargets.getScratchPath(getBuildTarget(), "__filtered__%s__").toString();
+    return BuildTargets.getScratchPath(getProjectFilesystem(), getBuildTarget(), "__filtered__%s__")
+        .toString();
   }
 
   @Override

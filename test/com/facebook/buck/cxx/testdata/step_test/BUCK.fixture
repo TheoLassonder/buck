@@ -1,0 +1,130 @@
+cxx_library(
+  name = 'simple',
+  srcs = [
+    'simple.cc',
+  ],
+)
+
+cxx_binary(
+  name = 'binary_with_unused_header',
+  srcs = [
+    'source.cpp',
+  ],
+  headers = [
+    'unused_header.h',
+  ],
+)
+
+genrule(
+  name = 'genheader',
+  out = 'genheader.h',
+  cmd = 'echo "#define TEST" > $OUT',
+  srcs = [
+    'unused.dat',
+  ]
+)
+
+cxx_binary(
+  name = 'binary_using_generated_header',
+  srcs = [
+    'foo.cpp',
+  ],
+  headers = [
+    ':genheader',
+  ],
+)
+
+genrule(
+  name = 'gensource',
+  out = 'bar.cpp',
+  cmd = 'echo "int main() { return 4; }" > $OUT',
+  srcs = [
+    'unused.dat',
+  ]
+)
+
+cxx_binary(
+  name = 'binary_using_generated_source',
+  srcs = [
+    ':gensource',
+  ],
+)
+
+cxx_binary(
+  name = 'binary_with_used_full_header',
+  header_namespace = 'prefix',
+  headers = [
+    'source_full_header.h',
+  ],
+  srcs = [
+    'source_full_header.cpp',
+  ],
+)
+
+cxx_binary(
+  name = 'binary_with_used_relative_header',
+  headers = [
+    'source_relative_header.h',
+  ],
+  srcs = [
+    'source_relative_header.cpp',
+  ],
+)
+
+genrule(
+  name = 'simple.s',
+  cmd = 'gcc -S -o $OUT $SRCS',
+  out = 'simple.s',
+  srcs = [
+    'simple.cc',
+  ],
+)
+
+cxx_library(
+  name = 'simple_assembly',
+  srcs = [
+    ':simple.s',
+  ],
+)
+
+cxx_library(
+  name = 'lang_compiler_flags',
+  # Take advantage of the fact that Buck always applies compilation flags
+  # to preprocessing.  That way we can define macros to test flags are being
+  # set.
+  lang_compiler_flags = {
+    'c_cpp_output': ['-DBLAH_C'],
+    'cxx_cpp_output': ['-DBLAH_CXX'],
+  },
+  srcs = [
+    'lang_compiler_flags.c',
+    'lang_compiler_flags.cc',
+  ],
+)
+
+sh_binary(
+  name = 'cc',
+  main = 'cc.sh',
+)
+
+sh_binary(
+  name = 'cxx',
+  main = 'cxx.sh',
+)
+
+cxx_binary(
+  name = 'untracked_header',
+  srcs = [
+    'untracked_header.cpp',
+  ],
+)
+
+cxx_binary(
+  name = 'binary_with_used_relative_parent_header',
+  headers = [
+    'source_relative_parent_header.h',
+  ],
+  srcs = [
+    'source_relative_parent_header/source.cpp',
+  ],
+)

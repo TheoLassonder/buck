@@ -1,27 +1,47 @@
+REPORT_FORMAT_SRCS = [
+  'CoverageReportFormat.java',
+]
 java_library(
   name = 'report-format',
-  srcs = [ 'CoverageReportFormat.java' ],
+  srcs = REPORT_FORMAT_SRCS,
   visibility = [
     '//src/com/facebook/buck/cli:cli',
-    '//src/com/facebook/buck/java:steps',
-    '//test/com/facebook/buck/java:java',
+    '//src/com/facebook/buck/jvm/java:steps',
+    '//test/com/facebook/buck/jvm/java:java',
+  ],
+)
+
+CONFIG_SRCS = [
+  'AbstractTestResultSummaryVerbosity.java',
+  'TestConfig.java',
+]
+java_immutables_library(
+  name = 'config',
+  srcs = CONFIG_SRCS,
+  immutable_types = [
+    'TestResultSummaryVerbosity',
+  ],
+  autodeps = True,
+  visibility = [
+    '//src/com/facebook/buck/cli:cli',
+    '//src/com/facebook/buck/event/listener:listener',
+    '//test/com/facebook/buck/event/listener:listener',
+    '//test/com/facebook/buck/test:test',
   ],
 )
 
 # Sources for dealing with test results.
-java_library(
+java_immutables_library(
   name = 'test',
-  srcs = glob(['*.java'], excludes = ['CoverageReportFormat.java']),
-  deps = [
-    '//third-party/java/guava:guava',
-    '//third-party/java/jsr:jsr305',
-    '//src/com/facebook/buck/event:event',
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/test/result/type:type',
-    '//src/com/facebook/buck/util:io',
-    '//src/com/facebook/buck/util:util',
-    '//third-party/java/jackson:jackson-annotations',
-    '//third-party/java/jackson:jackson-core',
+  srcs = glob(['*.java'], excludes = REPORT_FORMAT_SRCS + CONFIG_SRCS),
+  immutable_types = [
+    'TestResults',
+    'TestRunningOptions',
+    'TestStatusMessage',
   ],
+  tests = [
+    '//test/com/facebook/buck/test:test',
+  ],
+  autodeps = True,
   visibility = ['PUBLIC'],
 )

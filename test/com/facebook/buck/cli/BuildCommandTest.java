@@ -20,17 +20,28 @@ import static com.facebook.buck.rules.BuildRuleSuccessType.BUILT_LOCALLY;
 import static com.facebook.buck.rules.BuildRuleSuccessType.FETCHED_FROM_CACHE;
 import static org.junit.Assert.assertEquals;
 
+import com.facebook.buck.artifact_cache.CacheResult;
+import com.facebook.buck.command.BuildExecutionResult;
 import com.facebook.buck.command.BuildReport;
+import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.rules.BuildResult;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleResolver;
-import com.facebook.buck.rules.CacheResult;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.rules.FakeBuildRule;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
+import com.facebook.buck.testutil.TestConsole;
 import com.facebook.buck.util.Ansi;
+import com.facebook.buck.util.CapturingPrintStream;
+import com.facebook.buck.util.Console;
+import com.facebook.buck.util.ObjectMappers;
+import com.facebook.buck.util.Verbosity;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
+import com.google.common.collect.ImmutableSet;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -44,15 +55,15 @@ import javax.annotation.Nullable;
 
 public class BuildCommandTest {
 
-  @SuppressWarnings("PMD.LooseCoupling")
-  private LinkedHashMap<BuildRule, Optional<BuildResult>> ruleToResult;
+  private BuildExecutionResult buildExecutionResult;
 
   @Before
   public void setUp() {
-    BuildRuleResolver ruleResolver = new BuildRuleResolver();
+    BuildRuleResolver ruleResolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     SourcePathResolver resolver = new SourcePathResolver(ruleResolver);
 
-    ruleToResult = new LinkedHashMap<>();
+    LinkedHashMap<BuildRule, Optional<BuildResult>> ruleToResult = new LinkedHashMap<>();
 
     BuildRule rule1 = new FakeBuildRule(
         BuildTargetFactory.newInstance("//fake:rule1"),
@@ -65,48 +76,80 @@ public class BuildCommandTest {
     };
     ruleToResult.put(
         rule1,
-        Optional.of(new BuildResult(rule1, BUILT_LOCALLY, CacheResult.skip())));
+        Optional.of(BuildResult.success(rule1, BUILT_LOCALLY, CacheResult.miss())));
 
     BuildRule rule2 = new FakeBuildRule(
         BuildTargetFactory.newInstance("//fake:rule2"),
         resolver);
-    ruleToResult.put(rule2, Optional.of(new BuildResult(rule2, new RuntimeException("some"))));
+    BuildResult rule2Failure = BuildResult.failure(rule2, new RuntimeException("some"));
+    ruleToResult.put(rule2, Optional.of(rule2Failure));
 
     BuildRule rule3 = new FakeBuildRule(
         BuildTargetFactory.newInstance("//fake:rule3"),
         resolver);
     ruleToResult.put(
         rule3,
-        Optional.of(new BuildResult(rule3, FETCHED_FROM_CACHE, CacheResult.hit("dir"))));
+        Optional.of(BuildResult.success(rule3, FETCHED_FROM_CACHE, CacheResult.hit("dir"))));
 
     BuildRule rule4 = new FakeBuildRule(
         BuildTargetFactory.newInstance("//fake:rule4"),
         resolver);
     ruleToResult.put(rule4, Optional.<BuildResult>absent());
+
+    buildExecutionResult = BuildExecutionResult.builder()
+        .setResults(ruleToResult)
+        .setFailures(ImmutableSet.of(rule2Failure))
+        .build();
   }
 
   @Test
   public void testGenerateBuildReportForConsole() {
     String expectedReport =
         "\u001B[1m\u001B[42m\u001B[30mOK  \u001B[0m //fake:rule1 " +
-            "BUILT_LOCALLY buck-out/gen/fake/rule1.txt\n" +
+            "BUILT_LOCALLY " +
+            MorePaths.pathWithPlatformSeparators("buck-out/gen/fake/rule1.txt") +
+            "\n" +
         "\u001B[1m\u001B[41m\u001B[37mFAIL\u001B[0m //fake:rule2\n" +
         "\u001B[1m\u001B[42m\u001B[30mOK  \u001B[0m //fake:rule3 FETCHED_FROM_CACHE\n" +
         "\u001B[1m\u001B[41m\u001B[37mFAIL\u001B[0m //fake:rule4\n";
-    String observedReport = new BuildReport(ruleToResult).generateForConsole(Ansi.forceTty());
+    String observedReport = new BuildReport(buildExecutionResult).generateForConsole(
+        new Console(
+            Verbosity.STANDARD_INFORMATION,
+            new CapturingPrintStream(),
+            new CapturingPrintStream(),
+            Ansi.forceTty()));
+    assertEquals(expectedReport, observedReport);
+  }
+
+  @Test
+  public void testGenerateVerboseBuildReportForConsole() {
+    String expectedReport =
+        "OK   //fake:rule1 BUILT_LOCALLY " +
+        MorePaths.pathWithPlatformSeparators("buck-out/gen/fake/rule1.txt") + "\n" +
+        "FAIL //fake:rule2\n" +
+        "OK   //fake:rule3 FETCHED_FROM_CACHE\n" +
+        "FAIL //fake:rule4\n\n" +
+        " ** Summary of failures encountered during the build **\n" +
+        "Rule //fake:rule2 FAILED because some.\n";
+    String observedReport = new BuildReport(buildExecutionResult).generateForConsole(
+        new TestConsole(Verbosity.COMMANDS));
     assertEquals(expectedReport, observedReport);
   }
 
   @Test
   public void testGenerateJsonBuildReport() throws IOException {
-    String expectedReport = Joiner.on('\n').join(
+    ObjectMapper mapper = ObjectMappers.newDefaultInstance();
+    String rule1TxtPath = mapper.valueToTree(
+        MorePaths.pathWithPlatformSeparators("buck-out/gen/fake/rule1.txt")
+    ).toString();
+    String expectedReport = Joiner.on(System.lineSeparator()).join(
         "{",
         "  \"success\" : false,",
         "  \"results\" : {",
         "    \"//fake:rule1\" : {",
         "      \"success\" : true,",
         "      \"type\" : \"BUILT_LOCALLY\",",
-        "      \"output\" : \"buck-out/gen/fake/rule1.txt\"",
+        "      \"output\" : " + rule1TxtPath,
         "    },",
         "    \"//fake:rule2\" : {",
         "      \"success\" : false",
@@ -119,9 +162,12 @@ public class BuildCommandTest {
         "    \"//fake:rule4\" : {",
         "      \"success\" : false",
         "    }",
+        "  },",
+        "  \"failures\" : {",
+        "    \"//fake:rule2\" : \"some\"",
         "  }",
         "}");
-    String observedReport = new BuildReport(ruleToResult).generateJsonBuildReport();
+    String observedReport = new BuildReport(buildExecutionResult).generateJsonBuildReport();
     assertEquals(expectedReport, observedReport);
   }
 }

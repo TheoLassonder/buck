@@ -21,9 +21,7 @@ import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildId;
 import com.facebook.buck.rules.BuildEvent;
 import com.facebook.buck.rules.BuildRuleEvent;
-import com.facebook.buck.util.BuckConstant;
 import com.facebook.buck.util.HumanReadableException;
-import com.google.common.base.Throwables;
 import com.google.common.eventbus.Subscribe;
 
 import java.io.IOException;
@@ -47,17 +45,22 @@ public class JavaUtilsLoggingBuildListener implements BuckEventListener {
 
   public static void ensureLogFileIsWritten(ProjectFilesystem filesystem) {
     try {
-      filesystem.mkdirs(BuckConstant.SCRATCH_PATH);
+      filesystem.mkdirs(filesystem.getBuckPaths().getScratchDir());
     } catch (IOException e) {
-      throw new HumanReadableException(e,
+      throw new HumanReadableException(
+          e,
           "Unable to create output directory: %s",
-          BuckConstant.SCRATCH_DIR);
+          filesystem.getBuckPaths().getScratchDir());
     }
 
     try {
-      FileHandler handler = new FileHandler(
-          filesystem.resolve(BuckConstant.SCRATCH_PATH.resolve("build.log")).toString(),
-          /* append */ false);
+      FileHandler handler =
+          new FileHandler(
+              filesystem
+                  .resolve(filesystem.getBuckPaths().getScratchDir())
+                  .resolve("build.log")
+                  .toString(),
+              /* append */ false);
       Formatter formatter = new BuildEventFormatter();
       handler.setFormatter(formatter);
 
@@ -67,7 +70,7 @@ public class JavaUtilsLoggingBuildListener implements BuckEventListener {
       LOG.setLevel(LEVEL);
 
     } catch (IOException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
     }
   }
 

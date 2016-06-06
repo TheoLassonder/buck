@@ -16,14 +16,18 @@
 
 package com.facebook.buck.event;
 
+import com.facebook.buck.event.external.events.InstallFinishedEventExternalInterface;
 import com.facebook.buck.model.BuildTarget;
 import com.google.common.base.Objects;
+import com.google.common.base.Optional;
 
-@SuppressWarnings("PMD.OverrideBothEqualsAndHashcode")
-public abstract class InstallEvent extends AbstractBuckEvent implements LeafEvent {
+public abstract class InstallEvent
+    extends AbstractBuckEvent
+    implements LeafEvent, WorkAdvanceEvent {
   private final BuildTarget buildTarget;
 
-  protected InstallEvent(BuildTarget buildTarget) {
+  protected InstallEvent(EventKey eventKey, BuildTarget buildTarget) {
+    super(eventKey);
     this.buildTarget = buildTarget;
   }
 
@@ -41,56 +45,66 @@ public abstract class InstallEvent extends AbstractBuckEvent implements LeafEven
     return buildTarget.getFullyQualifiedName();
   }
 
-  @Override
-  public boolean isRelatedTo(BuckEvent event) {
-    if (!(event instanceof InstallEvent)) {
-      return false;
-    }
-
-    InstallEvent that = (InstallEvent) event;
-
-    return Objects.equal(getBuildTarget(), that.getBuildTarget());
-  }
-
-  @Override
-  public int hashCode() {
-    return getBuildTarget().hashCode();
-  }
-
   public static Started started(BuildTarget buildTarget) {
     return new Started(buildTarget);
   }
 
-  public static Finished finished(BuildTarget buildTarget, boolean success) {
-    return new Finished(buildTarget, success);
+  public static Finished finished(
+      Started started,
+      boolean success,
+      Optional<Long> pid,
+      Optional<String> packageName) {
+    return new Finished(started, success, pid, packageName);
   }
 
   public static class Started extends InstallEvent {
     protected Started(BuildTarget buildTarget) {
-      super(buildTarget);
+      super(EventKey.unique(), buildTarget);
     }
 
     @Override
     public String getEventName() {
-      return "InstallStarted";
+      return INSTALL_STARTED;
     }
   }
 
-  public static class Finished extends InstallEvent {
-    private final boolean success;
+  public static class Finished extends InstallEvent
+      implements InstallFinishedEventExternalInterface {
 
-    protected Finished(BuildTarget buildTarget, boolean success) {
-      super(buildTarget);
+    private static long invalidPid = -1;
+
+    private final boolean success;
+    private final long pid;
+    private final String packageName;
+
+    protected Finished(
+        Started started,
+        boolean success,
+        Optional<Long> pid,
+        Optional<String> packageName) {
+      super(started.getEventKey(), started.getBuildTarget());
       this.success = success;
+      this.pid = pid.or(invalidPid);
+      this.packageName = packageName.or("");
     }
 
+    @Override
     public boolean isSuccess() {
       return success;
     }
 
+    public long getPid() {
+      return pid;
+    }
+
+    @Override
+    public String getPackageName() {
+      return packageName;
+    }
+
     @Override
     public String getEventName() {
-      return "InstallFinished";
+      return INSTALL_FINISHED;
     }
 
     @Override
@@ -98,14 +112,14 @@ public abstract class InstallEvent extends AbstractBuckEvent implements LeafEven
       if (!super.equals(o)) {
         return false;
       }
-
-      Finished that = (Finished) o;
-      return isSuccess() == that.isSuccess();
+      // Because super.equals compares the EventKey, getting here means that we've somehow managed
+      // to create 2 Finished events for the same Started event.
+      throw new UnsupportedOperationException("Multiple conflicting Finished events detected.");
     }
 
     @Override
     public int hashCode() {
-      return Objects.hashCode(getBuildTarget(), isSuccess());
+      return Objects.hashCode(super.hashCode(), isSuccess());
     }
   }
 }

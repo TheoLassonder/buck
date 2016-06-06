@@ -4,7 +4,31 @@ import unittest
 import shutil
 import tempfile
 
-from .buck import BuildFileProcessor
+from .buck import BuildFileProcessor, DiagnosticMessageAndLevel, add_rule
+
+
+def foo_rule(name, srcs=[], visibility=[], build_env=None):
+    add_rule({
+        'buck.type': 'foo',
+        'name': name,
+        'srcs': srcs,
+        'visibility': visibility,
+    }, build_env)
+
+
+def extract_from_results(name, results):
+    for result in results:
+        if result.keys() == [name]:
+            return result[name]
+    raise ValueError(str(results))
+
+
+def get_includes_from_results(results):
+    return extract_from_results('__includes', results)
+
+
+def get_config_from_results(results):
+    return extract_from_results('__configs', results)
 
 
 class ProjectFile(object):
@@ -23,6 +47,8 @@ class BuckTest(unittest.TestCase):
         self.project_root = tempfile.mkdtemp()
         self.allow_empty_globs = False
         self.build_file_name = 'BUCK'
+        self.watchman_client = None
+        self.watchman_error = None
 
     def tearDown(self):
         shutil.rmtree(self.project_root, True)
@@ -35,12 +61,18 @@ class BuckTest(unittest.TestCase):
         for pfile in pfiles:
             self.write_file(pfile)
 
-    def create_build_file_processor(self, *includes):
+    def create_build_file_processor(self, *includes, **kwargs):
         return BuildFileProcessor(
             self.project_root,
+            self.project_root,  # watchman_watch_root
+            None,               # watchman_project_prefix
             self.build_file_name,
             self.allow_empty_globs,
-            includes)
+            False,              # ignore_buck_autodeps_files
+            self.watchman_client,
+            self.watchman_error,
+            includes,
+            **kwargs)
 
     def test_sibling_includes_use_separate_globals(self):
         """
@@ -68,7 +100,7 @@ class BuckTest(unittest.TestCase):
         self.assertRaises(
             NameError,
             build_file_processor.process,
-            build_file.path)
+            build_file.path, set())
 
         # Construct a processor with no default includes, have a generated
         # build file include the include defs one after another, and verify
@@ -84,7 +116,7 @@ class BuckTest(unittest.TestCase):
         self.assertRaises(
             NameError,
             build_file_processor.process,
-            build_file.path)
+            build_file.path, set())
 
     def test_lazy_include_defs(self):
         """
@@ -115,7 +147,7 @@ class BuckTest(unittest.TestCase):
         build_file_processor = self.create_build_file_processor(
             include_def1.name,
             include_def2.name)
-        build_file_processor.process(build_file.path)
+        build_file_processor.process(build_file.path, set())
 
         # Construct a processor with no default includes, have a generated
         # build file include the include defs one after another, and verify
@@ -130,7 +162,7 @@ class BuckTest(unittest.TestCase):
             ))
         self.write_file(build_file)
         build_file_processor = self.create_build_file_processor()
-        build_file_processor.process(build_file.path)
+        build_file_processor.process(build_file.path, set())
 
     def test_private_globals_are_ignored(self):
         """
@@ -148,7 +180,7 @@ class BuckTest(unittest.TestCase):
         self.assertRaises(
             NameError,
             build_file_processor.process,
-            build_file.path)
+            build_file.path, set())
 
         # Test we don't get private module attributes from explicit includes.
         build_file = ProjectFile(
@@ -162,7 +194,7 @@ class BuckTest(unittest.TestCase):
         self.assertRaises(
             NameError,
             build_file_processor.process,
-            build_file.path)
+            build_file.path, set())
 
     def test_implicit_includes_apply_to_explicit_includes(self):
         """
@@ -184,7 +216,7 @@ class BuckTest(unittest.TestCase):
         # variable in the implicit include.
         build_file_processor = self.create_build_file_processor(
             implicit_inc.name)
-        build_file_processor.process(build_file.path)
+        build_file_processor.process(build_file.path, set())
 
     def test_all_list_is_respected(self):
         """
@@ -205,7 +237,7 @@ class BuckTest(unittest.TestCase):
         self.assertRaises(
             NameError,
             build_file_processor.process,
-            build_file.path)
+            build_file.path, set())
 
         # Test we don't get non-whitelisted attributes from explicit includes.
         build_file = ProjectFile(
@@ -219,7 +251,7 @@ class BuckTest(unittest.TestCase):
         self.assertRaises(
             NameError,
             build_file_processor.process,
-            build_file.path)
+            build_file.path, set())
 
     def test_do_not_override_overridden_builtins(self):
         """
@@ -251,4 +283,118 @@ class BuckTest(unittest.TestCase):
         self.assertRaises(
             ValueError,
             build_file_processor.process,
-            build_file.path)
+            build_file.path, set())
+
+    def test_watchman_glob_failure_falls_back_to_regular_glob_and_adds_diagnostic(self):
+        class FakeWatchmanError(Exception):
+            pass
+
+        class FakeWatchmanClient:
+            def FakeWatchmanClient(self):
+                self.query_invoked = False
+
+            def query(self, *args):
+                self.query_invoked = True
+                raise FakeWatchmanError("whoops")
+
+            def close(self):
+                pass
+
+        self.watchman_client = FakeWatchmanClient()
+        self.watchman_error = FakeWatchmanError
+
+        build_file = ProjectFile(
+            path='BUCK',
+            contents=(
+                'foo_rule(',
+                '  name="foo",'
+                '  srcs=glob(["*.java"]),',
+                ')'
+            ))
+        java_file = ProjectFile(path='Foo.java', contents=())
+        self.write_files(build_file, java_file)
+        build_file_processor = self.create_build_file_processor(extra_funcs=[foo_rule])
+        build_file_processor.install_builtins(__builtin__.__dict__)
+        diagnostics = set()
+        rules = build_file_processor.process(build_file.path, diagnostics)
+        self.assertTrue(self.watchman_client.query_invoked)
+        self.assertEqual(['Foo.java'], rules[0]['srcs'])
+        self.assertEqual(
+            set([DiagnosticMessageAndLevel(
+                'Watchman error, falling back to slow glob: whoops',
+                'error')]),
+            diagnostics)
+
+    def test_watchman_glob_warning_adds_diagnostic(self):
+        class FakeWatchmanClient:
+            def query(self, *args):
+                return {'warning': 'This is a warning', 'files': ['Foo.java']}
+
+            def close(self):
+                pass
+
+        self.watchman_client = FakeWatchmanClient()
+
+        build_file = ProjectFile(
+            path='BUCK',
+            contents=(
+                'foo_rule(',
+                '  name="foo",'
+                '  srcs=glob(["*.java"]),',
+                ')'
+            ))
+        java_file = ProjectFile(path='Foo.java', contents=())
+        self.write_files(build_file, java_file)
+        build_file_processor = self.create_build_file_processor(extra_funcs=[foo_rule])
+        build_file_processor.install_builtins(__builtin__.__dict__)
+        diagnostics = set()
+        rules = build_file_processor.process(build_file.path, diagnostics)
+        self.assertEqual(['Foo.java'], rules[0]['srcs'])
+        self.assertEqual(
+            set([DiagnosticMessageAndLevel('Watchman warning: This is a warning', 'warning')]),
+            diagnostics)
+
+    def test_read_config(self):
+        """
+        Verify that the builtin `read_config()` function works.
+        """
+
+        build_file = ProjectFile(
+            path='BUCK',
+            contents=(
+                'assert read_config("hello", "world") == "foo"',
+                'assert read_config("hello", "bar") is None',
+                'assert read_config("hello", "goo", "default") == "default"',
+            ))
+        self.write_file(build_file)
+        build_file_processor = self.create_build_file_processor(
+            configs={('hello', 'world'): 'foo'})
+        result = build_file_processor.process(build_file.path, set())
+        self.assertEquals(
+            get_config_from_results(result),
+            {'hello': {'world': 'foo', 'bar': None, 'goo': None}})
+
+    def test_add_build_file_dep(self):
+        """
+        Test simple use of `add_build_file_dep`.
+        """
+
+        # Setup the build file and dependency.
+        dep = ProjectFile(path='dep', contents=('',))
+        build_file = (
+            ProjectFile(
+                path='BUCK',
+                contents=(
+                    'add_build_file_dep("//dep")',
+                ),
+            ))
+        self.write_files(dep, build_file)
+
+        # Create a process and run it.
+        build_file_processor = self.create_build_file_processor()
+        results = build_file_processor.process(build_file.path, set())
+
+        # Verify that the dep was recorded.
+        self.assertTrue(
+            os.path.join(self.project_root, dep.path) in
+            get_includes_from_results(results))

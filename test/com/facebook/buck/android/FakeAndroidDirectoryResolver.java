@@ -23,38 +23,54 @@ import java.util.Objects;
 
 public class FakeAndroidDirectoryResolver implements AndroidDirectoryResolver {
   private final Optional<Path> androidSdkDir;
+  private final Optional<Path> androidBuildToolsDir;
   private final Optional<Path> androidNdkDir;
   private final Optional<String> ndkVersion;
 
   public FakeAndroidDirectoryResolver() {
     this(
         /* androidSdkDir */ Optional.<Path>absent(),
+        /* androidBuildToolsDir */ Optional.<Path>absent(),
         /* androidNdkDir */ Optional.<Path>absent(),
         /* ndkVersion */ Optional.<String>absent());
   }
 
   public FakeAndroidDirectoryResolver(
       Optional<Path> androidSdkDir,
+      Optional<Path> androidBuildToolsDir,
       Optional<Path> androidNdkDir,
       Optional<String> ndkVersion) {
     this.androidSdkDir = Preconditions.checkNotNull(androidSdkDir);
+    this.androidBuildToolsDir = Preconditions.checkNotNull(androidBuildToolsDir);
     this.androidNdkDir = Preconditions.checkNotNull(androidNdkDir);
     this.ndkVersion = Preconditions.checkNotNull(ndkVersion);
   }
 
   @Override
-  public Optional<Path> findAndroidSdkDirSafe() {
+  public Optional<Path> getSdkOrAbsent() {
     return androidSdkDir;
   }
 
   @Override
-  public Path findAndroidSdkDir() {
+  public Path getSdkOrThrow() {
     Preconditions.checkState(androidSdkDir.isPresent());
     return androidSdkDir.get();
   }
 
   @Override
-  public Optional<Path> findAndroidNdkDir() {
+  public Path getNdkOrThrow() {
+    Preconditions.checkState(androidNdkDir.isPresent());
+    return androidNdkDir.get();
+  }
+
+  @Override
+  public Path getBuildToolsOrThrow() {
+    Preconditions.checkState(androidBuildToolsDir.isPresent());
+    return androidBuildToolsDir.get();
+  }
+
+  @Override
+  public Optional<Path> getNdkOrAbsent() {
     return androidNdkDir;
   }
 
@@ -77,6 +93,7 @@ public class FakeAndroidDirectoryResolver implements AndroidDirectoryResolver {
     return
         Objects.equals(androidNdkDir, that.androidNdkDir) &&
         Objects.equals(androidSdkDir, that.androidSdkDir) &&
+        Objects.equals(androidBuildToolsDir, that.androidBuildToolsDir) &&
         Objects.equals(ndkVersion, that.ndkVersion);
   }
 

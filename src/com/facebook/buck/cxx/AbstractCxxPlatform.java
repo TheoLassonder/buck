@@ -17,6 +17,7 @@
 package com.facebook.buck.cxx;
 
 import com.facebook.buck.model.Flavor;
+import com.facebook.buck.model.FlavorConvertible;
 import com.facebook.buck.rules.Tool;
 import com.facebook.buck.util.immutables.BuckStyleImmutable;
 import com.google.common.base.Optional;
@@ -32,32 +33,42 @@ import java.util.List;
  */
 @Value.Immutable
 @BuckStyleImmutable
-interface AbstractCxxPlatform {
+interface AbstractCxxPlatform extends FlavorConvertible {
 
+  @Override
   Flavor getFlavor();
 
-  Tool getAs();
+  CompilerProvider getAs();
   List<String> getAsflags();
 
-  Tool getAspp();
+  PreprocessorProvider getAspp();
   List<String> getAsppflags();
 
-  Compiler getCc();
+  CompilerProvider getCc();
   List<String> getCflags();
 
-  Compiler getCxx();
+  CompilerProvider getCxx();
   List<String> getCxxflags();
 
-  Tool getCpp();
+  PreprocessorProvider getCpp();
   List<String> getCppflags();
 
-  Tool getCxxpp();
+  PreprocessorProvider getCxxpp();
   List<String> getCxxppflags();
 
-  Linker getCxxld();
-  List<String> getCxxldflags();
+  Optional<PreprocessorProvider> getCudapp();
+  List<String> getCudappflags();
 
-  Linker getLd();
+  Optional<CompilerProvider> getCuda();
+  List<String> getCudaflags();
+
+  Optional<PreprocessorProvider> getAsmpp();
+  List<String> getAsmppflags();
+
+  Optional<CompilerProvider> getAsm();
+  List<String> getAsmflags();
+
+  LinkerProvider getLd();
   List<String> getLdflags();
   Multimap<Linker.LinkableDepType, String> getRuntimeLdflags();
 
@@ -67,13 +78,13 @@ interface AbstractCxxPlatform {
   Archiver getAr();
   List<String> getArflags();
 
-  Optional<Tool> getLex();
-  List<String> getLexFlags();
+  Tool getRanlib();
+  List<String> getRanlibflags();
 
-  Optional<Tool> getYacc();
-  List<String> getYaccFlags();
+  SymbolNameTool getSymbolNameTool();
 
   String getSharedLibraryExtension();
+  String getSharedLibraryVersionedExtensionFormat();
 
   DebugPathSanitizer getDebugPathSanitizer();
 

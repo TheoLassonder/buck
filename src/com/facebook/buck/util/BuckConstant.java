@@ -25,29 +25,24 @@ import javax.annotation.Nullable;
 
 public class BuckConstant {
 
-  /**
-   * The relative path to the directory where Buck will generate its files.
-   */
-  public static final String BUCK_OUTPUT_DIRECTORY = "buck-out";
-  public static final Path BUCK_OUTPUT_PATH = Paths.get("buck-out");
+  private static final String BUCK_OUTPUT_DIRECTORY = "buck-out";
+  private static final Path BUCK_OUTPUT_PATH = Paths.get("buck-out");
+  private static final Path CURRENT_VERSION_FILE =
+      getBuckOutputPath().resolve(".currentversion");
 
-  // TODO(mbolin): The constants GEN_DIR, BIN_DIR, and ANNOTATION_DIR should be
+  // TODO(bolinfest): The constants GEN_DIR, BIN_DIR, and ANNOTATION_DIR should be
   // package-private to the com.facebook.buck.rules directory. Currently, they are also used in the
   // com.facebook.buck.shell package, but these values should be injected into shell commands rather
   // than hardcoded therein. This ensures that shell commands stay build-rule-agnostic.
 
-  public static final String GEN_DIR = BUCK_OUTPUT_DIRECTORY + "/gen";
-  public static final Path GEN_PATH = BUCK_OUTPUT_PATH.resolve("gen");
+  private static final Path LOG_PATH = getBuckOutputPath().resolve("log");
 
-  public static final String SCRATCH_DIR = BUCK_OUTPUT_DIRECTORY + "/bin";
-  public static final Path SCRATCH_PATH = BUCK_OUTPUT_PATH.resolve("bin");
+  private static final Path BUCK_TRACE_DIR = getBuckOutputPath().resolve("log/traces");
+  private static final String DEFAULT_CACHE_DIR = getBuckOutputDirectory() + "/cache";
 
-  public static final String ANNOTATION_DIR = BUCK_OUTPUT_DIRECTORY + "/annotation";
-  public static final Path ANNOTATION_PATH = BUCK_OUTPUT_PATH.resolve("annotation");
-
-  public static final Path LOG_PATH = BUCK_OUTPUT_PATH.resolve("log");
-
-  public static final Path BUCK_TRACE_DIR = BUCK_OUTPUT_PATH.resolve("log/traces");
+  // We put a . at the front of the name so Spotlight doesn't try to index the contents on OS X.
+  private static final String TRASH_DIR = getBuckOutputDirectory() + "/.trash";
+  private static final Path TRASH_PATH = getBuckOutputPath().resolve(".trash");
 
   private BuckConstant() {}
 
@@ -68,4 +63,43 @@ public class BuckConstant {
     BuckConstant.oneTimeTestSubdirectory = oneTimeTestSubdirectory;
   }
 
+  /**
+   * The relative path to the directory where Buck will generate its files.
+   *
+   * NOTE: Should only ever be used from there and {@link com.facebook.buck.io.ProjectFilesystem}.
+   */
+  public static String getBuckOutputDirectory() {
+    return BUCK_OUTPUT_DIRECTORY;
+  }
+
+  private static Path getBuckOutputPath() {
+    return BUCK_OUTPUT_PATH;
+  }
+
+  /**
+   * The version the buck output directory was created for
+   */
+  public static Path getCurrentVersionFile() {
+    return CURRENT_VERSION_FILE;
+  }
+
+  public static Path getLogPath() {
+    return LOG_PATH;
+  }
+
+  public static Path getBuckTraceDir() {
+    return BUCK_TRACE_DIR;
+  }
+
+  public static String getDefaultCacheDir() {
+    return DEFAULT_CACHE_DIR;
+  }
+
+  public static String getTrashDir() {
+    return TRASH_DIR;
+  }
+
+  public static Path getTrashPath() {
+    return TRASH_PATH;
+  }
 }

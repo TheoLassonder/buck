@@ -16,23 +16,19 @@
 
 package com.facebook.buck.ocaml;
 
-import com.facebook.buck.cxx.CxxPlatform;
-import com.facebook.buck.cxx.Linker;
 import com.facebook.buck.cxx.NativeLinkableInput;
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.UnflavoredBuildTarget;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildTargetSourcePath;
 import com.facebook.buck.rules.NoopBuildRule;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.google.common.base.Functions;
-import com.google.common.base.Optional;
-import com.google.common.base.Preconditions;
+import com.facebook.buck.rules.args.SourcePathArg;
+import com.facebook.buck.rules.args.StringArg;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSortedSet;
-import com.google.common.collect.Iterables;
 
 import java.nio.file.Path;
 
@@ -42,7 +38,7 @@ class OCamlStaticLibrary extends NoopBuildRule implements OCamlLibrary {
   private final ImmutableList<SourcePath> objFiles;
   private final OCamlBuildContext ocamlContext;
   private final BuildRule ocamlLibraryBuild;
-  private final ImmutableSortedSet<BuildRule> compileDeps;
+  private final ImmutableSortedSet<BuildRule> nativeCompileDeps;
   private final ImmutableSortedSet<BuildRule> bytecodeCompileDeps;
   private final ImmutableSortedSet<BuildRule> bytecodeLinkDeps;
 
@@ -54,7 +50,7 @@ class OCamlStaticLibrary extends NoopBuildRule implements OCamlLibrary {
       ImmutableList<SourcePath> objFiles,
       OCamlBuildContext ocamlContext,
       BuildRule ocamlLibraryBuild,
-      ImmutableSortedSet<BuildRule> compileDeps,
+      ImmutableSortedSet<BuildRule> nativeCompileDeps,
       ImmutableSortedSet<BuildRule> bytecodeCompileDeps,
       ImmutableSortedSet<BuildRule> bytecodeLinkDeps) {
     super(params, resolver);
@@ -62,59 +58,60 @@ class OCamlStaticLibrary extends NoopBuildRule implements OCamlLibrary {
     this.objFiles = objFiles;
     this.ocamlContext = ocamlContext;
     this.ocamlLibraryBuild = ocamlLibraryBuild;
-    this.compileDeps = compileDeps;
+    this.nativeCompileDeps = nativeCompileDeps;
     this.bytecodeCompileDeps = bytecodeCompileDeps;
     this.bytecodeLinkDeps = bytecodeLinkDeps;
     staticLibraryTarget = OCamlRuleBuilder.createStaticLibraryBuildTarget(
         compileParams.getBuildTarget());
   }
 
-  @Override
-  public NativeLinkableInput getNativeLinkableInput(
-      CxxPlatform cxxPlatform,
-      Linker.LinkableDepType type) {
-
-    Preconditions.checkArgument(
-        type == Linker.LinkableDepType.STATIC,
-        "Only supporting static linking in OCaml");
-
+  private NativeLinkableInput getLinkableInput(boolean isBytecode) {
     NativeLinkableInput.Builder inputBuilder = NativeLinkableInput.builder();
 
     // Add linker flags.
-    inputBuilder.addAllArgs(linkerFlags);
+    inputBuilder.addAllArgs(StringArg.from(linkerFlags));
 
     // Add arg and input for static library.
-    final Path staticLibraryPath =
-        OCamlBuildContext.getOutputPath(
-            staticLibraryTarget,
-            /* isLibrary */ true);
-    inputBuilder.addInputs(
-        new BuildTargetSourcePath(ocamlLibraryBuild.getBuildTarget()));
-    inputBuilder.addArgs(staticLibraryPath.toString());
+    UnflavoredBuildTarget staticBuildTarget = staticLibraryTarget.getUnflavoredBuildTarget();
+    inputBuilder.addArgs(
+        new SourcePathArg(
+            getResolver(),
+            new BuildTargetSourcePath(
+                ocamlLibraryBuild.getBuildTarget(),
+                isBytecode
+                ? OCamlBuildContext.getBytecodeOutputPath(
+                    staticBuildTarget,
+                    getProjectFilesystem(),
+                    /* isLibrary */ true)
+                : OCamlBuildContext.getNativeOutputPath(
+                    staticBuildTarget,
+                    getProjectFilesystem(),
+                    /* isLibrary */ true))));
 
     // Add args and inputs for C object files.
-    inputBuilder.addAllInputs(objFiles);
-    inputBuilder.addAllArgs(
-        Iterables.transform(
-            getResolver().getAllPaths(objFiles),
-            Functions.toStringFunction()));
+    for (SourcePath objFile : objFiles) {
+      inputBuilder.addArgs(new SourcePathArg(getResolver(), objFile));
+    }
 
     return inputBuilder.build();
   }
 
   @Override
-  public Optional<Linker.LinkableDepType> getPreferredLinkage(CxxPlatform cxxPlatform) {
-    return Optional.absent();
+  public NativeLinkableInput getNativeLinkableInput() {
+    return getLinkableInput(false);
   }
 
   @Override
-  public ImmutableMap<String, SourcePath> getSharedLibraries(CxxPlatform cxxPlatform) {
-    return ImmutableMap.of();
+  public NativeLinkableInput getBytecodeLinkableInput() {
+    return getLinkableInput(true);
   }
 
   @Override
   public Path getIncludeLibDir() {
-    return OCamlBuildContext.getCompileOutputDir(staticLibraryTarget, true);
+    return OCamlBuildContext.getCompileNativeOutputDir(
+        staticLibraryTarget.getUnflavoredBuildTarget(),
+        getProjectFilesystem(),
+        true);
   }
 
   @Override
@@ -123,8 +120,8 @@ class OCamlStaticLibrary extends NoopBuildRule implements OCamlLibrary {
   }
 
   @Override
-  public ImmutableSortedSet<BuildRule> getCompileDeps() {
-    return compileDeps;
+  public ImmutableSortedSet<BuildRule> getNativeCompileDeps() {
+    return nativeCompileDeps;
   }
 
   @Override

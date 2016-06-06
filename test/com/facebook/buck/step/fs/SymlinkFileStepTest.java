@@ -23,6 +23,7 @@ import static org.junit.Assume.assumeTrue;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.TestExecutionContext;
+import com.facebook.buck.util.BgProcessKiller;
 import com.facebook.buck.util.environment.Platform;
 import com.google.common.base.Charsets;
 import com.google.common.io.Files;
@@ -52,9 +53,7 @@ public class SymlinkFileStepTest {
   }
 
   public void internalTestSymlinkFiles(boolean useAbsolutePaths) throws IOException {
-    ExecutionContext context = TestExecutionContext.newBuilder()
-        .setProjectFilesystem(new ProjectFilesystem(tmpDir.getRoot().toPath()))
-        .build();
+    ExecutionContext context = TestExecutionContext.newInstance();
 
     File source = tmpDir.newFile();
     Files.write("foobar", source, Charsets.UTF_8);
@@ -63,6 +62,7 @@ public class SymlinkFileStepTest {
     target.delete();
 
     SymlinkFileStep step = new SymlinkFileStep(
+        new ProjectFilesystem(tmpDir.getRoot().toPath()),
         /* source */ Paths.get(source.getName()),
         /* target */ Paths.get(target.getName()),
         useAbsolutePaths);
@@ -87,7 +87,7 @@ public class SymlinkFileStepTest {
     builder.command("ln", "-s", "/path/that/does/not/exist", "my_symlink");
     File tmp = tmpDir.getRoot();
     builder.directory(tmp);
-    Process process = builder.start();
+    Process process = BgProcessKiller.startProcess(builder);
     process.waitFor();
 
     // Verify that the symlink points to a non-existent file.
@@ -99,16 +99,15 @@ public class SymlinkFileStepTest {
 
     // Create an ExecutionContext to return the ProjectFilesystem.
     ProjectFilesystem projectFilesystem = new ProjectFilesystem(tmpDir.getRoot().toPath());
-    ExecutionContext executionContext = TestExecutionContext.newBuilder()
-        .setProjectFilesystem(projectFilesystem)
-        .build();
+    ExecutionContext executionContext = TestExecutionContext.newInstance();
 
     tmpDir.newFile("dummy");
     SymlinkFileStep symlinkStep = new SymlinkFileStep(
+        projectFilesystem,
         /* source */ Paths.get("dummy"),
         /* target */ Paths.get("my_symlink"),
         /* useAbsolutePaths*/ true);
-    int exitCode = symlinkStep.execute(executionContext);
+    int exitCode = symlinkStep.execute(executionContext).getExitCode();
     assertEquals(0, exitCode);
     assertTrue(java.nio.file.Files.isSymbolicLink(symlink));
     assertTrue(symlink.toFile().exists());

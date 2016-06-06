@@ -16,7 +16,9 @@
 
 package com.facebook.buck.apple;
 
+import com.facebook.buck.apple.xcode.XCScheme;
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.rules.AbstractDescriptionArg;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
@@ -24,6 +26,7 @@ import com.facebook.buck.rules.BuildRuleType;
 import com.facebook.buck.rules.Description;
 import com.facebook.buck.rules.NoopBuildRule;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.util.HumanReadableException;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.annotations.Beta;
@@ -52,6 +55,7 @@ public class XcodeWorkspaceConfigDescription
 
   @Override
   public <A extends Arg> BuildRule createBuildRule(
+      TargetGraph targetGraph,
       final BuildRuleParams params,
       final BuildRuleResolver resolver,
       A args) {
@@ -80,7 +84,7 @@ public class XcodeWorkspaceConfigDescription
   }
 
   @SuppressFieldNotInitialized
-  public static class Arg {
+  public static class Arg extends AbstractDescriptionArg {
     public Optional<BuildTarget> srcTarget;
     public Optional<ImmutableSortedSet<BuildTarget>> extraTests;
     public Optional<ImmutableSortedSet<BuildTarget>> extraTargets;
@@ -88,5 +92,7 @@ public class XcodeWorkspaceConfigDescription
     public Optional<ImmutableMap<SchemeActionType, String>> actionConfigNames;
     public Optional<ImmutableSortedMap<String, BuildTarget>> extraSchemes;
     public Optional<Boolean> isRemoteRunnable;
+    public Optional<String> explicitRunnablePath;
+    public Optional<XCScheme.LaunchAction.LaunchStyle> launchStyle;
   }
 }

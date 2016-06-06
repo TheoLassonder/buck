@@ -16,6 +16,7 @@
 
 package com.facebook.buck.parser;
 
+import com.facebook.buck.rules.CellPathResolver;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.FlavorParser;
 import com.facebook.buck.model.ImmutableFlavor;
@@ -38,7 +39,6 @@ public class BuildTargetParser {
 
   private static final String BUILD_RULE_PREFIX = "//";
   private static final String BUILD_RULE_SEPARATOR = ":";
-  private static final String REPOSITORY_STARTER = "@";
   private static final Splitter BUILD_RULE_SEPARATOR_SPLITTER = Splitter.on(BUILD_RULE_SEPARATOR);
   private static final Set<String> INVALID_BASE_NAME_PARTS = ImmutableSet.of("", ".", "..");
 
@@ -50,7 +50,7 @@ public class BuildTargetParser {
 
   /**
    * @param buildTargetName either a fully-qualified name or relative to the {@link BuildTargetPatternParser}.
-   *     For example, inside {@code first-party/orca/orcaapp/BUILD}, which can be obtained by
+   *     For example, inside {@code first-party/orca/orcaapp/BUCK}, which can be obtained by
    *     calling {@code ParseContext.forBaseName("first-party/orca/orcaapp")},
    *     {@code //first-party/orca/orcaapp:assets} and {@code :assets} refer to the same target.
    *     However, from the command line the context is obtained by calling
@@ -62,7 +62,8 @@ public class BuildTargetParser {
    */
   public BuildTarget parse(
       String buildTargetName,
-      BuildTargetPatternParser<?> buildTargetPatternParser) {
+      BuildTargetPatternParser<?> buildTargetPatternParser,
+      CellPathResolver cellNames) {
 
     if (buildTargetName.endsWith(BUILD_RULE_SEPARATOR) &&
         !buildTargetPatternParser.isWildCardAllowed()) {
@@ -70,27 +71,20 @@ public class BuildTargetParser {
           String.format("%s cannot end with a colon", buildTargetName));
     }
 
-    Optional<String> givenRepoName = Optional.absent();
-    String targetAfterRepo = buildTargetName;
-    if (buildTargetName.startsWith(REPOSITORY_STARTER)) {
-      if (!buildTargetName.contains(BUILD_RULE_PREFIX)) {
-        throw new BuildTargetParseException(
-            String.format(
-                "Cross-repo paths must contain %s (found %s)",
-                BUILD_RULE_PREFIX,
-                buildTargetName));
-      }
+    Optional<String> givenCellName = Optional.absent();
+    String targetAfterCell = buildTargetName;
+    if (buildTargetName.contains(BUILD_RULE_PREFIX) &&
+        !buildTargetName.startsWith(BUILD_RULE_PREFIX)) {
       int slashIndex = buildTargetName.indexOf(BUILD_RULE_PREFIX);
-      givenRepoName = Optional.of(
-          buildTargetName.substring(REPOSITORY_STARTER.length(), slashIndex));
-      targetAfterRepo = buildTargetName.substring(slashIndex);
+      givenCellName = Optional.of(buildTargetName.substring(0, slashIndex));
+      targetAfterCell = buildTargetName.substring(slashIndex);
     }
 
-    if (givenRepoName.isPresent() && givenRepoName.get().isEmpty()) {
-      throw new BuildTargetParseException("Repo name must not be empty.");
+    if (givenCellName.isPresent() && givenCellName.get().isEmpty()) {
+      throw new BuildTargetParseException("Cell name must not be empty.");
     }
 
-    List<String> parts = BUILD_RULE_SEPARATOR_SPLITTER.splitToList(targetAfterRepo);
+    List<String> parts = BUILD_RULE_SEPARATOR_SPLITTER.splitToList(targetAfterCell);
     if (parts.size() != 2) {
       throw new BuildTargetParseException(String.format(
           "%s must contain exactly one colon (found %d)", buildTargetName, parts.size() - 1));
@@ -112,8 +106,14 @@ public class BuildTargetParser {
     checkBaseName(baseName, buildTargetName);
 
     UnflavoredBuildTarget.Builder unflavoredBuilder =
-        UnflavoredBuildTarget.builder(baseName, shortName);
-    unflavoredBuilder.setRepository(givenRepoName);
+        UnflavoredBuildTarget.builder(baseName, shortName)
+            // Set the cell path correctly. Because the cellNames comes from the owning cell we can
+            // be sure that if this doesn't throw an exception the target cell is visible to the
+            // owning cell.
+            .setCellPath(cellNames.getCellPath(givenCellName))
+            // We are setting the cell name so we can print it later
+            .setCell(givenCellName);
+
     BuildTarget.Builder builder = BuildTarget.builder(unflavoredBuilder.build());
     for (String flavor : flavorNames) {
       builder.addFlavors(ImmutableFlavor.of(flavor));

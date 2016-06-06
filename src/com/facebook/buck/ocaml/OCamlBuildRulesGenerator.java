@@ -26,12 +26,11 @@ import com.facebook.buck.model.ImmutableFlavor;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
-import com.facebook.buck.rules.BuildRules;
 import com.facebook.buck.rules.BuildTargetSourcePath;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.args.Arg;
 import com.facebook.buck.util.HumanReadableException;
-import com.google.common.base.Functions;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicates;
@@ -63,6 +62,7 @@ public class OCamlBuildRulesGenerator {
 
   private final Compiler cCompiler;
   private final Compiler cxxCompiler;
+  private final boolean bytecodeOnly;
 
   public OCamlBuildRulesGenerator(
       BuildRuleParams params,
@@ -72,7 +72,8 @@ public class OCamlBuildRulesGenerator {
       ImmutableMap<Path, ImmutableList<Path>> mlInput,
       ImmutableList<SourcePath> cInput,
       Compiler cCompiler,
-      Compiler cxxCompiler) {
+      Compiler cxxCompiler,
+      boolean bytecodeOnly) {
     this.params = params;
     this.pathResolver = pathResolver;
     this.resolver = resolver;
@@ -81,24 +82,33 @@ public class OCamlBuildRulesGenerator {
     this.cInput = cInput;
     this.cCompiler = cCompiler;
     this.cxxCompiler = cxxCompiler;
+    this.bytecodeOnly = bytecodeOnly;
   }
 
+  /**
+   * Generates build rules for both the native and bytecode outputs
+   */
   OCamlGeneratedBuildRules generate() {
 
     ImmutableList.Builder<BuildRule> rules = ImmutableList.builder();
-
-    ImmutableList<SourcePath> cmxFiles = generateMLCompilation(mlInput);
+    ImmutableList.Builder<BuildRule> nativeCompileDeps = ImmutableList.builder();
+    ImmutableList.Builder<BuildRule> bytecodeCompileDeps = ImmutableList.builder();
 
     ImmutableList<SourcePath> objFiles = generateCCompilation(cInput);
 
-    BuildRule link = generateLinking(
-        ImmutableList.<SourcePath>builder()
-            .addAll(Iterables.concat(cmxFiles, objFiles))
-            .build()
-    );
-    rules.add(link);
+    if (!this.bytecodeOnly) {
+      ImmutableList<SourcePath> cmxFiles = generateMLNativeCompilation(mlInput);
+      nativeCompileDeps.addAll(pathResolver.filterBuildRuleInputs(cmxFiles));
+      BuildRule nativeLink = generateNativeLinking(
+          ImmutableList.<SourcePath>builder()
+              .addAll(Iterables.concat(cmxFiles, objFiles))
+              .build()
+      );
+      rules.add(nativeLink);
+    }
 
-    ImmutableList<SourcePath> cmoFiles = generateMLCompileBytecode(mlInput);
+    ImmutableList<SourcePath> cmoFiles = generateMLBytecodeCompilation(mlInput);
+    bytecodeCompileDeps.addAll(pathResolver.filterBuildRuleInputs(cmoFiles));
     BuildRule bytecodeLink = generateBytecodeLinking(
         ImmutableList.<SourcePath>builder()
             .addAll(Iterables.concat(cmoFiles, objFiles))
@@ -112,9 +122,8 @@ public class OCamlBuildRulesGenerator {
 
     return OCamlGeneratedBuildRules.builder()
         .setRules(rules.build())
-        .setCompileDeps(ImmutableSortedSet.copyOf(pathResolver.filterBuildRuleInputs(cmxFiles)))
-        .setBytecodeCompileDeps(
-            ImmutableSortedSet.copyOf(pathResolver.filterBuildRuleInputs(cmoFiles)))
+        .setNativeCompileDeps(ImmutableSortedSet.copyOf(nativeCompileDeps.build()))
+        .setBytecodeCompileDeps(ImmutableSortedSet.copyOf(bytecodeCompileDeps.build()))
         .setObjectFiles(objFiles)
         .setBytecodeLink(bytecodeLink)
         .build();
@@ -155,7 +164,7 @@ public class OCamlBuildRulesGenerator {
     CxxPreprocessorInput cxxPreprocessorInput = ocamlContext.getCxxPreprocessorInput();
 
     for (SourcePath cSrc : cInput) {
-      String name = pathResolver.getPath(cSrc).toFile().getName();
+      String name = pathResolver.getAbsolutePath(cSrc).toFile().getName();
       BuildTarget target = createCCompileBuildTarget(
           params.getBuildTarget(),
           name);
@@ -165,36 +174,28 @@ public class OCamlBuildRulesGenerator {
         /* declaredDeps */ Suppliers.ofInstance(
               ImmutableSortedSet.<BuildRule>naturalOrder()
                   // Depend on the rule that generates the sources and headers we're compiling.
-                  .addAll(
-                      pathResolver.filterBuildRuleInputs(
-                          ImmutableList.<SourcePath>builder()
-                              .add(cSrc)
-                              .addAll(cxxPreprocessorInput.getIncludes().getPrefixHeaders())
-                              .addAll(
-                                  cxxPreprocessorInput.getIncludes().getNameToPathMap().values())
-                              .build()))
-                      // Also add in extra deps from the preprocessor input, such as the symlink
-                      // tree rules.
-                  .addAll(
-                      BuildRules.toBuildRulesFor(
-                          params.getBuildTarget(),
-                          resolver,
-                          cxxPreprocessorInput.getRules()))
-                  .addAll(params.getDeclaredDeps())
+                  .addAll(pathResolver.filterBuildRuleInputs(cSrc))
+                  // Add any deps from the C/C++ preprocessor input.
+                  .addAll(cxxPreprocessorInput.getDeps(resolver, pathResolver))
+                  // Add deps from the C compiler, since we're calling it.
+                  .addAll(cCompiler.getDeps(pathResolver))
+                  .addAll(params.getDeclaredDeps().get())
                   .build()),
-        /* extraDeps */ Suppliers.ofInstance(params.getExtraDeps()));
+        /* extraDeps */ params.getExtraDeps());
 
-      Path outputPath = ocamlContext.getCOutput(pathResolver.getPath(cSrc));
+      Path outputPath = ocamlContext.getCOutput(pathResolver.getRelativePath(cSrc));
       OCamlCCompile compileRule = new OCamlCCompile(
           cCompileParams,
           pathResolver,
           new OCamlCCompileStep.Args(
-            cCompiler.getCommandPrefix(pathResolver),
-            ocamlContext.getOcamlCompiler().get(),
-            outputPath,
-            pathResolver.getPath(cSrc),
-            cCompileFlags.build(),
-            ImmutableMap.copyOf(cxxPreprocessorInput.getIncludes().getNameToPathMap())));
+              cCompiler.getEnvironment(pathResolver),
+              cCompiler.getCommandPrefix(pathResolver),
+              ocamlContext.getOcamlCompiler().get(),
+              ocamlContext.getOCamlInteropIncludesDir(),
+              outputPath,
+              cSrc,
+              cCompileFlags.build(),
+              cxxPreprocessorInput.getIncludes()));
       resolver.addToIndex(compileRule);
       objects.add(
           new BuildTargetSourcePath(compileRule.getBuildTarget()));
@@ -226,22 +227,24 @@ public class OCamlBuildRulesGenerator {
     return debugLauncher;
   }
 
-  private BuildRule generateLinking(ImmutableList<SourcePath> allInputs) {
+  /**
+   * Links the .cmx files generated by the native compilation
+   */
+  private BuildRule generateNativeLinking(ImmutableList<SourcePath> allInputs) {
     BuildRuleParams linkParams = params.copyWithChanges(
         params.getBuildTarget(),
         Suppliers.ofInstance(
             ImmutableSortedSet.<BuildRule>naturalOrder()
                 .addAll(pathResolver.filterBuildRuleInputs(allInputs))
                 .addAll(
-                    pathResolver.filterBuildRuleInputs(ocamlContext.getLinkableInput().getInputs()))
+                    FluentIterable.from(ocamlContext.getNativeLinkableInput().getArgs())
+                        .transformAndConcat(Arg.getDepsFunction(pathResolver)))
+                .addAll(
+                    FluentIterable.from(ocamlContext.getCLinkableInput().getArgs())
+                        .transformAndConcat(Arg.getDepsFunction(pathResolver)))
                 .build()),
         Suppliers.ofInstance(
             ImmutableSortedSet.<BuildRule>of()));
-
-    ImmutableList<String> linkerInputs = FluentIterable.from(allInputs)
-        .transform(pathResolver.getPathFunction())
-        .transform(Functions.toStringFunction())
-        .toList();
 
     ImmutableList.Builder<String> flags = ImmutableList.builder();
     flags.addAll(ocamlContext.getFlags());
@@ -251,15 +254,16 @@ public class OCamlBuildRulesGenerator {
         linkParams,
         pathResolver,
         allInputs,
-        new OCamlLinkStep.Args(
-          cxxCompiler.getCommandPrefix(pathResolver),
-          ocamlContext.getOcamlCompiler().get(),
-          ocamlContext.getOutput(),
-          ImmutableList.copyOf(ocamlContext.getLinkableInput().getArgs()),
-          linkerInputs,
-          flags.build(),
-          ocamlContext.isLibrary(),
-          /* isBytecode */ false));
+        cxxCompiler.getEnvironment(pathResolver),
+        cxxCompiler.getCommandPrefix(pathResolver),
+        ocamlContext.getOcamlCompiler().get(),
+        flags.build(),
+        ocamlContext.getOCamlInteropIncludesDir(),
+        ocamlContext.getNativeOutput(),
+        ocamlContext.getNativeLinkableInput().getArgs(),
+        ocamlContext.getCLinkableInput().getArgs(),
+        ocamlContext.isLibrary(),
+        /* isBytecode */ false);
     resolver.addToIndex(link);
     return link;
   }
@@ -270,6 +274,9 @@ public class OCamlBuildRulesGenerator {
     return BuildTarget.builder(target).addFlavors(BYTECODE_FLAVOR).build();
   }
 
+  /**
+   * Links the .cmo files generated by the bytecode compilation
+   */
   private BuildRule generateBytecodeLinking(ImmutableList<SourcePath> allInputs) {
     BuildRuleParams linkParams = params.copyWithChanges(
         addBytecodeFlavor(params.getBuildTarget()),
@@ -278,18 +285,12 @@ public class OCamlBuildRulesGenerator {
                 .addAll(pathResolver.filterBuildRuleInputs(allInputs))
                 .addAll(ocamlContext.getBytecodeLinkDeps())
                 .addAll(
-                    FluentIterable
-                        .from(
-                            pathResolver.filterBuildRuleInputs(
-                                ocamlContext.getLinkableInput().getInputs()))
+                    FluentIterable.from(ocamlContext.getBytecodeLinkableInput().getArgs())
+                        .append(ocamlContext.getCLinkableInput().getArgs())
+                        .transformAndConcat(Arg.getDepsFunction(pathResolver))
                         .filter(Predicates.not(Predicates.instanceOf(OCamlBuild.class))))
                 .build()),
-        Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()));
-
-    ImmutableList<String> linkerInputs = FluentIterable.from(allInputs)
-        .transform(pathResolver.getPathFunction())
-        .transform(Functions.toStringFunction())
-        .toList();
+    Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()));
 
     ImmutableList.Builder<String> flags = ImmutableList.builder();
     flags.addAll(ocamlContext.getFlags());
@@ -299,22 +300,23 @@ public class OCamlBuildRulesGenerator {
         linkParams,
         pathResolver,
         allInputs,
-        new OCamlLinkStep.Args(
-            cxxCompiler.getCommandPrefix(pathResolver),
-            ocamlContext.getOcamlBytecodeCompiler().get(),
-            ocamlContext.getBytecodeOutput(),
-            ImmutableList.copyOf(ocamlContext.getLinkableInput().getArgs()),
-            linkerInputs,
-            flags.build(),
-            ocamlContext.isLibrary(),
-          /* isBytecode */ true));
+        cxxCompiler.getEnvironment(pathResolver),
+        cxxCompiler.getCommandPrefix(pathResolver),
+        ocamlContext.getOcamlBytecodeCompiler().get(),
+        flags.build(),
+        ocamlContext.getOCamlInteropIncludesDir(),
+        ocamlContext.getBytecodeOutput(),
+        ocamlContext.getBytecodeLinkableInput().getArgs(),
+        ocamlContext.getCLinkableInput().getArgs(),
+        ocamlContext.isLibrary(),
+        /* isBytecode */ true);
     resolver.addToIndex(link);
     return link;
   }
 
   private ImmutableList<String> getCompileFlags(boolean isBytecode, boolean excludeDeps) {
     String output = isBytecode ? ocamlContext.getCompileBytecodeOutputDir().toString() :
-        ocamlContext.getCompileOutputDir().toString();
+        ocamlContext.getCompileNativeOutputDir().toString();
     ImmutableList.Builder<String> flagBuilder = ImmutableList.builder();
     flagBuilder.addAll(ocamlContext.getIncludeFlags(isBytecode,  excludeDeps));
     flagBuilder.addAll(ocamlContext.getFlags());
@@ -325,7 +327,10 @@ public class OCamlBuildRulesGenerator {
     return flagBuilder.build();
   }
 
-  private static String getMLOutputName(String name) {
+  /**
+   * The native-code executable
+   */
+  private static String getMLNativeOutputName(String name) {
     String base = Files.getNameWithoutExtension(name);
     String ext = Files.getFileExtension(name);
     Preconditions.checkArgument(OCamlCompilables.SOURCE_EXTENSIONS.contains(ext),
@@ -341,6 +346,9 @@ public class OCamlBuildRulesGenerator {
     }
   }
 
+  /**
+   * The bytecode output (which is also executable)
+   */
   private static String getMLBytecodeOutputName(String name) {
     String base = Files.getNameWithoutExtension(name);
     String ext = Files.getFileExtension(name);
@@ -356,7 +364,7 @@ public class OCamlBuildRulesGenerator {
     }
   }
 
-  public static BuildTarget createMLCompileBuildTarget(
+  public static BuildTarget createMLNativeCompileBuildTarget(
       BuildTarget target,
       String name) {
     return BuildTarget
@@ -365,7 +373,7 @@ public class OCamlBuildRulesGenerator {
             ImmutableFlavor.of(
                 String.format(
                     "ml-compile-%s",
-                    getMLOutputName(name)
+                    getMLNativeOutputName(name)
                         .replace('/', '-')
                         .replace('.', '-')
                         .replace('+', '-')
@@ -390,7 +398,7 @@ public class OCamlBuildRulesGenerator {
         .build();
   }
 
-  ImmutableList<SourcePath> generateMLCompilation(
+  ImmutableList<SourcePath> generateMLNativeCompilation(
       ImmutableMap<Path, ImmutableList<Path>> mlSources) {
     ImmutableList.Builder<SourcePath> cmxFiles = ImmutableList.builder();
 
@@ -398,7 +406,7 @@ public class OCamlBuildRulesGenerator {
 
     for (ImmutableMap.Entry<Path, ImmutableList<Path>>
         mlSource : mlSources.entrySet()) {
-      generateSingleMLCompilation(
+      generateSingleMLNativeCompilation(
           sourceToRule,
           cmxFiles,
           mlSource.getKey(),
@@ -408,7 +416,10 @@ public class OCamlBuildRulesGenerator {
     return cmxFiles.build();
   }
 
-  private void generateSingleMLCompilation(
+  /**
+   * Compiles a single .ml file to a .cmx
+   */
+  private void generateSingleMLNativeCompilation(
       Map<Path, ImmutableSortedSet<BuildRule>> sourceToRule,
       ImmutableList.Builder<SourcePath> cmxFiles,
       Path mlSource,
@@ -432,7 +443,7 @@ public class OCamlBuildRulesGenerator {
     ImmutableSortedSet.Builder<BuildRule> depsBuilder = ImmutableSortedSet.naturalOrder();
     if (sources.containsKey(mlSource)) {
       for (Path dep : checkNotNull(sources.get(mlSource))) {
-        generateSingleMLCompilation(sourceToRule, cmxFiles, dep, sources, newCycleDetector);
+        generateSingleMLNativeCompilation(sourceToRule, cmxFiles, dep, sources, newCycleDetector);
         depsBuilder.addAll(checkNotNull(sourceToRule.get(dep)));
       }
     }
@@ -440,7 +451,7 @@ public class OCamlBuildRulesGenerator {
 
     String name = mlSource.toFile().getName();
 
-    BuildTarget buildTarget = createMLCompileBuildTarget(
+    BuildTarget buildTarget = createMLNativeCompileBuildTarget(
         params.getBuildTarget(),
         name);
 
@@ -448,14 +459,14 @@ public class OCamlBuildRulesGenerator {
         buildTarget,
         Suppliers.ofInstance(
             ImmutableSortedSet.<BuildRule>naturalOrder()
-                .addAll(params.getDeclaredDeps())
+                .addAll(params.getDeclaredDeps().get())
                 .addAll(deps)
-                .addAll(ocamlContext.getCompileDeps())
+                .addAll(ocamlContext.getNativeCompileDeps())
                 .build()),
-        Suppliers.ofInstance(params.getExtraDeps()));
+        params.getExtraDeps());
 
-    String outputFileName = getMLOutputName(name);
-    Path outputPath = ocamlContext.getCompileOutputDir()
+    String outputFileName = getMLNativeOutputName(name);
+    Path outputPath = ocamlContext.getCompileNativeOutputDir()
         .resolve(outputFileName);
     final ImmutableList<String> compileFlags = getCompileFlags(
         /* isBytecode */ false,
@@ -464,11 +475,14 @@ public class OCamlBuildRulesGenerator {
         compileParams,
         pathResolver,
         new OCamlMLCompileStep.Args(
-          cCompiler.getCommandPrefix(pathResolver),
-          ocamlContext.getOcamlCompiler().get(),
-          outputPath,
-          mlSource,
-          compileFlags));
+            params.getProjectFilesystem().getAbsolutifier(),
+            cCompiler.getEnvironment(pathResolver),
+            cCompiler.getCommandPrefix(pathResolver),
+            ocamlContext.getOcamlCompiler().get(),
+            ocamlContext.getOCamlInteropIncludesDir(),
+            outputPath,
+            mlSource,
+            compileFlags));
     resolver.addToIndex(compile);
     sourceToRule.put(
         mlSource,
@@ -482,7 +496,7 @@ public class OCamlBuildRulesGenerator {
     }
   }
 
-  private ImmutableList<SourcePath> generateMLCompileBytecode(
+  private ImmutableList<SourcePath> generateMLBytecodeCompilation(
       ImmutableMap<Path, ImmutableList<Path>> mlSources) {
     ImmutableList.Builder<SourcePath> cmoFiles = ImmutableList.builder();
 
@@ -500,6 +514,9 @@ public class OCamlBuildRulesGenerator {
     return cmoFiles.build();
   }
 
+  /**
+   * Compiles a single .ml file to a .cmo
+   */
   private void generateSingleMLBytecodeCompilation(
       Map<Path, ImmutableSortedSet<BuildRule>> sourceToRule,
       ImmutableList.Builder<SourcePath> cmoFiles,
@@ -543,11 +560,11 @@ public class OCamlBuildRulesGenerator {
         buildTarget,
         Suppliers.ofInstance(
             ImmutableSortedSet.<BuildRule>naturalOrder()
-                .addAll(params.getDeclaredDeps())
+                .addAll(params.getDeclaredDeps().get())
                 .addAll(deps)
                 .addAll(ocamlContext.getBytecodeCompileDeps())
                 .build()),
-        Suppliers.ofInstance(params.getExtraDeps()));
+        params.getExtraDeps());
 
     String outputFileName = getMLBytecodeOutputName(name);
     Path outputPath = ocamlContext.getCompileBytecodeOutputDir()
@@ -559,11 +576,14 @@ public class OCamlBuildRulesGenerator {
         compileParams,
         pathResolver,
         new OCamlMLCompileStep.Args(
-          cCompiler.getCommandPrefix(pathResolver),
-          ocamlContext.getOcamlBytecodeCompiler().get(),
-          outputPath,
-          mlSource,
-          compileFlags));
+            params.getProjectFilesystem().getAbsolutifier(),
+            cCompiler.getEnvironment(pathResolver),
+            cCompiler.getCommandPrefix(pathResolver),
+            ocamlContext.getOcamlBytecodeCompiler().get(),
+            ocamlContext.getOCamlInteropIncludesDir(),
+            outputPath,
+            mlSource,
+            compileFlags));
     resolver.addToIndex(compileBytecode);
     sourceToRule.put(
         mlSource,

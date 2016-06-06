@@ -18,14 +18,17 @@ package com.facebook.buck.android;
 
 import static org.junit.Assert.assertEquals;
 
+import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.model.BuildTargets;
+import com.facebook.buck.model.ImmutableFlavor;
 import com.facebook.buck.testutil.integration.BuckBuildLog;
-import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
+import com.facebook.buck.testutil.integration.TemporaryPaths;
 import com.facebook.buck.testutil.integration.TestDataHelper;
 import com.facebook.buck.testutil.integration.ZipInspector;
 import com.google.common.collect.Lists;
 
-import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
@@ -49,51 +52,56 @@ public class AndroidExopackageBinaryIntegrationTest {
       "//apps/multidex:app-dex-native-exo";
 
   @ClassRule
-  public static DebuggableTemporaryFolder projectFolderWithPrebuiltTargets =
-      new DebuggableTemporaryFolder();
+  public static TemporaryPaths projectFolderWithPrebuiltTargets =
+      new TemporaryPaths();
+
+  private static ProjectWorkspace workspaceWithPrebuiltTargets;
 
   @Rule
-  public DebuggableTemporaryFolder tmpFolder = new DebuggableTemporaryFolder();
+  public TemporaryPaths tmpFolder = new TemporaryPaths();
 
   private ProjectWorkspace workspace;
+
+  private ProjectFilesystem filesystem;
 
   @BeforeClass
   public static void setUpOnce() throws IOException {
     AssumeAndroidPlatform.assumeSdkIsAvailable();
     AssumeAndroidPlatform.assumeNdkIsAvailable();
-    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+    workspaceWithPrebuiltTargets = TestDataHelper.createProjectWorkspaceForScenario(
         new AndroidBinaryIntegrationTest(),
         "android_project",
         projectFolderWithPrebuiltTargets);
-    workspace.setUp();
+    workspaceWithPrebuiltTargets.setUp();
 
     Properties properties = System.getProperties();
     properties.setProperty("buck.native_exopackage_fake_path",
         Paths.get("assets/android/native-exopackage-fakes.apk").toAbsolutePath().toString());
 
-    workspace.runBuckBuild(
+    workspaceWithPrebuiltTargets.runBuckBuild(
         DEX_EXOPACKAGE_TARGET,
         NATIVE_EXOPACKAGE_TARGET,
         DEX_AND_NATIVE_EXOPACKAGE_TARGET)
         .assertSuccess();
   }
 
-  @AfterClass
-  public static void tearDownLast() {
-    projectFolderWithPrebuiltTargets.after();
-  }
-
   @Before
   public void setUp() throws IOException {
-    workspace = new ProjectWorkspace(projectFolderWithPrebuiltTargets.getRoot(), tmpFolder);
+    workspace = ProjectWorkspace.cloneExistingWorkspaceIntoNewFolder(
+        workspaceWithPrebuiltTargets,
+        tmpFolder);
     workspace.setUp();
+    filesystem = new ProjectFilesystem(workspace.getDestPath());
   }
 
   @Test
   public void testDexExopackageHasNoSecondary() throws IOException {
     ZipInspector zipInspector = new ZipInspector(
-        workspace.getFile(
-            "buck-out/gen/apps/multidex/app-dex-exo.apk"));
+        workspace.getPath(
+            BuildTargets.getGenPath(
+                filesystem,
+                BuildTargetFactory.newInstance(DEX_EXOPACKAGE_TARGET),
+                "%s.apk")));
     zipInspector.assertFileDoesNotExist("assets/secondary-program-dex-jars/metadata.txt");
     zipInspector.assertFileDoesNotExist("assets/secondary-program-dex-jars/secondary-1.dex.jar");
     zipInspector.assertFileDoesNotExist("classes2.dex");
@@ -103,9 +111,11 @@ public class AndroidExopackageBinaryIntegrationTest {
 
     // It would be better if we could call getExopackageInfo on the app rule.
     Path secondaryDir = workspace.resolve(
-        Paths.get(
-            "buck-out/bin/apps/multidex/_app-dex-exo#dex_merge_output" +
-                "/jarfiles/assets/secondary-program-dex-jars"));
+        BuildTargets.getScratchPath(
+            filesystem,
+            BuildTargetFactory.newInstance(DEX_EXOPACKAGE_TARGET)
+                .withFlavors(ImmutableFlavor.of("dex_merge")),
+            "_%s_output/jarfiles/assets/secondary-program-dex-jars"));
 
     try (DirectoryStream<Path> stream = Files.newDirectoryStream(secondaryDir)) {
       List<Path> files = Lists.newArrayList(stream);
@@ -113,7 +123,7 @@ public class AndroidExopackageBinaryIntegrationTest {
       Collections.sort(files);
 
       Path secondaryJar = files.get(0);
-      ZipInspector zi = new ZipInspector(secondaryJar.toFile());
+      ZipInspector zi = new ZipInspector(secondaryJar);
       zi.assertFileExists("classes.dex");
       long jarSize = Files.size(secondaryJar);
       long classesDexSize = zi.getSize("classes.dex");
@@ -128,7 +138,7 @@ public class AndroidExopackageBinaryIntegrationTest {
   @Test
   public void testNativeExopackageHasNoNativeLibraries() throws IOException {
     ZipInspector zipInspector = new ZipInspector(
-        workspace.getFile(
+        workspace.getPath(
             "buck-out/gen/apps/multidex/app-native-exo.apk"));
 
     zipInspector.assertFileDoesNotExist("assets/secondary-program-dex-jars/metadata.txt");
@@ -143,8 +153,11 @@ public class AndroidExopackageBinaryIntegrationTest {
   @Test
   public void testAllExopackageHasNeitherSecondaryNorNativeLibraries() throws IOException {
     ZipInspector zipInspector = new ZipInspector(
-        workspace.getFile(
-            "buck-out/gen/apps/multidex/app-dex-native-exo.apk"));
+        workspace.getPath(
+            BuildTargets.getGenPath(
+                filesystem,
+                BuildTargetFactory.newInstance(DEX_AND_NATIVE_EXOPACKAGE_TARGET),
+                "%s.apk")));
 
     zipInspector.assertFileDoesNotExist("assets/secondary-program-dex-jars/metadata.txt");
     zipInspector.assertFileDoesNotExist("classes2.dex");
@@ -256,7 +269,7 @@ public class AndroidExopackageBinaryIntegrationTest {
 
     workspace.getBuildLog().assertTargetBuiltLocally(DEX_EXOPACKAGE_TARGET);
     zipInspector = new ZipInspector(
-        workspace.getFile(
+        workspace.getPath(
             "buck-out/gen/apps/multidex/app-dex-exo.apk"));
     zipInspector.assertFileExists("lib/armeabi/libfakenative.so");
     zipInspector.assertFileDoesNotExist("assets/lib/armeabi/libfakenative.so");
@@ -273,7 +286,7 @@ public class AndroidExopackageBinaryIntegrationTest {
 
     workspace.getBuildLog().assertTargetBuiltLocally(DEX_EXOPACKAGE_TARGET);
     zipInspector = new ZipInspector(
-        workspace.getFile(
+        workspace.getPath(
             "buck-out/gen/apps/multidex/app-dex-exo.apk"));
     zipInspector.assertFileDoesNotExist("lib/armeabi/libfakenative.so");
     zipInspector.assertFileExists("assets/lib/armeabi/libfakenative.so");
@@ -290,8 +303,11 @@ public class AndroidExopackageBinaryIntegrationTest {
 
     workspace.getBuildLog().assertTargetBuiltLocally(DEX_EXOPACKAGE_TARGET);
     zipInspector = new ZipInspector(
-        workspace.getFile(
-            "buck-out/gen/apps/multidex/app-dex-exo.apk"));
+        workspace.getPath(
+            BuildTargets.getGenPath(
+                filesystem,
+                BuildTargetFactory.newInstance(DEX_EXOPACKAGE_TARGET),
+                "%s.apk")));
     zipInspector.assertFileDoesNotExist("lib/armeabi/libfakenative.so");
     zipInspector.assertFileExists("assets/lib/armeabi/libfakenative.so");
   }

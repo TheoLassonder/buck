@@ -18,15 +18,20 @@ package com.facebook.buck.android;
 
 import static org.junit.Assert.assertEquals;
 
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.rules.BuildContext;
 import com.facebook.buck.rules.BuildRuleParams;
-import com.facebook.buck.rules.BuildRuleParamsFactory;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
 import com.facebook.buck.rules.FakeBuildableContext;
-import com.facebook.buck.rules.TestSourcePath;
+import com.facebook.buck.rules.FakeSourcePath;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.step.Step;
-import com.facebook.buck.util.BuckConstant;
+import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
@@ -36,17 +41,21 @@ import org.junit.Test;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.List;
 
 public class AndroidManifestTest {
+
+  public static final String MANIFEST_TARGET = "//java/com/example:manifest";
 
   @Test
   public void testSimpleObserverMethods() {
     AndroidManifest androidManifest = createSimpleAndroidManifestRule();
 
     assertEquals(
-        BuckConstant.GEN_PATH.resolve("java/com/example/AndroidManifest__manifest__.xml"),
+        BuildTargets.getGenPath(
+            new FakeProjectFilesystem(),
+            BuildTargetFactory.newInstance(MANIFEST_TARGET),
+            "AndroidManifest__%s__.xml"),
         androidManifest.getPathToOutput());
   }
 
@@ -60,11 +69,17 @@ public class AndroidManifestTest {
 
     List<Step> steps = androidManifest.getBuildSteps(buildContext, new FakeBuildableContext());
     Step generateManifestStep = steps.get(2);
+
+    ProjectFilesystem filesystem = androidManifest.getProjectFilesystem();
     assertEquals(
         new GenerateManifestStep(
-            Paths.get("java/com/example/AndroidManifestSkeleton.xml"),
+            filesystem,
+            filesystem.resolve("java/com/example/AndroidManifestSkeleton.xml"),
             /* libraryManifestPaths */ ImmutableSet.<Path>of(),
-            BuckConstant.GEN_PATH.resolve("java/com/example/AndroidManifest__manifest__.xml")),
+            BuildTargets.getGenPath(
+                filesystem,
+                BuildTargetFactory.newInstance(MANIFEST_TARGET),
+                "AndroidManifest__%s__.xml")),
         generateManifestStep);
 
     EasyMock.verify(buildContext);
@@ -77,15 +92,19 @@ public class AndroidManifestTest {
 
   private AndroidManifest createSimpleAndroidManifestRule() {
     // First, create the AndroidManifest object.
-    BuildRuleParams buildRuleParams = BuildRuleParamsFactory.createTrivialBuildRuleParams(
-        BuildTarget.builder("//java/com/example", "manifest").build());
+    BuildRuleParams buildRuleParams =
+        new FakeBuildRuleParamsBuilder(MANIFEST_TARGET).build();
     AndroidManifestDescription description = new AndroidManifestDescription();
     AndroidManifestDescription.Arg arg = description.createUnpopulatedConstructorArg();
-    arg.skeleton = new TestSourcePath("java/com/example/AndroidManifestSkeleton.xml");
+    arg.skeleton = new FakeSourcePath("java/com/example/AndroidManifestSkeleton.xml");
     arg.deps = Optional.of(ImmutableSortedSet.<BuildTarget>of());
-    return description.createBuildRule(buildRuleParams, new BuildRuleResolver(), arg);
+    return description.createBuildRule(
+        TargetGraph.EMPTY,
+        buildRuleParams,
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer()),
+        arg);
   }
 
-  // TODO(user): Add another unit test that passes in a non-trivial DependencyGraph and verify that
+  // TODO(abhi): Add another unit test that passes in a non-trivial DependencyGraph and verify that
   // the resulting set of libraryManifestPaths is computed correctly.
 }

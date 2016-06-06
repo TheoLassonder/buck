@@ -17,8 +17,8 @@
 package com.facebook.buck.rules.keys;
 
 import com.facebook.buck.rules.BuildRule;
-import com.facebook.buck.rules.RuleKey;
+import com.facebook.buck.rules.RuleKeyObjectSink;
 
 interface AlterRuleKey {
-  void amendKey(RuleKey.Builder builder, BuildRule rule);
+  void amendKey(RuleKeyObjectSink sink, BuildRule rule);
 }

@@ -16,11 +16,14 @@
 
 package com.facebook.buck.rules.macros;
 
-import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
-import com.facebook.buck.model.Pair;
+import com.facebook.buck.model.MacroException;
+import com.facebook.buck.model.MacroFinder;
+import com.facebook.buck.model.MacroMatchResult;
+import com.facebook.buck.model.MacroReplacer;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.CellPathResolver;
 import com.facebook.buck.util.HumanReadableException;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
@@ -43,13 +46,13 @@ public class MacroHandler {
 
   public Function<String, String> getExpander(
       final BuildTarget target,
-      final BuildRuleResolver resolver,
-      final ProjectFilesystem filesystem) {
+      final CellPathResolver cellNames,
+      final BuildRuleResolver resolver) {
     return new Function<String, String>() {
       @Override
       public String apply(String blob) {
         try {
-          return expand(target, resolver, filesystem, blob);
+          return expand(target, cellNames, resolver, blob);
         } catch (MacroException e) {
           throw new HumanReadableException("%s: %s", target, e.getMessage());
         }
@@ -75,7 +78,7 @@ public class MacroHandler {
     return builder.build();
   }
 
-  private MacroExpander getExpander(String name) throws MacroException {
+  public MacroExpander getExpander(String name) throws MacroException {
     MacroExpander expander = expanders.get(name);
     if (expander == null) {
       throw new MacroException(String.format("no such macro \"%s\"", name));
@@ -85,10 +88,20 @@ public class MacroHandler {
 
   public String expand(
       final BuildTarget target,
+      final CellPathResolver cellNames,
       final BuildRuleResolver resolver,
-      final ProjectFilesystem filesystem,
       String blob)
       throws MacroException {
+    ImmutableMap<String, MacroReplacer> replacers = getMacroReplacers(
+        target,
+        cellNames,
+        resolver);
+    return MACRO_FINDER.replace(replacers, blob);
+  }
+
+  public ImmutableMap<String, MacroReplacer> getMacroReplacers(
+      final BuildTarget target,
+      final CellPathResolver cellNames, final BuildRuleResolver resolver) {
     ImmutableMap.Builder<String, MacroReplacer> replacers = ImmutableMap.builder();
     for (final Map.Entry<String, MacroExpander> entry : expanders.entrySet()) {
       replacers.put(
@@ -96,15 +109,20 @@ public class MacroHandler {
           new MacroReplacer() {
             @Override
             public String replace(String input) throws MacroException {
-              return getExpander(entry.getKey()).expand(target, resolver, filesystem, input);
+              return getExpander(entry.getKey()).expand(
+                  target,
+                  cellNames,
+                  resolver,
+                  input);
             }
           });
     }
-    return MACRO_FINDER.replace(replacers.build(), blob);
+    return replacers.build();
   }
 
-  public ImmutableList<BuildRule> extractAdditionalBuildTimeDeps(
+  public ImmutableList<BuildRule> extractBuildTimeDeps(
       BuildTarget target,
+      CellPathResolver cellNames,
       BuildRuleResolver resolver,
       String blob)
       throws MacroException {
@@ -112,11 +130,13 @@ public class MacroHandler {
 
     // Iterate over all macros found in the string, collecting all `BuildTargets` each expander
     // extract for their respective macros.
-    for (Pair<String, String> match : MACRO_FINDER.findAll(expanders.keySet(), blob)) {
-      deps.addAll(getExpander(match.getFirst()).extractAdditionalBuildTimeDeps(
+    for (MacroMatchResult matchResult : getMacroMatchResults(blob)) {
+      deps.addAll(
+          getExpander(matchResult.getMacroType()).extractBuildTimeDeps(
               target,
+              cellNames,
               resolver,
-              match.getSecond()));
+              matchResult.getMacroInput()));
     }
 
     return deps.build();
@@ -124,6 +144,7 @@ public class MacroHandler {
 
   public ImmutableList<BuildTarget> extractParseTimeDeps(
       BuildTarget target,
+      CellPathResolver cellNames,
       String blob)
       throws MacroException {
 
@@ -131,11 +152,51 @@ public class MacroHandler {
 
     // Iterate over all macros found in the string, collecting all `BuildTargets` each expander
     // extract for their respective macros.
-    for (Pair<String, String> match : MACRO_FINDER.findAll(expanders.keySet(), blob)) {
-      targets.addAll(getExpander(match.getFirst()).extractParseTimeDeps(target, match.getSecond()));
+    for (MacroMatchResult matchResult : getMacroMatchResults(blob)) {
+      targets.addAll(
+          getExpander(matchResult.getMacroType()).extractParseTimeDeps(
+              target,
+              cellNames,
+              matchResult.getMacroInput()));
     }
 
     return targets.build();
   }
 
+  public ImmutableList<Object> extractRuleKeyAppendables(
+      BuildTarget target,
+      CellPathResolver cellNames,
+      BuildRuleResolver resolver,
+      String blob)
+      throws MacroException {
+
+    ImmutableList.Builder<Object> targets = ImmutableList.builder();
+
+    // Iterate over all macros found in the string, collecting all `BuildTargets` each expander
+    // extract for their respective macros.
+    for (MacroMatchResult matchResult : getMacroMatchResults(blob)) {
+      targets.add(
+          getExpander(matchResult.getMacroType()).extractRuleKeyAppendables(
+              target,
+              cellNames,
+              resolver,
+              matchResult.getMacroInput()));
+    }
+
+    return targets.build();
+  }
+
+  public boolean containsWorkerMacro(String blob) throws MacroException {
+    boolean result = false;
+    for (MacroMatchResult matchResult : getMacroMatchResults(blob)) {
+      if (getExpander(matchResult.getMacroType()) instanceof WorkerMacroExpander) {
+        result = true;
+      }
+    }
+    return result;
+  }
+
+  public ImmutableList<MacroMatchResult> getMacroMatchResults(String blob) throws MacroException {
+    return MACRO_FINDER.findAll(expanders.keySet(), blob);
+  }
 }

@@ -16,13 +16,15 @@
 
 package com.facebook.buck.dalvik;
 
+import static com.facebook.buck.io.MorePaths.pathWithPlatformSeparators;
 import static org.junit.Assert.assertEquals;
 
 import com.facebook.buck.dalvik.EstimateLinearAllocStep.LinearAllocEstimator;
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.classes.FileLike;
+import com.facebook.buck.jvm.java.classes.FileLike;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.TestExecutionContext;
+import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 
@@ -42,9 +44,9 @@ public class EstimateLinearAllocStepTest {
 
   private LinearAllocEstimator linearAllocEstimator = new FakeLinearAllocEstimator(
       ImmutableMap.<String, Integer>builder()
-      .put("com/example/Foo.class", 100)
-      .put("com/example/Bar.class", 250)
-      .put("com/example/subpackage/Baz.class", 75)
+      .put(pathWithPlatformSeparators("com/example/Foo.class"), 100)
+      .put(pathWithPlatformSeparators("com/example/Bar.class"), 250)
+      .put(pathWithPlatformSeparators("com/example/subpackage/Baz.class"), 75)
       .build());
 
   @Test
@@ -53,48 +55,57 @@ public class EstimateLinearAllocStepTest {
     String name = "dir";
     tmp.newFolder(name);
 
-    tmp.newFolder("dir/com");
-    tmp.newFolder("dir/com/example");
-    tmp.newFolder("dir/com/example/subpackage");
+    tmp.newFolder("dir", "com");
+    tmp.newFolder("dir", "com", "example");
+    tmp.newFolder("dir", "com", "example", "subpackage");
 
-    tmp.newFile("dir/com/example/Foo.class");
-    tmp.newFile("dir/com/example/Bar.class");
-    tmp.newFile("dir/com/example/not_a_class.png");
-    tmp.newFile("dir/com/example/subpackage/Baz.class");
+    tmp.newFile(pathWithPlatformSeparators("dir/com/example/Foo.class"));
+    tmp.newFile(pathWithPlatformSeparators("dir/com/example/Bar.class"));
+    tmp.newFile(pathWithPlatformSeparators("dir/com/example/not_a_class.png"));
+    tmp.newFile(pathWithPlatformSeparators("dir/com/example/subpackage/Baz.class"));
 
-    ExecutionContext context = TestExecutionContext
-        .newBuilder()
-        .setProjectFilesystem(new ProjectFilesystem(tmp.getRoot().toPath()))
-        .build();
+    ProjectFilesystem filesystem = new FakeProjectFilesystem(tmp.getRoot());
+    ExecutionContext context = TestExecutionContext.newInstance();
 
     Path pathToJarOrClassesDirectory = Paths.get(name);
-    EstimateLinearAllocStep step = new EstimateLinearAllocStep(pathToJarOrClassesDirectory,
+    EstimateLinearAllocStep step = new EstimateLinearAllocStep(
+        filesystem,
+        pathToJarOrClassesDirectory,
         linearAllocEstimator);
-    int exitCode = step.execute(context);
+    int exitCode = step.execute(context).getExitCode();
     assertEquals(0, exitCode);
     assertEquals(Integer.valueOf(425), step.get());
   }
 
   @Test(expected = IllegalStateException.class)
   public void testGetBeforeExecuteThrowsException() {
+    ProjectFilesystem filesystem = FakeProjectFilesystem.createJavaOnlyFilesystem();
     Path pathToJarOrClassesDirectory = Paths.get("out");
-    EstimateLinearAllocStep step = new EstimateLinearAllocStep(pathToJarOrClassesDirectory,
+    EstimateLinearAllocStep step = new EstimateLinearAllocStep(
+        filesystem,
+        pathToJarOrClassesDirectory,
         linearAllocEstimator);
     step.get();
   }
 
   @Test
   public void testGetShortName() {
+    ProjectFilesystem filesystem = FakeProjectFilesystem.createJavaOnlyFilesystem();
     Path pathToJarOrClassesDirectory = Paths.get("out");
-    EstimateLinearAllocStep step = new EstimateLinearAllocStep(pathToJarOrClassesDirectory,
+    EstimateLinearAllocStep step = new EstimateLinearAllocStep(
+        filesystem,
+        pathToJarOrClassesDirectory,
         linearAllocEstimator);
     assertEquals("estimate_linear_alloc", step.getShortName());
   }
 
   @Test
   public void testGetDescription() {
+    ProjectFilesystem filesystem = FakeProjectFilesystem.createJavaOnlyFilesystem();
     Path pathToJarOrClassesDirectory = Paths.get("out");
-    EstimateLinearAllocStep step = new EstimateLinearAllocStep(pathToJarOrClassesDirectory,
+    EstimateLinearAllocStep step = new EstimateLinearAllocStep(
+        filesystem,
+        pathToJarOrClassesDirectory,
         linearAllocEstimator);
     assertEquals("estimate_linear_alloc", step.getDescription(TestExecutionContext.newInstance()));
   }

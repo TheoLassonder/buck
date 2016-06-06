@@ -16,68 +16,60 @@
 
 package com.facebook.buck.cli;
 
-import com.facebook.buck.event.BuckEventBus;
+import static java.lang.Integer.parseInt;
+
+import com.facebook.buck.config.Config;
 import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.DefaultJavaPackageFinder;
-import com.facebook.buck.log.Logger;
+import com.facebook.buck.jvm.java.DefaultJavaPackageFinder;
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.Pair;
 import com.facebook.buck.parser.BuildTargetParseException;
 import com.facebook.buck.parser.BuildTargetParser;
 import com.facebook.buck.parser.BuildTargetPatternParser;
-import com.facebook.buck.rules.ArtifactCache;
-import com.facebook.buck.rules.BuildDependencies;
+import com.facebook.buck.rules.BinaryBuildRuleToolProvider;
+import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.BuildTargetSourcePath;
 import com.facebook.buck.rules.CachingBuildEngine;
-import com.facebook.buck.rules.DirArtifactCache;
-import com.facebook.buck.rules.HttpArtifactCache;
-import com.facebook.buck.rules.MultiArtifactCache;
-import com.facebook.buck.rules.NoopArtifactCache;
+import com.facebook.buck.rules.CellPathResolver;
+import com.facebook.buck.rules.ConstantToolProvider;
+import com.facebook.buck.rules.HashedFileTool;
 import com.facebook.buck.rules.PathSourcePath;
 import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.Tool;
+import com.facebook.buck.rules.ToolProvider;
 import com.facebook.buck.util.Ansi;
 import com.facebook.buck.util.AnsiEnvironmentChecking;
 import com.facebook.buck.util.BuckConstant;
-import com.facebook.buck.util.Config;
 import com.facebook.buck.util.HumanReadableException;
-import com.facebook.buck.util.Inis;
+import com.facebook.buck.util.PatternAndMessage;
+import com.facebook.buck.util.SampleRate;
+import com.facebook.buck.util.environment.Architecture;
+import com.facebook.buck.util.environment.EnvironmentFilter;
 import com.facebook.buck.util.environment.Platform;
-import com.facebook.buck.util.unit.SizeUnit;
+import com.facebook.buck.util.network.HostnameFetching;
 import com.google.common.annotations.Beta;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Charsets;
 import com.google.common.base.Function;
-import com.google.common.base.Joiner;
 import com.google.common.base.Objects;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Predicates;
+import com.google.common.base.Splitter;
+import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.google.common.hash.Hashing;
-import com.google.common.io.Files;
-import com.squareup.okhttp.ConnectionPool;
-import com.squareup.okhttp.Interceptor;
-import com.squareup.okhttp.OkHttpClient;
-import com.squareup.okhttp.Response;
+import com.google.common.collect.Sets;
 
-import java.io.File;
 import java.io.IOException;
-import java.io.Reader;
-import java.net.InetAddress;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.net.UnknownHostException;
+import java.net.URI;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 import javax.annotation.Nullable;
@@ -90,16 +82,11 @@ import javax.annotation.concurrent.Immutable;
 @Immutable
 public class BuckConfig {
 
-  private static final Logger LOG = Logger.get(BuckConfig.class);
-
-  private static final String DEFAULT_BUCK_CONFIG_FILE_NAME = ".buckconfig";
   public static final String DEFAULT_BUCK_CONFIG_OVERRIDE_FILE_NAME = ".buckconfig.local";
-  private static final String DEFAULT_BUCK_CONFIG_DIRECTORY_NAME = ".buckconfig.d";
-
-  private static final Path GLOBAL_BUCK_CONFIG_FILE_PATH = Paths.get("/etc/buckconfig");
-  private static final Path GLOBAL_BUCK_CONFIG_DIRECTORY_PATH = Paths.get("/etc/buckconfig.d");
 
   private static final String ALIAS_SECTION_HEADER = "alias";
+
+  private static final Float DEFAULT_THREAD_CORE_RATIO = Float.valueOf(1.0F);
 
   /**
    * This pattern is designed so that a fully-qualified build target cannot be a valid alias name
@@ -107,16 +94,43 @@ public class BuckConfig {
    */
   private static final Pattern ALIAS_PATTERN = Pattern.compile("[a-zA-Z_-][a-zA-Z0-9_-]*");
 
-  @VisibleForTesting
-  static final String BUCK_BUCKD_DIR_KEY = "buck.buckd_dir";
-
-  private static final String DEFAULT_CACHE_DIR = "buck-cache";
-  private static final String DEFAULT_DIR_CACHE_MODE = CacheMode.readwrite.name();
   private static final String DEFAULT_MAX_TRACES = "25";
 
-  private static final String DEFAULT_HTTP_URL = "http://localhost:8080";
-  private static final String DEFAULT_HTTP_CACHE_MODE = CacheMode.readwrite.name();
-  private static final String DEFAULT_HTTP_CACHE_TIMEOUT_SECONDS = "3";
+  private static final ImmutableMap<String, ImmutableSet<String>> IGNORE_FIELDS_FOR_DAEMON_RESTART =
+      ImmutableMap.of(
+          "build", ImmutableSet.of("threads", "load_limit"),
+          "cache", ImmutableSet.of("dir", "dir_mode", "http_mode", "http_url", "mode"),
+          "client", ImmutableSet.of("id"),
+          "project", ImmutableSet.of("ide_prompt")
+  );
+
+  private static final Function<String, URI> TO_URI = new Function<String, URI>() {
+    @Override
+    public URI apply(String input) {
+      return URI.create(input);
+    }
+  };
+
+  private final CellPathResolver cellToPath =
+      new CellPathResolver() {
+        @Override
+        public Path getCellPath(Optional<String> cellName) {
+          if (!cellName.isPresent()) {
+            return projectFilesystem.getRootPath();
+          }
+          Optional<Path> root = getPath("repositories", cellName.get(), false);
+          if (!root.isPresent()) {
+            throw new HumanReadableException(
+                "Unable to find repository '%s' in cell rooted at: %s",
+                cellName.get(),
+                projectFilesystem.getRootPath());
+          }
+          Path path = MorePaths.expandHomeDir(root.get());
+          return projectFilesystem.resolve(path).normalize();
+        }
+      };
+
+  private final Architecture architecture;
 
   private final Config config;
 
@@ -127,32 +141,17 @@ public class BuckConfig {
   private final Platform platform;
 
   private final ImmutableMap<String, String> environment;
+  private final ImmutableMap<String, String> filteredEnvironment;
 
-  private enum ArtifactCacheNames {
-    dir,
-    http
-  }
-
-  private enum CacheMode {
-    readonly(false),
-    readwrite(true),
-    ;
-
-    private final boolean doStore;
-
-    private CacheMode(boolean doStore) {
-      this.doStore = doStore;
-    }
-  }
-
-  @VisibleForTesting
-  BuckConfig(
+  public BuckConfig(
       Config config,
       ProjectFilesystem projectFilesystem,
+      Architecture architecture,
       Platform platform,
       ImmutableMap<String, String> environment) {
     this.config = config;
     this.projectFilesystem = projectFilesystem;
+    this.architecture = architecture;
 
     // We could create this Map on demand; however, in practice, it is almost always needed when
     // BuckConfig is needed because CommandLineBuildTargetNormalizer needs it.
@@ -161,42 +160,8 @@ public class BuckConfig {
 
     this.platform = platform;
     this.environment = environment;
-  }
-
-  /**
-   * Takes a sequence of {@code .buckconfig} files and loads them, in order, to create a
-   * {@code BuckConfig} object. Each successive file that is loaded has the ability to override
-   * definitions from a previous file.
-   * @param projectFilesystem project for which the {@link BuckConfig} is being created.
-   * @param files The sequence of {@code .buckconfig} files to load.
-   */
-  @SafeVarargs
-  public static BuckConfig createFromFiles(
-      ProjectFilesystem projectFilesystem,
-      Iterable<File> files,
-      Platform platform,
-      ImmutableMap<String, String> environment,
-      ImmutableMap<String, ImmutableMap<String, String>>... configOverrides)
-      throws IOException {
-    if (Iterables.isEmpty(files)) {
-      return new BuckConfig(
-          new Config(configOverrides),
-          projectFilesystem,
-          platform,
-          environment);
-    }
-
-    // Convert the Files to Readers.
-    ImmutableMap.Builder<Path, Reader> readers = ImmutableMap.builder();
-    for (File file : files) {
-      readers.put(file.toPath(), Files.newReader(file, Charsets.UTF_8));
-    }
-    return createFromReaders(
-        readers.build(),
-        projectFilesystem,
-        platform,
-        environment,
-        configOverrides);
+    this.filteredEnvironment = ImmutableMap.copyOf(
+        Maps.filterKeys(environment, EnvironmentFilter.NOT_IGNORED_ENV_PREDICATE));
   }
 
   /**
@@ -227,34 +192,8 @@ public class BuckConfig {
     throw new HumanReadableException("Not a valid %s: %s.", fieldName.toLowerCase(), aliasName);
   }
 
-  @SafeVarargs
-  @VisibleForTesting
-  static BuckConfig createFromReaders(
-      Map<Path, Reader> readers,
-      ProjectFilesystem projectFilesystem,
-      Platform platform,
-      ImmutableMap<String, String> environment,
-      ImmutableMap<String, ImmutableMap<String, String>>... configOverrides)
-  throws IOException {
-    ImmutableList.Builder<ImmutableMap<String, ImmutableMap<String, String>>> builder =
-        ImmutableList.builder();
-    for (Map.Entry<Path, Reader> entry : readers.entrySet()) {
-      Path filePath = entry.getKey();
-      Reader reader = entry.getValue();
-      ImmutableMap<String, ImmutableMap<String, String>> parsedConfiguration = Inis.read(reader);
-      LOG.debug("Loaded a configuration file %s: %s", filePath, parsedConfiguration);
-      builder.add(parsedConfiguration);
-    }
-    for (ImmutableMap<String, ImmutableMap<String, String>> configOverride : configOverrides) {
-      LOG.debug("Adding configuration overrides: %s", configOverride);
-      builder.add(configOverride);
-    }
-    Config config = new Config(builder.build());
-    return new BuckConfig(
-        config,
-        projectFilesystem,
-        platform,
-        environment);
+  public Architecture getArchitecture() {
+    return architecture;
   }
 
   public ImmutableMap<String, String> getEntriesForSection(String section) {
@@ -266,50 +205,38 @@ public class BuckConfig {
     }
   }
 
-  /**
-   * A set of paths to subtrees that do not contain source files, build files or files that could
-   * affect either (buck-out, .idea, .buckd, buck-cache, .git, etc.).  May return absolute paths
-   * as well as relative paths.
-   */
-  public ImmutableSet<Path> getIgnorePaths() {
-    final String projectKey = "project";
-    final String ignoreKey = "ignore";
-    final ImmutableMap<String, String> projectConfig = getEntriesForSection(projectKey);
-    ImmutableSet.Builder<Path> builder = ImmutableSet.builder();
-
-    builder.add(Paths.get(BuckConstant.BUCK_OUTPUT_DIRECTORY));
-    builder.add(Paths.get(".idea"));
-
-    Path buckdDir = Paths.get(System.getProperty(BUCK_BUCKD_DIR_KEY, ".buckd"));
-    Path cacheDir = getCacheDir();
-    for (Path path : ImmutableList.of(buckdDir, cacheDir)) {
-      if (!path.toString().isEmpty()) {
-        builder.add(path);
-      }
-    }
-
-    if (projectConfig.containsKey(ignoreKey)) {
-      builder.addAll(
-          Lists.transform(getListWithoutComments(projectKey, ignoreKey), MorePaths.TO_PATH));
-    }
-
-    // Normalize paths in order to eliminate trailing '/' characters and whatnot.
-    return builder.build();
+  public ImmutableList<String> getMessageOfTheDay() {
+    return getListWithoutComments("project", "motd");
   }
 
   public ImmutableList<String> getListWithoutComments(String section, String field) {
     return config.getListWithoutComments(section, field);
   }
 
-  @Nullable
-  public String getBuildTargetForAlias(String possiblyFlavoredAlias) {
-    String alias = possiblyFlavoredAlias;
-    int poundIdx = possiblyFlavoredAlias.indexOf('#');
-    if (poundIdx != -1) {
-      alias = possiblyFlavoredAlias.substring(0, poundIdx);
-    }
+  public ImmutableList<String> getListWithoutComments(
+      String section, String field, char splitChar) {
+    return config.getListWithoutComments(section, field, splitChar);
+  }
 
-    BuildTarget buildTarget = aliasToBuildTargetMap.get(alias);
+  public CellPathResolver getCellRoots() {
+    return cellToPath;
+  }
+
+  public Optional<ImmutableList<String>> getOptionalListWithoutComments(
+      String section, String field) {
+    return config.getOptionalListWithoutComments(section, field);
+  }
+
+  public Optional<ImmutableList<String>> getOptionalListWithoutComments(
+      String section, String field, char splitChar) {
+    return config.getOptionalListWithoutComments(section, field, splitChar);
+  }
+
+  @Nullable
+  public String getBuildTargetForAliasAsString(String possiblyFlavoredAlias) {
+    Pair<BuildTarget, Integer> buildTargetPoundIdx = getBuildTargetForAlias(possiblyFlavoredAlias);
+    BuildTarget buildTarget = buildTargetPoundIdx.getFirst();
+    int poundIdx = buildTargetPoundIdx.getSecond();
     if (buildTarget != null) {
       return buildTarget.getFullyQualifiedName() +
           (poundIdx == -1 ? "" : possiblyFlavoredAlias.substring(poundIdx));
@@ -318,10 +245,42 @@ public class BuckConfig {
     }
   }
 
+  public Pair<BuildTarget, Integer> getBuildTargetForAlias(String possiblyFlavoredAlias) {
+    String alias = possiblyFlavoredAlias;
+    int poundIdx = possiblyFlavoredAlias.indexOf('#');
+    if (poundIdx != -1) {
+      alias = possiblyFlavoredAlias.substring(0, poundIdx);
+    }
+    BuildTarget buildTarget = aliasToBuildTargetMap.get(alias);
+    return new Pair<>(buildTarget, poundIdx);
+  }
+
   public BuildTarget getBuildTargetForFullyQualifiedTarget(String target) {
     return BuildTargetParser.INSTANCE.parse(
         target,
-        BuildTargetPatternParser.fullyQualified());
+        BuildTargetPatternParser.fullyQualified(),
+        getCellRoots());
+  }
+
+  public ImmutableList<BuildTarget> getBuildTargetList(String section, String key) {
+    ImmutableList<String> targetsToForce = getListWithoutComments(section, key);
+    if (targetsToForce.size() == 0) {
+      return ImmutableList.<BuildTarget>of();
+    }
+    ImmutableList<BuildTarget> targets = ImmutableList.copyOf(FluentIterable
+        .from(targetsToForce)
+        .transform(
+            new Function<String, BuildTarget>() {
+              @Override
+              public BuildTarget apply(String input) {
+                String expandedAlias = getBuildTargetForAliasAsString(input);
+                if (expandedAlias != null) {
+                  input = expandedAlias;
+                }
+                return getBuildTargetForFullyQualifiedTarget(input);
+              }
+            }));
+    return targets;
   }
 
   /**
@@ -332,6 +291,23 @@ public class BuckConfig {
     return target.isPresent() ?
         Optional.of(getBuildTargetForFullyQualifiedTarget(target.get())) :
         Optional.<BuildTarget>absent();
+  }
+
+  /**
+   * @return the parsed BuildTarget in the given section and field, if set and a valid build target.
+   *
+   * This is useful if you use getTool to get the target, if any, but allow filesystem references.
+   */
+  public Optional<BuildTarget> getMaybeBuildTarget(String section, String field) {
+    Optional<String> value = getValue(section, field);
+    if (!value.isPresent()) {
+      return Optional.absent();
+    }
+    try {
+      return Optional.of(getBuildTargetForFullyQualifiedTarget(value.get()));
+    } catch (BuildTargetParseException e) {
+      return Optional.absent();
+    }
   }
 
   /**
@@ -367,7 +343,8 @@ public class BuckConfig {
       checkPathExists(
           value.get(),
           String.format("Overridden %s:%s path not found: ", section, field));
-      return Optional.<SourcePath>of(new PathSourcePath(projectFilesystem, Paths.get(value.get())));
+      return Optional.<SourcePath>of(
+          new PathSourcePath(projectFilesystem, getPathFromVfs(value.get())));
     }
   }
 
@@ -381,11 +358,48 @@ public class BuckConfig {
   }
 
   /**
+   * @return a {@link Tool} identified by a @{link BuildTarget} or {@link Path} reference
+   *     by the given section:field, if set.
+   */
+  public Optional<ToolProvider> getToolProvider(String section, String field) {
+    Optional<String> value = getValue(section, field);
+    if (!value.isPresent()) {
+      return Optional.absent();
+    }
+    Optional<BuildTarget> target = getMaybeBuildTarget(section, field);
+    if (target.isPresent()) {
+      return Optional.<ToolProvider>of(
+          new BinaryBuildRuleToolProvider(
+              target.get(),
+              String.format("[%s] %s", section, field)));
+    } else {
+      checkPathExists(
+          value.get(),
+          String.format("Overridden %s:%s path not found: ", section, field));
+      return Optional.<ToolProvider>of(
+          new ConstantToolProvider(new HashedFileTool(getPathFromVfs(value.get()))));
+    }
+  }
+
+  public Optional<Tool> getTool(String section, String field, BuildRuleResolver resolver) {
+    Optional<ToolProvider> provider = getToolProvider(section, field);
+    if (!provider.isPresent()) {
+      return Optional.absent();
+    }
+    return Optional.of(provider.get().resolve(resolver));
+  }
+
+  public Tool getRequiredTool(String section, String field, BuildRuleResolver resolver) {
+    Optional<Tool> path = getTool(section, field, resolver);
+    return required(section, field, path);
+  }
+
+  /**
    * In a {@link BuckConfig}, an alias can either refer to a fully-qualified build target, or an
    * alias defined earlier in the {@code alias} section. The mapping produced by this method
    * reflects the result of resolving all aliases as values in the {@code alias} section.
    */
-  private static ImmutableMap<String, BuildTarget> createAliasToBuildTargetMap(
+  private ImmutableMap<String, BuildTarget> createAliasToBuildTargetMap(
       ImmutableMap<String, String> rawAliasMap) {
     // We use a LinkedHashMap rather than an ImmutableMap.Builder because we want both (1) order to
     // be preserved, and (2) the ability to inspect the Map while building it up.
@@ -407,7 +421,8 @@ public class BuckConfig {
         // and just grab everything between "//" and ":" and assume it's a valid base path.
         buildTarget = BuildTargetParser.INSTANCE.parse(
             value,
-            BuildTargetPatternParser.fullyQualified());
+            BuildTargetPatternParser.fullyQualified(),
+            getCellRoots());
       }
       aliasToBuildTarget.put(alias, buildTarget);
     }
@@ -448,7 +463,7 @@ public class BuckConfig {
   }
 
   public int getMaxTraces() {
-    return Integer.parseInt(getValue("log", "max_traces").or(DEFAULT_MAX_TRACES));
+    return parseInt(getValue("log", "max_traces").or(DEFAULT_MAX_TRACES));
   }
 
   public boolean getCompressTraces() {
@@ -457,6 +472,10 @@ public class BuckConfig {
 
   public boolean getRestartAdbOnFailure() {
     return Boolean.parseBoolean(getValue("adb", "adb_restart_on_failure").or("true"));
+  }
+
+  public boolean getMultiInstallMode() {
+    return getBooleanValue("adb", "multi_install_mode", false);
   }
 
   public boolean getFlushEventsBeforeExit() {
@@ -471,8 +490,7 @@ public class BuckConfig {
     return ImmutableSet.copyOf(getListWithoutComments("java", "src_roots"));
   }
 
-  @VisibleForTesting
-  DefaultJavaPackageFinder createDefaultJavaPackageFinder() {
+  public DefaultJavaPackageFinder createDefaultJavaPackageFinder() {
     Set<String> srcRoots = getSrcRoots();
     return DefaultJavaPackageFinder.createDefaultJavaPackageFinder(srcRoots);
   }
@@ -480,24 +498,22 @@ public class BuckConfig {
   /**
    * Return Strings so as to avoid a dependency on {@link LabelSelector}!
    */
-  ImmutableList<String> getDefaultRawExcludedLabelSelectors() {
+  public ImmutableList<String> getDefaultRawExcludedLabelSelectors() {
     return getListWithoutComments("test", "excluded_labels");
   }
 
-  @Beta
-  Optional<BuildDependencies> getBuildDependencies() {
-    Optional<String> buildDependenciesOptional = getValue("build", "build_dependencies");
-    if (buildDependenciesOptional.isPresent()) {
-      try {
-        return Optional.of(BuildDependencies.valueOf(buildDependenciesOptional.get()));
-      } catch (IllegalArgumentException e) {
-        throw new HumanReadableException(
-            "%s is not a valid value for build_dependencies.  Must be one of: %s",
-            buildDependenciesOptional.get(),
-            Joiner.on(", ").join(BuildDependencies.values()));
-      }
-    } else {
+  /**
+   * By default, running tests use a temporary directory under
+   * buck-out. Since this directory is ignored by Watchman and other
+   * tools, allow overriding this behavior for projects that need it
+   * by specifying one or more environment variables which are checked
+   * for a temporary directory to use.
+   */
+  public Optional<ImmutableList<String>> getTestTempDirEnvVars() {
+    if (!getValue("test", "temp_dir_env_vars").isPresent()) {
       return Optional.absent();
+    } else {
+      return Optional.of(getListWithoutComments("test", "temp_dir_env_vars"));
     }
   }
 
@@ -525,59 +541,11 @@ public class BuckConfig {
     }
   }
 
-  public ArtifactCache createArtifactCache(
-      Optional<String> currentWifiSsid,
-      BuckEventBus buckEventBus) {
-    ImmutableList<String> modes = getArtifactCacheModes();
-    if (modes.isEmpty()) {
-      return new NoopArtifactCache();
-    }
-    ImmutableList.Builder<ArtifactCache> builder = ImmutableList.builder();
-    boolean useDistributedCache = isWifiUsableForDistributedCache(currentWifiSsid);
-    try {
-      for (String mode : modes) {
-        switch (ArtifactCacheNames.valueOf(mode)) {
-        case dir:
-          ArtifactCache dirArtifactCache = createDirArtifactCache();
-          buckEventBus.register(dirArtifactCache);
-          builder.add(dirArtifactCache);
-          break;
-        case http:
-          if (useDistributedCache) {
-            ArtifactCache httpArtifactCache = createHttpArtifactCache(buckEventBus);
-            builder.add(httpArtifactCache);
-          }
-          break;
-        }
-      }
-    } catch (IllegalArgumentException e) {
-      throw new HumanReadableException("Unusable cache.mode: '%s'", modes.toString());
-    }
-    ImmutableList<ArtifactCache> artifactCaches = builder.build();
-    if (artifactCaches.size() == 1) {
-      // Don't bother wrapping a single artifact cache in MultiArtifactCache.
-      return artifactCaches.get(0);
-    } else {
-      return new MultiArtifactCache(artifactCaches);
-    }
-  }
-
-  ImmutableList<String> getArtifactCacheModes() {
-    return getListWithoutComments("cache", "mode");
-  }
-
   /**
    * @return the depth of a local build chain which should trigger skipping the cache.
    */
   public Optional<Long> getSkipLocalBuildChainDepth() {
     return getLong("cache", "skip_local_build_chain_depth");
-  }
-
-  @VisibleForTesting
-  Path getCacheDir() {
-    String cacheDir = getValue("cache", "dir").or(DEFAULT_CACHE_DIR);
-    Path pathToCacheDir = resolvePathThatMayBeOutsideTheProjectFilesystem(Paths.get(cacheDir));
-    return Preconditions.checkNotNull(pathToCacheDir);
   }
 
   @Nullable
@@ -587,136 +555,85 @@ public class BuckConfig {
     }
 
     if (path.isAbsolute()) {
-      return path;
+      return getPathFromVfs(path);
     }
 
     Path expandedPath = MorePaths.expandHomeDir(path);
     return projectFilesystem.getAbsolutifier().apply(expandedPath);
   }
 
-  public Optional<Long> getCacheDirMaxSizeBytes() {
-    return getValue("cache", "dir_max_size").transform(
-        new Function<String, Long>() {
-          @Override
-          public Long apply(String input) {
-            return SizeUnit.parseBytes(input);
-          }
-        });
-  }
-
-  private ArtifactCache createDirArtifactCache() {
-    Path cacheDir = getCacheDir();
-    boolean doStore = readCacheMode("dir_mode", DEFAULT_DIR_CACHE_MODE);
+  public String getLocalhost() {
     try {
-      return new DirArtifactCache(
-          "dir",
-          projectFilesystem,
-          cacheDir,
-          doStore,
-          getCacheDirMaxSizeBytes());
+      return HostnameFetching.getHostname();
     } catch (IOException e) {
-      throw new HumanReadableException(
-          "Failure initializing artifact cache directory: %s",
-          cacheDir);
-    }
-  }
-
-  @VisibleForTesting
-  boolean isWifiUsableForDistributedCache(Optional<String> currentWifiSsid) {
-    // cache.blacklisted_wifi_ssids
-    ImmutableSet<String> blacklistedWifi = ImmutableSet.copyOf(
-        getListWithoutComments("cache", "blacklisted_wifi_ssids"));
-    if (currentWifiSsid.isPresent() && blacklistedWifi.contains(currentWifiSsid.get())) {
-      // We're connected to a wifi hotspot that has been explicitly blacklisted from connecting to
-      // a distributed cache.
-      return false;
-    }
-    return true;
-  }
-
-  private String getLocalhost() {
-    try {
-      return InetAddress.getLocalHost().getHostName();
-    } catch (UnknownHostException e) {
       return "<unknown>";
     }
   }
 
-  private ArtifactCache createHttpArtifactCache(BuckEventBus buckEventBus) {
-    URL url;
-    try {
-      url = new URL(getValue("cache", "http_url").or(DEFAULT_HTTP_URL));
-    } catch (MalformedURLException e) {
-      throw new HumanReadableException(e, "Malformed [cache]http_url: %s", e.getMessage());
-    }
-
-    int timeoutSeconds = Integer.parseInt(
-        getValue("cache", "http_timeout_seconds").or(DEFAULT_HTTP_CACHE_TIMEOUT_SECONDS));
-
-    boolean doStore = readCacheMode("http_mode", DEFAULT_HTTP_CACHE_MODE);
-
-    // Setup the defaut client to use.
-    OkHttpClient client = new OkHttpClient();
-    final String localhost = getLocalhost();
-    client.networkInterceptors().add(
-        new Interceptor() {
-          @Override
-          public Response intercept(Chain chain) throws IOException {
-            return chain.proceed(
-                chain.request().newBuilder()
-                    .addHeader("X-BuckCache-User", System.getProperty("user.name", "<unknown>"))
-                    .addHeader("X-BuckCache-Host", localhost)
-                    .build());
-          }
-        });
-    client.setConnectTimeout(timeoutSeconds, TimeUnit.SECONDS);
-    client.setConnectionPool(
-        new ConnectionPool(
-            // It's important that this number is greater than the `-j` parallelism,
-            // as if it's too small, we'll overflow the reusable connection pool and
-            // start spamming new connections.  While this isn't the best location,
-            // the other current option is setting this wherever we construct a `Build`
-            // object and have access to the `-j` argument.  However, since that is
-            // created in several places leave it here for now.
-            /* maxIdleConnections */ 200,
-            /* keepAliveDurationMs */ TimeUnit.MINUTES.toMillis(5)));
-
-    // For fetches, use a client with a read timeout.
-    OkHttpClient fetchClient = client.clone();
-    fetchClient.setReadTimeout(timeoutSeconds, TimeUnit.SECONDS);
-
-    return new HttpArtifactCache(
-        "http",
-        fetchClient,
-        client,
-        url,
-        doStore,
-        projectFilesystem,
-        buckEventBus,
-        Hashing.crc32());
+  public Platform getPlatform() {
+    return platform;
   }
 
-  private boolean readCacheMode(String fieldName, String defaultValue) {
-    String cacheMode = getValue("cache", fieldName).or(defaultValue);
-    final boolean doStore;
-    try {
-      doStore = CacheMode.valueOf(cacheMode).doStore;
-    } catch (IllegalArgumentException e) {
-      throw new HumanReadableException("Unusable cache.%s: '%s'", fieldName, cacheMode);
+  public Optional<URI> getRemoteLogUrl() {
+    return getValue("log", "remote_log_url").transform(TO_URI);
+  }
+
+  public Optional<SampleRate> getRemoteLogSampleRate() {
+    Optional<Float> sampleRate = config.getFloat("log", "remote_log_sample_rate");
+    if (sampleRate.isPresent()) {
+      return Optional.of(SampleRate.of(sampleRate.get()));
     }
-    return doStore;
+    return Optional.absent();
+  }
+
+  public SampleRate getActionGraphCacheCheckSampleRate() {
+    Optional<Float> sampleRate = config.getFloat("cache", "action_graph_cache_check_rate");
+    if (sampleRate.isPresent()) {
+      return SampleRate.of(sampleRate.get());
+    }
+    return SampleRate.of(0.25f);
+  }
+
+  public Optional<ImmutableSet<PatternAndMessage>> getUnexpectedFlavorsMessages() {
+    ImmutableMap<String, String> entries = config.get("unknown_flavors_messages");
+    if (!entries.isEmpty()) {
+      Set<PatternAndMessage> patternAndMessages = new HashSet<>();
+      for (Map.Entry<String, String> entry : entries.entrySet()) {
+        patternAndMessages.add(
+            PatternAndMessage.of(Pattern.compile(entry.getKey()), entry.getValue()));
+      }
+      return Optional.of(ImmutableSet.<PatternAndMessage>copyOf(patternAndMessages));
+    }
+
+    return Optional.absent();
+  }
+
+  public boolean hasUserDefinedValue(String sectionName, String propertyName) {
+    return config.get(sectionName).containsKey(propertyName);
   }
 
   public Optional<String> getValue(String sectionName, String propertyName) {
     return config.getValue(sectionName, propertyName);
   }
 
+  public Optional<Integer> getInteger(String sectionName, String propertyName) {
+    return config.getInteger(sectionName, propertyName);
+  }
+
   public Optional<Long> getLong(String sectionName, String propertyName) {
-    return  config.getLong(sectionName, propertyName);
+    return config.getLong(sectionName, propertyName);
+  }
+
+  public Optional<Float> getFloat(String sectionName, String propertyName) {
+    return config.getFloat(sectionName, propertyName);
   }
 
   public boolean getBooleanValue(String sectionName, String propertyName, boolean defaultValue) {
     return config.getBooleanValue(sectionName, propertyName, defaultValue);
+  }
+
+  public Optional<URI> getUrl(String section, String field) {
+    return config.getUrl(section, field);
   }
 
   private <T> T required(String section, String field, Optional<T> value) {
@@ -727,6 +644,14 @@ public class BuckConfig {
           field));
     }
     return value.get();
+  }
+
+  // This is a hack. A cleaner approach would be to expose a narrow view of the config to any code
+  // that affects the state cached by the Daemon.
+  public boolean equalsForDaemonRestart(BuckConfig other) {
+    return this.config.equalsIgnoring(
+        other.config,
+        IGNORE_FIELDS_FOR_DAEMON_RESTART);
   }
 
   @Override
@@ -741,12 +666,21 @@ public class BuckConfig {
   }
 
   @Override
+  public String toString() {
+    return String.format("%s (config=%s)", super.toString(), config);
+  }
+
+  @Override
   public int hashCode() {
     return Objects.hashCode(config);
   }
 
   public ImmutableMap<String, String> getEnvironment() {
     return environment;
+  }
+
+  public ImmutableMap<String, String> getFilteredEnvironment() {
+    return filteredEnvironment;
   }
 
   public String[] getEnv(String propertyName, String separator) {
@@ -766,90 +700,292 @@ public class BuckConfig {
   }
 
   /**
+   * @return the dependency scheduling order
+   */
+  public CachingBuildEngine.DependencySchedulingOrder getDependencySchedulingOrder() {
+    return getEnum(
+        "build",
+        "dependency_scheduling_order",
+        CachingBuildEngine.DependencySchedulingOrder.class)
+        .or(CachingBuildEngine.DependencySchedulingOrder.RANDOM);
+  }
+
+  /**
+   * @return the mode with which to run the build engine.
+   */
+  public CachingBuildEngine.DepFiles getBuildDepFiles() {
+    return getEnum("build", "depfiles", CachingBuildEngine.DepFiles.class)
+        .or(CachingBuildEngine.DepFiles.ENABLED);
+  }
+
+  /**
+   * @return the maximum number of entries to support in the depfile cache.
+   */
+  public long getBuildMaxDepFileCacheEntries() {
+    return getLong("build", "max_depfile_cache_entries").or(256L);
+  }
+
+  /**
+   * @return the maximum size an artifact can be for the build engine to cache it.
+   */
+  public Optional<Long> getBuildArtifactCacheSizeLimit() {
+    return getLong("build", "artifact_cache_size_limit");
+  }
+
+  /**
+   * @return the local cache directory
+   */
+  public String getLocalCacheDirectory() {
+    return getValue("cache", "dir").or(BuckConstant.getDefaultCacheDir());
+  }
+
+  public int getKeySeed() {
+    return parseInt(getValue("cache", "key_seed").or("0"));
+  }
+
+  /**
+   * @return the selected execution order of the build work queue.
+   */
+  public WorkQueueExecutionOrder getWorkQueueExecutionOrder() {
+    return getEnum(
+        "build",
+        "work_queue_execution_order",
+        WorkQueueExecutionOrder.class)
+        .or(WorkQueueExecutionOrder.LIFO);
+  }
+
+  /**
    * @return the path for the given section and property.
    */
   public Optional<Path> getPath(String sectionName, String name) {
     return getPath(sectionName, name, true);
   }
 
-  public Optional<Path> getPath(String sectionName, String name, boolean isRepoRootRelative) {
+  public Path getRequiredPath(String section, String field) {
+    Optional<Path> path = getPath(section, field);
+    return required(section, field, path);
+  }
+
+  /**
+   * @return the number of threads Buck should use.
+   */
+  public int getNumThreads() {
+    return getNumThreads(getDefaultMaximumNumberOfThreads());
+  }
+
+  private int getDefaultMaximumNumberOfThreads() {
+    return getDefaultMaximumNumberOfThreads(Runtime.getRuntime().availableProcessors());
+  }
+
+  @VisibleForTesting
+  int getDefaultMaximumNumberOfThreads(int detectedProcessorCount) {
+    double ratio = config
+                      .getFloat("build", "thread_core_ratio")
+                      .or(DEFAULT_THREAD_CORE_RATIO);
+    if (ratio <= 0.0F) {
+      throw new HumanReadableException(
+          "thread_core_ratio must be greater than zero (was " + ratio + ")");
+    }
+
+    int scaledValue = (int) Math.ceil(ratio * detectedProcessorCount);
+
+    int threadLimit = detectedProcessorCount;
+
+    Optional<Long> reservedCores = getNumberOfReservedCores();
+    if (reservedCores.isPresent()) {
+      threadLimit -= reservedCores.get();
+    }
+
+    if (scaledValue > threadLimit) {
+      scaledValue = threadLimit;
+    }
+
+    Optional<Long> minThreads = getThreadCoreRatioMinThreads();
+    if (minThreads.isPresent()) {
+      scaledValue = Math.max(scaledValue, minThreads.get().intValue());
+    }
+
+    Optional<Long> maxThreads = getThreadCoreRatioMaxThreads();
+    if (maxThreads.isPresent()) {
+      long maxThreadsValue = maxThreads.get();
+
+      if (minThreads.isPresent() && minThreads.get() > maxThreadsValue) {
+        throw new HumanReadableException(
+            "thread_core_ratio_max_cores must be larger than thread_core_ratio_min_cores"
+        );
+      }
+
+      if (maxThreadsValue > threadLimit) {
+        throw new HumanReadableException(
+            "thread_core_ratio_max_cores is larger than thread_core_ratio_reserved_cores allows"
+        );
+      }
+
+      scaledValue = Math.min(scaledValue, (int) maxThreadsValue);
+    }
+
+
+    if (scaledValue <= 0) {
+      throw new HumanReadableException(
+          "Configuration resulted in an invalid number of build threads (" +
+              scaledValue +
+              ").");
+    }
+
+    return scaledValue;
+  }
+
+  private Optional<Long> getNumberOfReservedCores() {
+    Optional<Long> reservedCores = config.getLong("build", "thread_core_ratio_reserved_cores");
+    if (reservedCores.isPresent() && reservedCores.get() < 0) {
+      throw new HumanReadableException("thread_core_ratio_reserved_cores must be larger than zero");
+    }
+    return reservedCores;
+  }
+
+  private Optional<Long> getThreadCoreRatioMaxThreads() {
+    Optional<Long> maxThreads = config.getLong("build", "thread_core_ratio_max_threads");
+    if (maxThreads.isPresent() && maxThreads.get() < 0) {
+      throw new HumanReadableException("thread_core_ratio_max_threads must be larger than zero");
+    }
+    return maxThreads;
+  }
+
+
+  private Optional<Long> getThreadCoreRatioMinThreads() {
+    Optional<Long> minThreads = config.getLong("build", "thread_core_ratio_min_threads");
+    if (minThreads.isPresent() && minThreads.get() <= 0) {
+      throw new HumanReadableException("thread_core_ratio_min_threads must be larger than zero");
+    }
+    return minThreads;
+  }
+
+  /**
+   * @return the number of threads Buck should use or the specified defaultValue if it is not set.
+   */
+  public int getNumThreads(int defaultValue) {
+    return config.getLong("build", "threads")
+        .or((long) defaultValue)
+        .intValue();
+  }
+
+  /**
+   * @return the number of threads Buck should use for network I/O. If the value is not specified
+   * in buckconfig the value is the number of cores of the machine.
+   */
+  public int getNumThreadsForNetwork() {
+    Optional<Integer> threads = config.getInteger("build", "network_threads");
+    if (threads.isPresent()) {
+      Preconditions.checkState(threads.get() > 0);
+      return threads.get();
+    }
+    return getDefaultMaximumNumberOfThreads();
+  }
+
+  /**
+   * @return the maximum load limit that Buck should stay under on the system.
+   */
+  public float getLoadLimit() {
+    return config.getFloat("build", "load_limit")
+        .or(Float.POSITIVE_INFINITY);
+  }
+
+  public long getCountersFirstFlushIntervalMillis() {
+    return config.getLong("counters", "first_flush_interval_millis").or(5000L);
+  }
+
+  public long getCountersFlushIntervalMillis() {
+    return config.getLong("counters", "flush_interval_millis").or(30000L);
+  }
+
+  public Optional<Path> getPath(String sectionName, String name, boolean isCellRootRelative) {
     Optional<String> pathString = getValue(sectionName, name);
     return pathString.isPresent() ?
-        isRepoRootRelative ?
+        isCellRootRelative ?
             checkPathExists(
                 pathString.get(),
                 String.format("Overridden %s:%s path not found: ", sectionName, name)) :
-            Optional.of(Paths.get(pathString.get())) :
+            Optional.of(getPathFromVfs(pathString.get())) :
         Optional.<Path>absent();
   }
 
+  /**
+   * Return a {@link Path} from the underlying {@link java.nio.file.FileSystem} implementation. This
+   * allows to safely call {@link Path#resolve(Path)} and similar calls without exceptions caused by
+   * mis-matched underlying filesystem implementations causing grief. This is particularly useful
+   * for those times where we're using (eg) JimFs for our testing.
+   */
+  private Path getPathFromVfs(String path, String... extra) {
+    return projectFilesystem.getRootPath().getFileSystem().getPath(path, extra);
+  }
+
+  private Path getPathFromVfs(Path path) {
+    return projectFilesystem.getRootPath().getFileSystem().getPath(path.toString());
+  }
+
   public Optional<Path> checkPathExists(String pathString, String errorMsg) {
-    Path path = Paths.get(pathString);
+    Path path = getPathFromVfs(pathString);
     if (projectFilesystem.exists(path)) {
       return Optional.of(projectFilesystem.getPathForRelativePath(path));
     }
     throw new HumanReadableException(errorMsg + path);
   }
 
-  /**
-   * @param projectFilesystem The directory that is the root of the project being built.
-   */
-  @SafeVarargs
-  public static BuckConfig createDefaultBuckConfig(
-      ProjectFilesystem projectFilesystem,
-      Platform platform,
-      ImmutableMap<String, String> environment,
-      ImmutableMap<String, ImmutableMap<String, String>>... configOverrides)
-      throws IOException {
-    ImmutableList.Builder<File> configFileBuilder = ImmutableList.builder();
-
-    File globalConfigDir = GLOBAL_BUCK_CONFIG_DIRECTORY_PATH.toFile();
-    if (globalConfigDir.isDirectory()) {
-      File globalConfigFiles[] = globalConfigDir.listFiles();
-      Arrays.sort(globalConfigFiles);
-      for (File globalConfigFile : globalConfigFiles) {
-        configFileBuilder.add(globalConfigFile);
-      }
-    }
-    File globalConfigFile = GLOBAL_BUCK_CONFIG_FILE_PATH.toFile();
-    if (globalConfigFile.isFile()) {
-      configFileBuilder.add(globalConfigFile);
-    }
-
-    Path homeDirectory = Paths.get(System.getProperty("user.home"));
-    File userConfigDir = homeDirectory.resolve(DEFAULT_BUCK_CONFIG_DIRECTORY_NAME).toFile();
-    if (userConfigDir.isDirectory()) {
-      File userConfigFiles[] = userConfigDir.listFiles();
-      Arrays.sort(userConfigFiles);
-      for (File userConfigFile : userConfigFiles) {
-        configFileBuilder.add(userConfigFile);
-      }
-    }
-    File userConfigFile = homeDirectory.resolve(DEFAULT_BUCK_CONFIG_FILE_NAME).toFile();
-    if (userConfigFile.isFile()) {
-      configFileBuilder.add(userConfigFile);
-    }
-
-    File configFile = projectFilesystem.getFileForRelativePath(DEFAULT_BUCK_CONFIG_FILE_NAME);
-    if (configFile.isFile()) {
-      configFileBuilder.add(configFile);
-    }
-    File overrideConfigFile = projectFilesystem.getFileForRelativePath(
-        DEFAULT_BUCK_CONFIG_OVERRIDE_FILE_NAME);
-    if (overrideConfigFile.isFile()) {
-      configFileBuilder.add(overrideConfigFile);
-    }
-
-    ImmutableList<File> configFiles = configFileBuilder.build();
-    return BuckConfig.createFromFiles(
-        projectFilesystem,
-        configFiles,
-        platform,
-        environment,
-        configOverrides);
-  }
-
   public ImmutableSet<String> getSections() {
     return config.getSectionToEntries().keySet();
+  }
+
+  public ImmutableMap<String, ImmutableMap<String, String>> getRawConfigForDistBuild() {
+    return config.getSectionToEntries();
+  }
+
+  public ImmutableMap<String, ImmutableMap<String, String>> getRawConfigForParser() {
+    ImmutableMap<String, ImmutableMap<String, String>> rawSections =
+        config.getSectionToEntries();
+
+    // If the raw config doesn't have sections which have ignored fields, then just return it as-is.
+    ImmutableSet<String> sectionsWithIgnoredFields = IGNORE_FIELDS_FOR_DAEMON_RESTART.keySet();
+    if (Sets.intersection(rawSections.keySet(), sectionsWithIgnoredFields).isEmpty()) {
+      return rawSections;
+    }
+
+    // Otherwise, iterate through the config to do finer-grain filtering.
+    ImmutableMap.Builder<String, ImmutableMap<String, String>> filtered = ImmutableMap.builder();
+    for (Map.Entry<String, ImmutableMap<String, String>> sectionEnt : rawSections.entrySet()) {
+      String sectionName = sectionEnt.getKey();
+
+      // If this section doesn't have a corresponding ignored section, then just add it as-is.
+      if (!sectionsWithIgnoredFields.contains(sectionName)) {
+        filtered.put(sectionEnt);
+        continue;
+      }
+
+      // If none of this section's entries are ignored, then add it as-is.
+      ImmutableMap<String, String> fields = sectionEnt.getValue();
+      ImmutableSet<String> ignoredFieldNames =
+          IGNORE_FIELDS_FOR_DAEMON_RESTART.get(sectionName);
+      if (Sets.intersection(fields.keySet(), ignoredFieldNames).isEmpty()) {
+        filtered.put(sectionEnt);
+        continue;
+      }
+
+      // Otherwise, filter out the ignored fields.
+      ImmutableMap<String, String> remainingKeys = ImmutableMap.copyOf(
+          Maps.filterKeys(fields, Predicates.not(Predicates.in(ignoredFieldNames))));
+
+      if (!remainingKeys.isEmpty()) {
+        filtered.put(sectionName, remainingKeys);
+      }
+    }
+
+    return filtered.build();
+  }
+
+  public Optional<ImmutableList<String>> getExternalTestRunner() {
+    Optional<String> value = getValue("test", "external_runner");
+    if (!value.isPresent()) {
+      return Optional.absent();
+    }
+    return Optional.of(ImmutableList.copyOf(Splitter.on(' ').splitToList(value.get())));
   }
 }

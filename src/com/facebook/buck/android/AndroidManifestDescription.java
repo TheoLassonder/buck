@@ -17,6 +17,7 @@
 package com.facebook.buck.android;
 
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.rules.AbstractDescriptionArg;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
@@ -24,6 +25,7 @@ import com.facebook.buck.rules.BuildRuleType;
 import com.facebook.buck.rules.Description;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.base.Optional;
 import com.google.common.base.Suppliers;
@@ -49,6 +51,7 @@ public class AndroidManifestDescription implements Description<AndroidManifestDe
 
   @Override
   public <A extends Arg> AndroidManifest createBuildRule(
+      TargetGraph targetGraph,
       BuildRuleParams params,
       BuildRuleResolver resolver,
       A args) {
@@ -65,7 +68,7 @@ public class AndroidManifestDescription implements Description<AndroidManifestDe
     // If the skeleton is a BuildTargetSourcePath, then its build rule must also be in the deps.
     // The skeleton does not appear to be in either params.getDeclaredDeps() or
     // params.getExtraDeps(), even though the type of Arg.skeleton is SourcePath.
-    // TODO(simons): t4744625 This should happen automagically.
+    // TODO(shs96c): t4744625 This should happen automagically.
     ImmutableSortedSet<BuildRule> newDeps = ImmutableSortedSet.<BuildRule>naturalOrder()
         .addAll(
             pathResolver.filterBuildRuleInputs(
@@ -75,14 +78,14 @@ public class AndroidManifestDescription implements Description<AndroidManifestDe
     return new AndroidManifest(
         params.copyWithDeps(
             Suppliers.ofInstance(newDeps),
-            Suppliers.ofInstance(params.getExtraDeps())),
+            params.getExtraDeps()),
         pathResolver,
         args.skeleton,
         manifestFiles);
   }
 
   @SuppressFieldNotInitialized
-  public static class Arg {
+  public static class Arg extends AbstractDescriptionArg {
     public SourcePath skeleton;
 
     /**

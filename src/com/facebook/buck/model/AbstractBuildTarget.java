@@ -23,6 +23,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ComparisonChain;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Ordering;
@@ -30,23 +31,23 @@ import com.google.common.collect.Ordering;
 import org.immutables.value.Value;
 
 import java.nio.file.Path;
+import java.util.Set;
 import java.util.SortedSet;
-
-import javax.annotation.Nullable;
 
 @JsonAutoDetect(
     fieldVisibility = JsonAutoDetect.Visibility.NONE,
     getterVisibility = JsonAutoDetect.Visibility.NONE,
     setterVisibility = JsonAutoDetect.Visibility.NONE)
 @BuckStyleImmutable
-@Value.Immutable
+@Value.Immutable(prehash = true)
 abstract class AbstractBuildTarget
     implements
-        Comparable<AbstractBuildTarget>,
-        HasUnflavoredBuildTarget,
-        HasBuildTarget {
+    Comparable<AbstractBuildTarget>,
+    HasBuildTarget {
 
-  @Override
+  private static final Ordering<Iterable<Flavor>> LEXICOGRAPHICAL_ORDERING =
+      Ordering.<Flavor>natural().lexicographical();
+
   @Value.Parameter
   public abstract UnflavoredBuildTarget getUnflavoredBuildTarget();
 
@@ -61,9 +62,13 @@ abstract class AbstractBuildTarget
         "Flavors must be ordered using natural ordering.");
   }
 
-  @JsonProperty("repository")
-  public Optional<String> getRepository() {
-    return getUnflavoredBuildTarget().getRepository();
+  @JsonProperty("cell")
+  public Optional<String> getCell() {
+    return getUnflavoredBuildTarget().getCell();
+  }
+
+  public Path getCellPath() {
+    return getUnflavoredBuildTarget().getCellPath();
   }
 
   @JsonProperty("baseName")
@@ -112,7 +117,6 @@ abstract class AbstractBuildTarget
    * If this build target is //third_party/java/guava:guava-latest, then this would return
    * "//third_party/java/guava:guava-latest".
    */
-  @Value.Derived
   public String getFullyQualifiedName() {
     return getUnflavoredBuildTarget().getFullyQualifiedName() + getFlavorPostfix();
   }
@@ -146,11 +150,11 @@ abstract class AbstractBuildTarget
         .setUnflavoredBuildTarget(buildTarget);
   }
 
-  public static BuildTarget.Builder builder(String baseName, String shortName) {
+  public static BuildTarget.Builder builder(Path cellPath, String baseName, String shortName) {
     return BuildTarget
         .builder()
         .setUnflavoredBuildTarget(
-            UnflavoredBuildTarget.of(Optional.<String>absent(), baseName, shortName));
+            UnflavoredBuildTarget.of(cellPath, Optional.<String>absent(), baseName, shortName));
   }
 
   /** @return {@link #getFullyQualifiedName()} */
@@ -160,9 +164,15 @@ abstract class AbstractBuildTarget
   }
 
   @Override
-  public int compareTo(@Nullable AbstractBuildTarget target) {
-    Preconditions.checkNotNull(target);
-    return getFullyQualifiedName().compareTo(target.getFullyQualifiedName());
+  public int compareTo(AbstractBuildTarget o) {
+    if (this == o) {
+      return 0;
+    }
+
+    return ComparisonChain.start()
+        .compare(getUnflavoredBuildTarget(), o.getUnflavoredBuildTarget())
+        .compare(getFlavors(), o.getFlavors(), LEXICOGRAPHICAL_ORDERING)
+        .result();
   }
 
   @Override
@@ -170,7 +180,7 @@ abstract class AbstractBuildTarget
     return BuildTarget.copyOf(this);
   }
 
-  public BuildTarget withoutFlavors(ImmutableSet<Flavor> flavors) {
+  public BuildTarget withoutFlavors(Set<Flavor> flavors) {
     BuildTarget.Builder builder = BuildTarget.builder();
     builder.setUnflavoredBuildTarget(getUnflavoredBuildTarget());
     for (Flavor flavor : getFlavors()) {
@@ -181,4 +191,23 @@ abstract class AbstractBuildTarget
     return builder.build();
   }
 
+  public BuildTarget withAppendedFlavors(Set<Flavor> flavorsToAppend) {
+    BuildTarget.Builder builder = BuildTarget.builder(getBuildTarget());
+    builder.addAllFlavors(flavorsToAppend);
+    return builder.build();
+  }
+
+  public BuildTarget withAppendedFlavors(Flavor... flavors) {
+    return withAppendedFlavors(ImmutableSet.copyOf(flavors));
+  }
+
+  public BuildTarget withoutCell() {
+    return BuildTarget.builder(
+        getUnflavoredBuildTarget().getCellPath(),
+        getBaseName(),
+        getShortName())
+        .addAllFlavors(getFlavors())
+        .build();
+
+  }
 }

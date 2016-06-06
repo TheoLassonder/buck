@@ -5,16 +5,5 @@ java_test(
     'ProjectIntegrationTest.java',
     'XcodeprojSerializerTest.java',
   ] + glob(['xcodeproj/*Test.java']),
-  source_under_test = [
-    '//src/com/facebook/buck/apple/xcode:xcode',
-  ],
-  deps = [
-    '//src/com/facebook/buck/apple/xcode:xcode',
-    '//src/com/facebook/buck/util:exceptions',
-    '//test/com/facebook/buck/testutil/integration:integration',
-    '//third-party/java/dd-plist:dd-plist',
-    '//third-party/java/guava:guava',
-    '//third-party/java/hamcrest:hamcrest',
-    '//third-party/java/junit:junit',
-  ]
+  autodeps = True,
 )

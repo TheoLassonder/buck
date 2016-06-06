@@ -19,15 +19,18 @@ package com.facebook.buck.android;
 import com.facebook.buck.android.aapt.MiniAapt;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.Pair;
+import com.facebook.buck.rules.AbstractDescriptionArg;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.BuildRuleType;
 import com.facebook.buck.rules.Description;
 import com.facebook.buck.rules.Hint;
+import com.facebook.buck.rules.PathSourcePath;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.facebook.buck.rules.SourcePaths;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.util.HumanReadableException;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.annotations.VisibleForTesting;
@@ -37,7 +40,6 @@ import com.google.common.base.Suppliers;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
-import com.google.common.collect.Iterables;
 import com.google.common.io.Files;
 
 import java.io.IOException;
@@ -73,16 +75,18 @@ public class AndroidResourceDescription implements Description<AndroidResourceDe
 
   @Override
   public <A extends Arg> BuildRule createBuildRule(
+      TargetGraph targetGraph,
       BuildRuleParams params,
-      BuildRuleResolver resolver,
+      final BuildRuleResolver resolver,
       A args) {
 
     // Only allow android resource and library rules as dependencies.
-    Optional<BuildRule> invalidDep = FluentIterable
-        .from(Iterables.concat(params.getDeclaredDeps(), params.getExtraDeps()))
-        .filter(Predicates.not(Predicates.or(
-            Predicates.instanceOf(AndroidResource.class),
-            Predicates.instanceOf(AndroidLibrary.class))))
+    Optional<BuildRule> invalidDep = FluentIterable.from(params.getDeclaredDeps().get())
+        .filter(
+            Predicates.not(
+                Predicates.or(
+                    Predicates.instanceOf(AndroidResource.class),
+                    Predicates.instanceOf(AndroidLibrary.class))))
         .first();
     if (invalidDep.isPresent()) {
       throw new HumanReadableException(
@@ -91,33 +95,70 @@ public class AndroidResourceDescription implements Description<AndroidResourceDe
               ") is not of type android_resource or android_library.");
     }
 
-    ProjectFilesystem filesystem = params.getProjectFilesystem();
+    final SourcePathResolver pathResolver = new SourcePathResolver(resolver);
+
+    // We don't handle the resources parameter well in `AndroidResource` rules, as instead of
+    // hashing the contents of the entire resources directory, we try to filter out anything that
+    // doesn't look like a resource.  This means when our resources are supplied from another rule,
+    // we have to resort to some hackery to make sure things work correctly.
+    Pair<ImmutableSortedSet<SourcePath>, Optional<SourcePath>> resInputsAndKey =
+        collectInputFilesAndKey(args.res);
+    Pair<ImmutableSortedSet<SourcePath>, Optional<SourcePath>> assetsInputsAndKey =
+        collectInputFilesAndKey(args.assets);
+
     return new AndroidResource(
         // We only propagate other AndroidResource rule dependencies, as these are
         // the only deps which should control whether we need to re-run the aapt_package
         // step.
         params.copyWithDeps(
-            Suppliers.ofInstance(AndroidResourceHelper.androidResOnly(params.getDeclaredDeps())),
-            Suppliers.ofInstance(AndroidResourceHelper.androidResOnly(params.getExtraDeps()))),
-        new SourcePathResolver(resolver),
+            Suppliers.ofInstance(
+                AndroidResourceHelper.androidResOnly(params.getDeclaredDeps().get())),
+            params.getExtraDeps()),
+        pathResolver,
         resolver.getAllRules(args.deps.get()),
-        args.res.transform(SourcePaths.toSourcePath(params.getProjectFilesystem())).orNull(),
-        collectInputFiles(filesystem, args.res),
+        args.res.orNull(),
+        resInputsAndKey.getFirst(),
+        resInputsAndKey.getSecond(),
         args.rDotJavaPackage.orNull(),
-        args.assets.transform(SourcePaths.toSourcePath(params.getProjectFilesystem())).orNull(),
-        collectInputFiles(filesystem, args.assets),
+        args.assets.orNull(),
+        assetsInputsAndKey.getFirst(),
+        assetsInputsAndKey.getSecond(),
         args.manifest.orNull(),
-        args.hasWhitelistedStrings.or(false));
+        args.hasWhitelistedStrings.or(false),
+        args.resourceUnion.or(false));
+  }
+
+  private Pair<ImmutableSortedSet<SourcePath>, Optional<SourcePath>> collectInputFilesAndKey(
+      Optional<SourcePath> sourcePath) {
+    ImmutableSortedSet<SourcePath> inputFiles = ImmutableSortedSet.of();
+    Optional<SourcePath> additionalKey = Optional.absent();
+    if (!sourcePath.isPresent()) {
+      return new Pair<>(inputFiles, additionalKey);
+    }
+    if (sourcePath.get() instanceof PathSourcePath) {
+      // If our resources are coming from a `PathSourcePath`, we collect only the inputs we care
+      // about and pass those in separately, so that that `AndroidResource` rule knows to only hash
+      // these into it's rule key.
+      PathSourcePath path = (PathSourcePath) sourcePath.get();
+      inputFiles = collectInputFiles(
+          path.getFilesystem(),
+          Optional.of(path.getRelativePath()));
+    } else {
+      // Otherwise, we can't inspect the contents of the directory, so we can't populate the
+      // `resSrcs` set.  Instead, we have to pass the source path unfiltered.
+      additionalKey = Optional.of(sourcePath.get());
+    }
+    return new Pair<>(inputFiles, additionalKey);
   }
 
   @VisibleForTesting
-  ImmutableSortedSet<Path> collectInputFiles(
-      ProjectFilesystem filesystem,
+  ImmutableSortedSet<SourcePath> collectInputFiles(
+      final ProjectFilesystem filesystem,
       Optional<Path> inputDir) {
     if (!inputDir.isPresent()) {
       return ImmutableSortedSet.of();
     }
-    final ImmutableSortedSet.Builder<Path> paths = ImmutableSortedSet.naturalOrder();
+    final ImmutableSortedSet.Builder<SourcePath> paths = ImmutableSortedSet.naturalOrder();
 
     // We ignore the same files that mini-aapt and aapt ignore.
     FileVisitor<Path> fileVisitor = new SimpleFileVisitor<Path>() {
@@ -137,7 +178,7 @@ public class AndroidResourceDescription implements Description<AndroidResourceDe
       public FileVisitResult visitFile(Path file, BasicFileAttributes attr) throws IOException {
         String filename = file.getFileName().toString();
         if (isResource(filename)) {
-          paths.add(file);
+          paths.add(new PathSourcePath(filesystem, file));
         }
         return FileVisitResult.CONTINUE;
       }
@@ -165,14 +206,15 @@ public class AndroidResourceDescription implements Description<AndroidResourceDe
   }
 
   @SuppressFieldNotInitialized
-  public static class Arg {
-    public Optional<Path> res;
-    public Optional<Path> assets;
+  public static class Arg extends AbstractDescriptionArg {
+    public Optional<SourcePath> res;
+    public Optional<SourcePath> assets;
     public Optional<Boolean> hasWhitelistedStrings;
     @Hint(name = "package")
     public Optional<String> rDotJavaPackage;
     public Optional<SourcePath> manifest;
 
     public Optional<ImmutableSortedSet<BuildTarget>> deps;
+    public Optional<Boolean> resourceUnion;
   }
 }

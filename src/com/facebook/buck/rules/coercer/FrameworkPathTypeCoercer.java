@@ -19,6 +19,7 @@ package com.facebook.buck.rules.coercer;
 import com.facebook.buck.apple.xcode.xcodeproj.PBXReference;
 import com.facebook.buck.apple.xcode.xcodeproj.SourceTreePath;
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.rules.CellPathResolver;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.util.HumanReadableException;
 import com.google.common.base.Function;
@@ -75,6 +76,7 @@ public class FrameworkPathTypeCoercer implements TypeCoercer<FrameworkPath> {
 
   @Override
   public FrameworkPath coerce(
+      CellPathResolver cellRoots,
       ProjectFilesystem filesystem,
       Path pathRelativeToProjectRoot,
       Object object) throws CoerceFailedException {
@@ -97,7 +99,10 @@ public class FrameworkPathTypeCoercer implements TypeCoercer<FrameworkPath> {
                 firstElement);
           }
           return FrameworkPath.ofSourceTreePath(
-              new SourceTreePath(sourceTree.get(), path.subpath(1, path.getNameCount())));
+              new SourceTreePath(
+                  sourceTree.get(),
+                  path.subpath(1, path.getNameCount()),
+                  Optional.<String>absent()));
         } else {
           throw new HumanReadableException(
               "Unknown SourceTree: '%s'. Should be one of: %s",
@@ -115,6 +120,7 @@ public class FrameworkPathTypeCoercer implements TypeCoercer<FrameworkPath> {
       } else {
         return FrameworkPath.ofSourcePath(
             sourcePathTypeCoercer.coerce(
+                cellRoots,
                 filesystem,
                 pathRelativeToProjectRoot,
                 object));

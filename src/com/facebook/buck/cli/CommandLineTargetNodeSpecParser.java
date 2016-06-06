@@ -18,6 +18,7 @@ package com.facebook.buck.cli;
 
 import com.facebook.buck.parser.BuildTargetPatternTargetNodeParser;
 import com.facebook.buck.parser.TargetNodeSpec;
+import com.facebook.buck.rules.CellPathResolver;
 import com.facebook.buck.util.MoreStrings;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Optional;
@@ -36,6 +37,13 @@ public class CommandLineTargetNodeSpecParser {
 
   @VisibleForTesting
   protected String normalizeBuildTargetString(String target) {
+    // Check and save the cell name
+    int targetSeparator = target.indexOf("//");
+    String cellName = "";
+    if (targetSeparator > 0) {
+      cellName = target.substring(0, targetSeparator);
+      target = target.substring(targetSeparator);
+    }
 
     // Strip out the leading "//" if there is one to make it easier to normalize the
     // remaining target string.  We'll add this back at the end.
@@ -70,13 +78,13 @@ public class CommandLineTargetNodeSpecParser {
       target += ":" + nameAfterColon.get();
     }
 
-    return "//" + target;
+    return cellName + "//" + target;
   }
 
-  public TargetNodeSpec parse(String arg) {
-    arg = Optional.fromNullable(config.getBuildTargetForAlias(arg)).or(arg);
+  public TargetNodeSpec parse(CellPathResolver cellNames, String arg) {
+    arg = Optional.fromNullable(config.getBuildTargetForAliasAsString(arg)).or(arg);
     arg = normalizeBuildTargetString(arg);
-    return parser.parse(arg);
+    return parser.parse(cellNames, arg);
   }
 
 }

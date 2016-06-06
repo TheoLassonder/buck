@@ -17,13 +17,18 @@
 package com.facebook.buck.parser;
 
 import com.facebook.buck.cli.BuckConfig;
+import com.facebook.buck.util.HumanReadableException;
 import com.google.common.base.Function;
+import com.google.common.base.Optional;
 import com.google.common.base.Splitter;
 import com.google.common.base.Strings;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.regex.Pattern;
 
 import javax.annotation.Nullable;
@@ -33,6 +38,26 @@ public class ParserConfig {
   public static final String DEFAULT_BUILD_FILE_NAME = "BUCK";
   public static final String BUILDFILE_SECTION_NAME = "buildfile";
   public static final String INCLUDES_PROPERTY_NAME = "includes";
+
+  private static final long NUM_PARSING_THREADS_DEFAULT = 1L;
+
+  public enum GlobHandler {
+    PYTHON,
+    WATCHMAN,
+    ;
+  }
+
+  public enum AllowSymlinks {
+    ALLOW,
+    FORBID,
+    ;
+  }
+
+  public enum BuildFileSearchMethod {
+    FILESYSTEM_CRAWL,
+    WATCHMAN,
+    ;
+  }
 
   private final BuckConfig delegate;
 
@@ -85,4 +110,55 @@ public class ParserConfig {
         .toSet();
   }
 
+  public ImmutableSet<Path> getReadOnlyPaths() {
+    return FluentIterable
+        .from(delegate.getListWithoutComments("project", "read_only_paths"))
+        .transform(
+            new Function<String, Path>() {
+              @Override
+              public Path apply(String input) {
+                Path path = Paths.get(input);
+                if (Files.notExists(path)) {
+                  throw new HumanReadableException("Path %s, specified under read_only_paths " +
+                      "does not exist.", path);
+                }
+                return path;
+              }
+            })
+        .toSet();
+  }
+
+  public AllowSymlinks getAllowSymlinks() {
+    return delegate.getEnum("project", "allow_symlinks", AllowSymlinks.class)
+        .or(AllowSymlinks.ALLOW);
+  }
+
+  public Optional<BuildFileSearchMethod> getBuildFileSearchMethod() {
+    return delegate.getEnum("project", "build_file_search_method", BuildFileSearchMethod.class);
+  }
+
+  public GlobHandler getGlobHandler() {
+    return delegate.getEnum("project", "glob_handler", GlobHandler.class).or(GlobHandler.PYTHON);
+  }
+
+  public Optional<Long> getWatchmanQueryTimeoutMs() {
+    return delegate.getLong("project", "watchman_query_timeout_ms");
+  }
+
+  public boolean getEnableParallelParsing() {
+    return delegate.getBooleanValue("project", "parallel_parsing", true);
+  }
+
+  public int getNumParsingThreads() {
+    if (!getEnableParallelParsing()) {
+      return 1;
+    }
+
+    int value = delegate
+        .getLong("project", "parsing_threads")
+        .or(NUM_PARSING_THREADS_DEFAULT)
+        .intValue();
+
+    return Math.min(value, delegate.getNumThreads());
+  }
 }

@@ -16,72 +16,80 @@
 
 package com.facebook.buck.cli;
 
+import com.facebook.buck.config.Config;
+import com.facebook.buck.config.ConfigBuilder;
+import com.facebook.buck.config.RawConfig;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
-import com.facebook.buck.util.Config;
+import com.facebook.buck.util.environment.Architecture;
 import com.facebook.buck.util.environment.Platform;
 import com.google.common.collect.ImmutableMap;
 
 /**
  * Implementation of {@link BuckConfig} with no data, or only the data specified by
- * {@link FakeBuckConfig#FakeBuckConfig(ImmutableMap)}. This makes it possible to get an instance of
- * a {@link BuckConfig} without reading {@code .buckconfig} files from disk. Designed exclusively
- * for testing.
+ * {@link FakeBuckConfig.Builder#setSections(ImmutableMap)}}. This makes it possible to get an
+ * instance of a {@link BuckConfig} without reading {@code .buckconfig} files from disk. Designed
+ * exclusively for testing.
  */
-public class FakeBuckConfig extends BuckConfig {
+public class FakeBuckConfig {
 
-  private static final ImmutableMap<String, ImmutableMap<String, String>> EMPTY_SECTIONS =
-      ImmutableMap.of();
-
-  public FakeBuckConfig() {
-    this(
-        EMPTY_SECTIONS,
-        Platform.detect(),
-        new FakeProjectFilesystem(),
-        ImmutableMap.copyOf(System.getenv()));
+  private FakeBuckConfig() {
+    // Utility class
   }
 
-  public FakeBuckConfig(ProjectFilesystem filesystem) {
-    this(EMPTY_SECTIONS, Platform.detect(), filesystem, ImmutableMap.copyOf(System.getenv()));
+  public static Builder builder() {
+    return new Builder();
   }
 
-  public FakeBuckConfig(ImmutableMap<String, ImmutableMap<String, String>> sections) {
-    this(
-        sections,
-        Platform.detect(),
-        new FakeProjectFilesystem(),
-        ImmutableMap.copyOf(System.getenv()));
-  }
+  public static class Builder {
+    private ProjectFilesystem filesystem = new FakeProjectFilesystem();
+    private ImmutableMap<String, String> environment = ImmutableMap.copyOf(System.getenv());
+    private RawConfig sections = RawConfig.of();
+    private Architecture architecture = Architecture.detect();
+    private Platform platform = Platform.detect();
 
-  public FakeBuckConfig(
-      ImmutableMap<String, ImmutableMap<String, String>> sections,
-      ProjectFilesystem filesystem) {
-    this(sections, Platform.detect(), filesystem, ImmutableMap.copyOf(System.getenv()));
-  }
+    public Builder setArchitecture(Architecture architecture) {
+      this.architecture = architecture;
+      return this;
+    }
 
-  public FakeBuckConfig(Platform platform) {
-    this(
-        EMPTY_SECTIONS,
-        platform,
-        new FakeProjectFilesystem(),
-        ImmutableMap.copyOf(System.getenv()));
-  }
+    public Builder setEnvironment(ImmutableMap<String, String> environment) {
+      this.environment = environment;
+      return this;
+    }
 
-  public FakeBuckConfig(
-      ImmutableMap<String, ImmutableMap<String, String>> sections,
-      ImmutableMap<String, String> environment) {
-    this(sections, Platform.detect(), new FakeProjectFilesystem(), environment);
-  }
+    public Builder setFilesystem(ProjectFilesystem filesystem) {
+      this.filesystem = filesystem;
+      return this;
+    }
 
-  private FakeBuckConfig(
-      ImmutableMap<String, ImmutableMap<String, String>> sections,
-      Platform platform,
-      ProjectFilesystem filesystem,
-      ImmutableMap<String, String> environment) {
-    super(
-        new Config(sections),
-        filesystem,
-        platform,
-        environment);
+    public Builder setPlatform(Platform platform) {
+      this.platform = platform;
+      return this;
+    }
+
+    public Builder setSections(RawConfig sections) {
+      this.sections = sections;
+      return this;
+    }
+
+    public Builder setSections(ImmutableMap<String, ImmutableMap<String, String>> sections) {
+      this.sections = RawConfig.of(sections);
+      return this;
+    }
+
+    public Builder setSections(String... iniFileLines) {
+      sections = ConfigBuilder.rawFromLines(iniFileLines);
+      return this;
+    }
+
+    public BuckConfig build() {
+      return new BuckConfig(
+          new Config(sections),
+          filesystem,
+          architecture,
+          platform,
+          environment);
+    }
   }
 }

@@ -16,13 +16,18 @@
 
 package com.facebook.buck.android;
 
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
+import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.rules.BuildRuleSuccessType;
 import com.facebook.buck.testutil.integration.BuckBuildLog;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
 import com.facebook.buck.testutil.integration.TestDataHelper;
+import com.google.common.base.Optional;
 
+import org.hamcrest.Matchers;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -42,7 +47,7 @@ public class AndroidXmlFileIntegrationTest {
   private static final String PATH_TO_LAYOUT_XML = "res/com/sample/top/res/layout/top_layout.xml";
 
   @Before
-  public void setUp() throws IOException {
+  public void setUp() throws IOException, InterruptedException {
     AssumeAndroidPlatform.assumeSdkIsAvailable();
     workspace = TestDataHelper.createProjectWorkspaceForScenario(
         this, "android_project", tmpFolder);
@@ -63,9 +68,12 @@ public class AndroidXmlFileIntegrationTest {
     BuckBuildLog buildLog = workspace.getBuildLog();
 
     buildLog.assertTargetBuiltLocally("//res/com/sample/base:base");
-    buildLog.assertTargetHadMatchingDepsAbi("//res/com/sample/top:top");
+    buildLog.assertTargetHadMatchingInputRuleKey("//res/com/sample/top:top");
     buildLog.assertTargetHadMatchingDepsAbi("//java/com/sample/lib:lib#dummy_r_dot_java");
-    buildLog.assertTargetHadMatchingDepsAbi(MAIN_BUILD_TARGET);
+    assertThat(
+        buildLog.getLogEntry(BuildTargetFactory.newInstance(MAIN_BUILD_TARGET))
+            .getSuccessType(),
+        Matchers.equalTo(Optional.of(BuildRuleSuccessType.MATCHING_INPUT_BASED_RULE_KEY)));
   }
 
   @Test
@@ -81,7 +89,10 @@ public class AndroidXmlFileIntegrationTest {
     buildLog.assertTargetHadMatchingRuleKey("//res/com/sample/base:base");
     buildLog.assertTargetBuiltLocally("//res/com/sample/top:top");
     buildLog.assertTargetHadMatchingDepsAbi("//java/com/sample/lib:lib#dummy_r_dot_java");
-    buildLog.assertTargetHadMatchingDepsAbi(MAIN_BUILD_TARGET);
+    assertThat(
+        buildLog.getLogEntry(BuildTargetFactory.newInstance(MAIN_BUILD_TARGET))
+            .getSuccessType(),
+        Matchers.equalTo(Optional.of(BuildRuleSuccessType.MATCHING_INPUT_BASED_RULE_KEY)));
   }
 
   @Test
@@ -99,7 +110,10 @@ public class AndroidXmlFileIntegrationTest {
     buildLog.assertTargetBuiltLocally("//res/com/sample/base:base");
     buildLog.assertTargetBuiltLocally("//res/com/sample/top:top");
     buildLog.assertTargetHadMatchingDepsAbi("//java/com/sample/lib:lib#dummy_r_dot_java");
-    buildLog.assertTargetHadMatchingDepsAbi(MAIN_BUILD_TARGET);
+    assertThat(
+        buildLog.getLogEntry(BuildTargetFactory.newInstance(MAIN_BUILD_TARGET))
+            .getSuccessType(),
+        Matchers.equalTo(Optional.of(BuildRuleSuccessType.MATCHING_INPUT_BASED_RULE_KEY)));
   }
 
   @Test
@@ -116,7 +130,10 @@ public class AndroidXmlFileIntegrationTest {
     buildLog.assertTargetBuiltLocally("//res/com/sample/base:base");
     buildLog.assertTargetBuiltLocally("//res/com/sample/top:top");
     buildLog.assertTargetHadMatchingDepsAbi("//java/com/sample/lib:lib#dummy_r_dot_java");
-    buildLog.assertTargetHadMatchingDepsAbi(MAIN_BUILD_TARGET);
+    assertThat(
+        buildLog.getLogEntry(BuildTargetFactory.newInstance(MAIN_BUILD_TARGET))
+            .getSuccessType(),
+        Matchers.equalTo(Optional.of(BuildRuleSuccessType.MATCHING_INPUT_BASED_RULE_KEY)));
   }
 
   @Test

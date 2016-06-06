@@ -17,12 +17,14 @@
 package com.facebook.buck.ocaml;
 
 import com.facebook.buck.cli.BuckConfig;
-import com.facebook.buck.cxx.Compiler;
+import com.facebook.buck.cxx.CompilerProvider;
 import com.facebook.buck.cxx.CxxBuckConfig;
 import com.facebook.buck.cxx.CxxPlatform;
 import com.facebook.buck.cxx.DefaultCxxPlatforms;
-import com.facebook.buck.cxx.Linker;
+import com.facebook.buck.cxx.LinkerProvider;
 import com.facebook.buck.io.ExecutableFinder;
+import com.facebook.buck.rules.HashedFileTool;
+import com.facebook.buck.rules.Tool;
 import com.facebook.buck.util.environment.Platform;
 import com.google.common.base.Optional;
 
@@ -49,35 +51,39 @@ public class OCamlBuckConfig {
     cxxPlatform = DefaultCxxPlatforms.build(platform, new CxxBuckConfig(delegate));
   }
 
-  public Optional<Path> getOCamlCompiler() {
-    return getExecutable("ocaml", "ocaml.compiler", DEFAULT_OCAML_COMPILER);
+  public Optional<Tool> getOCamlCompiler() {
+    return getTool("ocaml", "ocaml.compiler", DEFAULT_OCAML_COMPILER);
   }
 
-  public Compiler getCCompiler() {
+  public CompilerProvider getCCompiler() {
     return cxxPlatform.getCc();
   }
 
-  public Optional<Path> getOCamlDepTool() {
-    return getExecutable("ocaml", "dep.tool", DEFAULT_OCAML_DEP_TOOL);
+  public Optional<Tool> getOCamlDepTool() {
+    return getTool("ocaml", "dep.tool", DEFAULT_OCAML_DEP_TOOL);
   }
 
-  public Optional<Path> getYaccCompiler() {
-    return getExecutable("ocaml", "yacc.compiler", DEFAULT_OCAML_YACC_COMPILER);
+  public Optional<Tool> getYaccCompiler() {
+    return getTool("ocaml", "yacc.compiler", DEFAULT_OCAML_YACC_COMPILER);
   }
 
-  public Optional<Path> getLexCompiler() {
-    return getExecutable("ocaml", "lex.compiler", DEFAULT_OCAML_LEX_COMPILER);
+  public Optional<Tool> getLexCompiler() {
+    return getTool("ocaml", "lex.compiler", DEFAULT_OCAML_LEX_COMPILER);
   }
 
   public Optional<String> getOCamlInteropIncludesDir() {
     return delegate.getValue("ocaml", "interop.includes");
   }
 
-  public Optional<Path> getOCamlBytecodeCompiler() {
-    return getExecutable("ocaml", "ocaml.bytecode.compiler", DEFAULT_OCAML_BYTECODE_COMPILER);
+  public Optional<String> getWarningsFlags() {
+    return delegate.getValue("ocaml", "warnings_flags");
   }
 
-  public Compiler getCxxCompiler() {
+  public Optional<Tool> getOCamlBytecodeCompiler() {
+    return getTool("ocaml", "ocaml.bytecode.compiler", DEFAULT_OCAML_BYTECODE_COMPILER);
+  }
+
+  public CompilerProvider getCxxCompiler() {
     return cxxPlatform.getCxx();
   }
 
@@ -85,20 +91,16 @@ public class OCamlBuckConfig {
     return cxxPlatform.getCppflags();
   }
 
-  public List<String> getCLinkerFlags() {
-    return cxxPlatform.getCxxldflags();
-  }
-
   public List<String> getLdFlags() {
     return cxxPlatform.getLdflags();
   }
 
-  public Linker getLinker() {
+  public LinkerProvider getLinker() {
     return cxxPlatform.getLd();
   }
 
-  public Optional<Path> getOCamlDebug() {
-    return getExecutable("ocaml", "debug", DEFAULT_OCAML_DEBUG);
+  public Optional<Tool> getOCamlDebug() {
+    return getTool("ocaml", "debug", DEFAULT_OCAML_DEBUG);
   }
 
   public CxxPlatform getCxxPlatform() {
@@ -109,5 +111,13 @@ public class OCamlBuckConfig {
     return new ExecutableFinder().getOptionalExecutable(
         delegate.getPath(section, label).or(defaultValue),
         delegate.getEnvironment());
+  }
+
+  private Optional<Tool> getTool(String section, String label, Path defaultValue) {
+    Optional<Path> executable = getExecutable(section, label, defaultValue);
+    if (!executable.isPresent()) {
+      return Optional.absent();
+    }
+    return Optional.<Tool>of(new HashedFileTool(executable.get()));
   }
 }

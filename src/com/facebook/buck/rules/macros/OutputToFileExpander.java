@@ -21,8 +21,11 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargets;
+import com.facebook.buck.model.MacroException;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.CellPathResolver;
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.hash.Hashing;
 
@@ -39,14 +42,28 @@ public class OutputToFileExpander implements MacroExpander {
   @Override
   public String expand(
       BuildTarget target,
+      CellPathResolver cellNames,
       BuildRuleResolver resolver,
-      ProjectFilesystem filesystem,
       String input) throws MacroException {
 
     try {
-      Path tempFile = createTempFile(filesystem, target, input);
-      String expanded = delegate.expand(target, resolver, filesystem, input);
+      String expanded;
+      if (delegate instanceof MacroExpanderWithCustomFileOutput) {
+        expanded = ((MacroExpanderWithCustomFileOutput) delegate).expandForFile(
+            target,
+            cellNames,
+            resolver,
+            input);
+      } else {
+        expanded = delegate.expand(target, cellNames, resolver, input);
+      }
 
+      Optional<BuildRule> rule = resolver.getRuleOptional(target);
+      if (!rule.isPresent()) {
+        throw new MacroException(String.format("no rule %s", target));
+      }
+      ProjectFilesystem filesystem = rule.get().getProjectFilesystem();
+      Path tempFile = createTempFile(filesystem, target, input);
       filesystem.writeContentsToPath(expanded, tempFile);
       return "@" + filesystem.getAbsolutifier().apply(tempFile);
     } catch (IOException e) {
@@ -55,18 +72,32 @@ public class OutputToFileExpander implements MacroExpander {
   }
 
   @Override
-  public ImmutableList<BuildRule> extractAdditionalBuildTimeDeps(
+  public ImmutableList<BuildRule> extractBuildTimeDeps(
       BuildTarget target,
+      CellPathResolver cellNames,
       BuildRuleResolver resolver,
       String input)
       throws MacroException {
-    return delegate.extractAdditionalBuildTimeDeps(target, resolver, input);
+    return delegate.extractBuildTimeDeps(target, cellNames, resolver, input);
   }
 
   @Override
-  public ImmutableList<BuildTarget> extractParseTimeDeps(BuildTarget target, String input)
+  public ImmutableList<BuildTarget> extractParseTimeDeps(
+      BuildTarget target,
+      CellPathResolver cellNames,
+      String input)
       throws MacroException {
-    return delegate.extractParseTimeDeps(target, input);
+    return delegate.extractParseTimeDeps(target, cellNames, input);
+  }
+
+  @Override
+  public Object extractRuleKeyAppendables(
+      BuildTarget target,
+      CellPathResolver cellNames,
+      BuildRuleResolver resolver,
+      String input)
+      throws MacroException {
+    return delegate.extractRuleKeyAppendables(target, cellNames, resolver, input);
   }
 
   /**
@@ -74,7 +105,7 @@ public class OutputToFileExpander implements MacroExpander {
    */
   private Path createTempFile(ProjectFilesystem filesystem, BuildTarget target, String input)
       throws IOException {
-    Path directory = BuildTargets.getScratchPath(target, "%s/tmp");
+    Path directory = BuildTargets.getScratchPath(filesystem, target, "%s/tmp");
     filesystem.mkdirs(directory);
 
     // "prefix" should give a stable name, so that the same delegate with the same input can output
@@ -87,11 +118,6 @@ public class OutputToFileExpander implements MacroExpander {
         .hash()
         .toString();
 
-    // ProjectFilesystem.createTempFile expects an absolute path, so make sure we're using one
-    Path absolute = filesystem.resolve(directory);
-    Path temp = filesystem.createTempFile(absolute, prefix, ".macro");
-
-    // And now return the actual path to the file in a form relative to the file system root.
-    return directory.resolve(temp.getFileName());
+    return filesystem.createTempFile(directory, prefix, ".macro");
   }
 }

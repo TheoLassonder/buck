@@ -18,11 +18,13 @@ package com.facebook.buck.event;
 
 import com.google.common.base.Objects;
 
-@SuppressWarnings("PMD.OverrideBothEqualsAndHashcode")
-public abstract class UninstallEvent extends AbstractBuckEvent implements LeafEvent {
+public abstract class UninstallEvent
+    extends AbstractBuckEvent
+    implements LeafEvent, WorkAdvanceEvent {
   private final String packageName;
 
-  public UninstallEvent(String packageName) {
+  protected UninstallEvent(EventKey eventKey, String packageName) {
+    super(eventKey);
     this.packageName = packageName;
   }
 
@@ -40,33 +42,17 @@ public abstract class UninstallEvent extends AbstractBuckEvent implements LeafEv
     return packageName;
   }
 
-  @Override
-  public boolean isRelatedTo(BuckEvent event) {
-    if (!(event instanceof UninstallEvent)) {
-      return false;
-    }
-
-    UninstallEvent that = (UninstallEvent) event;
-
-    return Objects.equal(getPackageName(), that.getPackageName());
-  }
-
-  @Override
-  public int hashCode() {
-    return Objects.hashCode(getPackageName());
-  }
-
   public static Started started(String packageName) {
     return new Started(packageName);
   }
 
-  public static Finished finished(String packageName, boolean success) {
-    return new Finished(packageName, success);
+  public static Finished finished(Started started, boolean success) {
+    return new Finished(started, success);
   }
 
   public static class Started extends UninstallEvent {
     protected Started(String packageName) {
-      super(packageName);
+      super(EventKey.unique(), packageName);
     }
 
     @Override
@@ -78,9 +64,8 @@ public abstract class UninstallEvent extends AbstractBuckEvent implements LeafEv
   public static class Finished extends UninstallEvent {
     private final boolean success;
 
-    protected Finished(String packageName, boolean success) {
-      super(packageName);
-
+    protected Finished(Started started, boolean success) {
+      super(started.getEventKey(), started.getPackageName());
       this.success = success;
     }
 
@@ -98,14 +83,14 @@ public abstract class UninstallEvent extends AbstractBuckEvent implements LeafEv
       if (!super.equals(o)) {
         return false;
       }
-
-      Finished that = (Finished) o;
-      return isSuccess() == that.isSuccess();
+      // Because super.equals compares the EventKey, getting here means that we've somehow managed
+      // to create 2 Finished events for the same Started event.
+      throw new UnsupportedOperationException("Multiple conflicting Finished events detected.");
     }
 
     @Override
     public int hashCode() {
-      return Objects.hashCode(getPackageName(), isSuccess());
+      return Objects.hashCode(super.hashCode(), success);
     }
   }
 }

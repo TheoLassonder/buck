@@ -23,11 +23,10 @@ import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.TestExecutionContext;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableMap;
 
 import org.junit.Test;
 
-import java.nio.file.Path;
 import java.nio.file.Paths;
 
 public class CxxLinkStepTest {
@@ -35,29 +34,23 @@ public class CxxLinkStepTest {
   @Test
   public void cxxLinkStepUsesCorrectCommand() {
     ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
-    ExecutionContext context = TestExecutionContext.newBuilder()
-        .setProjectFilesystem(projectFilesystem)
-        .build();
+    ExecutionContext context = TestExecutionContext.newInstance();
 
-    // Setup some dummy values for inputs to the CxxLinkStep
     ImmutableList<String> linker = ImmutableList.of("linker");
-    Path output = Paths.get("output");
-    ImmutableList<String> args = ImmutableList.of(
-        "-rpath",
-        "hello",
-        "a.o",
-        "libb.a");
-    Path frameworkRoot = Paths.get("/System/Frameworks");
 
     // Create our CxxLinkStep to test.
-    CxxLinkStep cxxLinkStep = new CxxLinkStep(linker, output, args, ImmutableSet.of(frameworkRoot));
+    CxxLinkStep cxxLinkStep =
+        new CxxLinkStep(
+            projectFilesystem.getRootPath(),
+            ImmutableMap.<String, String>of(),
+            linker,
+            projectFilesystem.getRootPath().resolve("argfile.txt"),
+            Paths.get("scratchDir"));
 
     // Verify it uses the expected command.
     ImmutableList<String> expected = ImmutableList.<String>builder()
         .addAll(linker)
-        .add("-o", output.toString())
-        .add("-F", frameworkRoot.toString())
-        .addAll(args)
+        .add("@" + projectFilesystem.getRootPath().resolve("argfile.txt").toString())
         .build();
     ImmutableList<String> actual = cxxLinkStep.getShellCommand(context);
     assertEquals(expected, actual);

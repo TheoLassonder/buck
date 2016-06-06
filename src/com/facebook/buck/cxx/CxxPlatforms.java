@@ -17,8 +17,10 @@
 package com.facebook.buck.cxx;
 
 import com.facebook.buck.log.Logger;
+import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.Flavor;
 import com.facebook.buck.model.ImmutableFlavor;
+import com.facebook.buck.rules.HashedFileTool;
 import com.facebook.buck.rules.Tool;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
@@ -41,11 +43,9 @@ public class CxxPlatforms {
   private static final ImmutableList<String> DEFAULT_CXXFLAGS = ImmutableList.of();
   private static final ImmutableList<String> DEFAULT_CPPFLAGS = ImmutableList.of();
   private static final ImmutableList<String> DEFAULT_CXXPPFLAGS = ImmutableList.of();
-  private static final ImmutableList<String> DEFAULT_CXXLDFLAGS = ImmutableList.of();
   private static final ImmutableList<String> DEFAULT_LDFLAGS = ImmutableList.of();
   private static final ImmutableList<String> DEFAULT_ARFLAGS = ImmutableList.of();
-  private static final ImmutableList<String> DEFAULT_LEX_FLAGS = ImmutableList.of();
-  private static final ImmutableList<String> DEFAULT_YACC_FLAGS = ImmutableList.of("-y");
+  private static final ImmutableList<String> DEFAULT_RANLIBFLAGS = ImmutableList.of();
   private static final ImmutableList<String> DEFAULT_COMPILER_ONLY_FLAGS = ImmutableList.of();
 
   @VisibleForTesting
@@ -56,61 +56,65 @@ public class CxxPlatforms {
           Paths.get("."),
           ImmutableBiMap.<Path, Path>of());
 
-
   // Utility class, do not instantiate.
   private CxxPlatforms() { }
 
   public static CxxPlatform build(
       Flavor flavor,
       CxxBuckConfig config,
-      Tool as,
-      Tool aspp,
-      Compiler cc,
-      Compiler cxx,
-      Tool cpp,
-      Tool cxxpp,
-      Linker ld,
-      Linker cxxld,
+      CompilerProvider as,
+      PreprocessorProvider aspp,
+      CompilerProvider cc,
+      CompilerProvider cxx,
+      PreprocessorProvider cpp,
+      PreprocessorProvider cxxpp,
+      LinkerProvider ld,
       Iterable<String> ldFlags,
       Tool strip,
       Archiver ar,
+      Tool ranlib,
+      Tool nm,
       ImmutableList<String> asflags,
       ImmutableList<String> asppflags,
       ImmutableList<String> cflags,
       ImmutableList<String> cppflags,
-      Optional<Tool> lex,
-      Optional<Tool> yacc,
       String sharedLibraryExtension,
+      String sharedLibraryVersionedExtensionFormat,
       Optional<DebugPathSanitizer> debugPathSanitizer,
       ImmutableMap<String, String> flagMacros) {
-    // TODO(user, agallagher): Generalize this so we don't need all these setters.
+    // TODO(bhamiltoncx, andrewjcg): Generalize this so we don't need all these setters.
     CxxPlatform.Builder builder = CxxPlatform.builder();
 
     builder
         .setFlavor(flavor)
-        .setAs(getTool(flavor, "as", config).or(as))
-        .setAspp(getTool(flavor, "aspp", config).or(aspp))
-        // TODO(user): Don't assume the compiler override specifies the same type of compiler as
-        // the default one.
-        .setCc(getTool(flavor, "cc", config).transform(getCompiler(cc.getClass())).or(cc))
-        .setCxx(getTool(flavor, "cxx", config).transform(getCompiler(cxx.getClass())).or(cxx))
-        .setCpp(getTool(flavor, "cpp", config).or(cpp))
-        .setCxxpp(getTool(flavor, "cxxpp", config).or(cxxpp))
-        .setCxxld(getTool(flavor, "cxxld", config).transform(getLinker(cxxld.getClass())).or(cxxld))
-        .setLd(getTool(flavor, "ld", config).transform(getLinker(ld.getClass())).or(ld))
+        // Always use `DEFAULT` for the assemblers (unless an explicit override is set in the
+        // .buckconfig), as we pass special flags when we detect clang which causes unused flag
+        // warnings with assembling.
+        .setAs(config.getCompilerProvider(flavor, "as", CxxToolProvider.Type.DEFAULT).or(as))
+        .setAspp(
+            config.getPreprocessorProvider(flavor, "aspp", CxxToolProvider.Type.DEFAULT).or(aspp))
+        .setCc(config.getCompilerProvider(flavor, "cc").or(cc))
+        .setCxx(config.getCompilerProvider(flavor, "cxx").or(cxx))
+        .setCpp(config.getPreprocessorProvider(flavor, "cpp").or(cpp))
+        .setCxxpp(config.getPreprocessorProvider(flavor, "cxxpp").or(cxxpp))
+        .setCuda(config.getCompilerProvider(flavor, "cuda"))
+        .setCudapp(config.getPreprocessorProvider(flavor, "cudapp"))
+        .setAsm(config.getCompilerProvider(flavor, "asm"))
+        .setAsmpp(config.getPreprocessorProvider(flavor, "asmpp"))
+        .setLd(config.getLinkerProvider(flavor, "ld", ld.getType()).or(ld))
         .addAllLdflags(ldFlags)
-        .setAr(getTool(flavor, "ar", config).transform(getArchiver(ar.getClass())).or(ar))
+        .setAr(getTool(flavor, "ar", config).transform(getArchiver(ar.getClass(), config)).or(ar))
+        .setRanlib(getTool(flavor, "ranlib", config).or(ranlib))
         .setStrip(getTool(flavor, "strip", config).or(strip))
-        .setLex(getTool(flavor, "lex", config).or(lex))
-        .setYacc(getTool(flavor, "yacc", config).or(yacc))
+        .setSymbolNameTool(new PosixNmSymbolNameTool(getTool(flavor, "nm", config).or(nm)))
         .setSharedLibraryExtension(sharedLibraryExtension)
+        .setSharedLibraryVersionedExtensionFormat(sharedLibraryVersionedExtensionFormat)
         .setDebugPathSanitizer(debugPathSanitizer.or(CxxPlatforms.DEFAULT_DEBUG_PATH_SANITIZER))
         .setFlagMacros(flagMacros);
     builder.addAllCflags(cflags);
     builder.addAllCxxflags(cflags);
     builder.addAllCppflags(cppflags);
     builder.addAllCxxppflags(cppflags);
-    builder.addAllCxxldflags(cflags);
     builder.addAllAsflags(asflags);
     builder.addAllAsppflags(asppflags);
     CxxPlatforms.addToolFlagsFromConfig(config, builder);
@@ -128,33 +132,34 @@ public class CxxPlatforms {
   ) {
     CxxPlatform.Builder builder = CxxPlatform.builder();
     builder
-      .setFlavor(flavor)
-      .setAs(getTool(flavor, "as", config).or(defaultPlatform.getAs()))
-      .setAspp(getTool(flavor, "aspp", config).or(defaultPlatform.getAspp()))
-      .setCc(
-          getTool(flavor, "cc", config)
-              .transform(getCompiler(defaultPlatform.getCc().getClass()))
-              .or(defaultPlatform.getCc()))
-      .setCxx(
-          getTool(flavor, "cxx", config)
-              .transform(getCompiler(defaultPlatform.getCxx().getClass()))
-              .or(defaultPlatform.getCxx()))
-      .setCpp(getTool(flavor, "cpp", config).or(defaultPlatform.getCpp()))
-      .setCxxpp(getTool(flavor, "cxxpp", config).or(defaultPlatform.getCxxpp()))
-      .setCxxld(
-          getTool(flavor, "cxxld", config)
-              .transform(getLinker(defaultPlatform.getCxxld().getClass()))
-              .or(defaultPlatform.getCxxld()))
-      .setLd(
-          getTool(flavor, "ld", config)
-              .transform(getLinker(defaultPlatform.getLd().getClass()))
-              .or(defaultPlatform.getLd()))
-      .setAr(new GnuArchiver(getTool(flavor, "ar", config).or(defaultPlatform.getAr())))
-      .setStrip(getTool(flavor, "strip", config).or(defaultPlatform.getStrip()))
-      .setLex(getTool(flavor, "lex", config).or(defaultPlatform.getLex()))
-      .setYacc(getTool(flavor, "yacc", config).or(defaultPlatform.getYacc()))
-      .setSharedLibraryExtension(defaultPlatform.getSharedLibraryExtension())
-      .setDebugPathSanitizer(defaultPlatform.getDebugPathSanitizer());
+        .setFlavor(flavor)
+        .setAs(
+            config.getCompilerProvider(flavor, "as", CxxToolProvider.Type.DEFAULT)
+                .or(defaultPlatform.getAs()))
+        .setAspp(
+            config.getPreprocessorProvider(flavor, "aspp", CxxToolProvider.Type.DEFAULT)
+                .or(defaultPlatform.getAspp()))
+        .setCc(config.getCompilerProvider(flavor, "cc").or(defaultPlatform.getCc()))
+        .setCxx(config.getCompilerProvider(flavor, "cxx").or(defaultPlatform.getCxx()))
+        .setCpp(config.getPreprocessorProvider(flavor, "cpp").or(defaultPlatform.getCpp()))
+        .setCxxpp(config.getPreprocessorProvider(flavor, "cxxpp").or(defaultPlatform.getCxxpp()))
+        .setCuda(config.getCompilerProvider(flavor, "cuda").or(defaultPlatform.getCuda()))
+        .setCudapp(config.getPreprocessorProvider(flavor, "cudapp").or(defaultPlatform.getCudapp()))
+        .setAsm(config.getCompilerProvider(flavor, "asm").or(defaultPlatform.getAsm()))
+        .setAsmpp(config.getPreprocessorProvider(flavor, "asmpp").or(defaultPlatform.getAsmpp()))
+        .setLd(
+            config.getLinkerProvider(flavor, "ld", defaultPlatform.getLd().getType())
+                .or(defaultPlatform.getLd()))
+        .setAr(getTool(flavor, "ar", config)
+                .transform(getArchiver(defaultPlatform.getAr().getClass(), config))
+                .or(defaultPlatform.getAr()))
+        .setRanlib(getTool(flavor, "ranlib", config).or(defaultPlatform.getRanlib()))
+        .setStrip(getTool(flavor, "strip", config).or(defaultPlatform.getStrip()))
+        .setSymbolNameTool(defaultPlatform.getSymbolNameTool())
+        .setSharedLibraryExtension(defaultPlatform.getSharedLibraryExtension())
+        .setSharedLibraryVersionedExtensionFormat(
+            defaultPlatform.getSharedLibraryVersionedExtensionFormat())
+        .setDebugPathSanitizer(defaultPlatform.getDebugPathSanitizer());
 
     if (config.getDefaultPlatform().isPresent()) {
       // Try to add the tool flags from the default platform
@@ -164,38 +169,14 @@ public class CxxPlatforms {
     return builder.build();
   }
 
-  private static Function<Tool, Compiler> getCompiler(final Class<? extends Compiler> ccClass) {
-    return new Function<Tool, Compiler>() {
-      @Override
-      public Compiler apply(Tool input) {
-        try {
-          return ccClass.getConstructor(Tool.class).newInstance(input);
-        } catch (ReflectiveOperationException e) {
-          throw new RuntimeException(e);
-        }
-      }
-    };
-  }
-
-  private static Function<Tool, Archiver> getArchiver(final Class<? extends Archiver> arClass) {
+  private static Function<Tool, Archiver> getArchiver(final Class<? extends Archiver> arClass,
+      final CxxBuckConfig config) {
     return new Function<Tool, Archiver>() {
       @Override
       public Archiver apply(Tool input) {
         try {
-          return arClass.getConstructor(Tool.class).newInstance(input);
-        } catch (ReflectiveOperationException e) {
-          throw new RuntimeException(e);
-        }
-      }
-    };
-  }
-
-  private static Function<Tool, Linker> getLinker(final Class<? extends Linker> ldClass) {
-    return new Function<Tool, Linker>() {
-      @Override
-      public Linker apply(Tool input) {
-        try {
-          return ldClass.getConstructor(Tool.class).newInstance(input);
+          return config.getArchiver(input)
+              .or(arClass.getConstructor(Tool.class).newInstance(input));
         } catch (ReflectiveOperationException e) {
           throw new RuntimeException(e);
         }
@@ -215,20 +196,19 @@ public class CxxPlatforms {
     builder
         .addAllAsflags(asflags)
         .addAllAsppflags(config.getFlags("asppflags").or(DEFAULT_ASPPFLAGS))
-        .addAllAsppflags(asflags)
         .addAllCflags(cflags)
         .addAllCflags(compilerOnlyFlags)
         .addAllCxxflags(cxxflags)
         .addAllCxxflags(compilerOnlyFlags)
         .addAllCppflags(config.getFlags("cppflags").or(DEFAULT_CPPFLAGS))
-        .addAllCppflags(cflags)
         .addAllCxxppflags(config.getFlags("cxxppflags").or(DEFAULT_CXXPPFLAGS))
-        .addAllCxxppflags(cxxflags)
-        .addAllCxxldflags(config.getFlags("cxxldflags").or(DEFAULT_CXXLDFLAGS))
+        .addAllCudaflags(config.getFlags("cudaflags").or(ImmutableList.<String>of()))
+        .addAllCudappflags(config.getFlags("cudappflags").or(ImmutableList.<String>of()))
+        .addAllAsmflags(config.getFlags("asmflags").or(ImmutableList.<String>of()))
+        .addAllAsmppflags(config.getFlags("asmppflags").or(ImmutableList.<String>of()))
         .addAllLdflags(config.getFlags("ldflags").or(DEFAULT_LDFLAGS))
         .addAllArflags(config.getFlags("arflags").or(DEFAULT_ARFLAGS))
-        .addAllLexFlags(config.getFlags("lexflags").or(DEFAULT_LEX_FLAGS))
-        .addAllYaccFlags(config.getFlags("yaccflags").or(DEFAULT_YACC_FLAGS));
+        .addAllRanlibflags(config.getFlags("ranlibflags").or(DEFAULT_RANLIBFLAGS));
   }
 
   public static void addToolFlagsFromCxxPlatform(
@@ -237,18 +217,13 @@ public class CxxPlatforms {
     builder
         .addAllAsflags(platform.getAsflags())
         .addAllAsppflags(platform.getAsppflags())
-        .addAllAsppflags(platform.getAsflags())
         .addAllCflags(platform.getCflags())
         .addAllCxxflags(platform.getCxxflags())
         .addAllCppflags(platform.getCppflags())
-        .addAllCppflags(platform.getCflags())
-        .addAllCxxppflags(platform.getCxxflags())
         .addAllCxxppflags(platform.getCxxppflags())
-        .addAllCxxldflags(platform.getCxxldflags())
         .addAllLdflags(platform.getLdflags())
         .addAllArflags(platform.getArflags())
-        .addAllLexFlags(platform.getLexFlags())
-        .addAllYaccFlags(platform.getYaccFlags());
+        .addAllRanlibflags(platform.getRanlibflags());
   }
 
   public static CxxPlatform getConfigDefaultCxxPlatform(
@@ -275,11 +250,46 @@ public class CxxPlatforms {
     return systemDefaultCxxPlatform;
   }
 
+  private static Optional<Path> getToolPath(Flavor flavor, String name, CxxBuckConfig config) {
+    return config.getPath(flavor.toString(), name);
+  }
+
   private static Optional<Tool> getTool(Flavor flavor, String name, CxxBuckConfig config) {
-    return config
-        .getPath(flavor.toString(), name)
+    return getToolPath(flavor, name, config)
         .transform(HashedFileTool.FROM_PATH)
         .transform(Functions.<Tool>identity());
+  }
+
+  public static Iterable<BuildTarget> getParseTimeDeps(CxxPlatform cxxPlatform) {
+    ImmutableList.Builder<BuildTarget> deps = ImmutableList.builder();
+    deps.addAll(cxxPlatform.getAspp().getParseTimeDeps());
+    deps.addAll(cxxPlatform.getAs().getParseTimeDeps());
+    deps.addAll(cxxPlatform.getCpp().getParseTimeDeps());
+    deps.addAll(cxxPlatform.getCc().getParseTimeDeps());
+    deps.addAll(cxxPlatform.getCxxpp().getParseTimeDeps());
+    deps.addAll(cxxPlatform.getCxx().getParseTimeDeps());
+    if (cxxPlatform.getCudapp().isPresent()) {
+      deps.addAll(cxxPlatform.getCudapp().get().getParseTimeDeps());
+    }
+    if (cxxPlatform.getCuda().isPresent()) {
+      deps.addAll(cxxPlatform.getCuda().get().getParseTimeDeps());
+    }
+    if (cxxPlatform.getAsmpp().isPresent()) {
+      deps.addAll(cxxPlatform.getAsmpp().get().getParseTimeDeps());
+    }
+    if (cxxPlatform.getAsm().isPresent()) {
+      deps.addAll(cxxPlatform.getAsm().get().getParseTimeDeps());
+    }
+    deps.addAll(cxxPlatform.getLd().getParseTimeDeps());
+    return deps.build();
+  }
+
+  public static Iterable<BuildTarget> getParseTimeDeps(Iterable<CxxPlatform> cxxPlatforms) {
+    ImmutableList.Builder<BuildTarget> deps = ImmutableList.builder();
+    for (CxxPlatform cxxPlatform : cxxPlatforms) {
+      deps.addAll(getParseTimeDeps(cxxPlatform));
+    }
+    return deps.build();
   }
 
 }

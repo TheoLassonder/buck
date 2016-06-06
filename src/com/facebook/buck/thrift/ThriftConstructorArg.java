@@ -17,6 +17,7 @@
 package com.facebook.buck.thrift;
 
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.rules.AbstractDescriptionArg;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.coercer.SourceList;
 import com.facebook.buck.rules.coercer.SourceWithFlagsList;
@@ -28,7 +29,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 
 @SuppressFieldNotInitialized
-public class ThriftConstructorArg {
+public class ThriftConstructorArg extends AbstractDescriptionArg {
 
   public String name;
   public ImmutableMap<SourcePath, ImmutableList<String>> srcs;
@@ -43,11 +44,14 @@ public class ThriftConstructorArg {
   public Optional<SourceWithFlagsList> cppSrcs;
   public Optional<ImmutableSortedSet<BuildTarget>> cppDeps;
   public Optional<ImmutableSortedSet<BuildTarget>> cpp2Deps;
+  public Optional<ImmutableList<String>> cppCompilerFlags;
+  public Optional<ImmutableList<String>> cpp2CompilerFlags;
   public Optional<ImmutableSet<String>> cppOptions;
   public Optional<ImmutableSet<String>> cpp2Options;
 
   public Optional<ImmutableSet<String>> pyOptions;
   public Optional<String> pyBaseModule;
   public Optional<String> pyTwistedBaseModule;
+  public Optional<String> pyAsyncioBaseModule;
 
 }

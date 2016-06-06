@@ -16,40 +16,65 @@
 
 package com.facebook.buck.d;
 
-import com.facebook.buck.rules.Tool;
-import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.model.BuildTargets;
+import com.facebook.buck.rules.AbstractBuildRule;
 import com.facebook.buck.rules.BinaryBuildRule;
+import com.facebook.buck.rules.BuildableContext;
+import com.facebook.buck.rules.BuildContext;
+import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
-import com.facebook.buck.rules.BuildableProperties;
-import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.HasRuntimeDeps;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.google.common.collect.ImmutableList;
+import com.facebook.buck.rules.Tool;
+import com.facebook.buck.step.Step;
 
-public class DBinary extends DLinkable implements BinaryBuildRule {
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSortedSet;
+
+import java.nio.file.Path;
+
+/**
+ * BinaryBuildRule implementation for D binaries.
+ */
+public class DBinary extends AbstractBuildRule implements
+    BinaryBuildRule,
+    HasRuntimeDeps {
+
+  private final Tool executable;
+  private final Path output;
 
   public DBinary(
       BuildRuleParams params,
       SourcePathResolver resolver,
-      ImmutableList<SourcePath> inputs,
-      Tool compiler) {
-    super(
-        params,
-        resolver,
-        inputs,
-        /* prependFlags */ ImmutableList.<String>of(),
-        BuildTargets.getGenPath(
-            params.getBuildTarget(), "%s/" + params.getBuildTarget().getShortName()),
-        compiler);
+      Tool executable,
+      Path output) {
+    super(params, resolver);
+    this.executable = executable;
+    this.output = output;
   }
 
   @Override
-  public ImmutableList<String> getExecutableCommand(ProjectFilesystem projectFilesystem) {
-    return ImmutableList.of(projectFilesystem.resolve(getPathToOutput()).toString());
+  public ImmutableList<Step> getBuildSteps(
+      BuildContext context,
+      BuildableContext buildableContext) {
+    return ImmutableList.of();
   }
 
   @Override
-  public BuildableProperties getProperties() {
-    return new BuildableProperties(BuildableProperties.Kind.PACKAGING);
+  public Tool getExecutableCommand() {
+    return executable;
+  }
+
+  @Override
+  public Path getPathToOutput() {
+    return output;
+  }
+
+  @Override
+  public ImmutableSortedSet<BuildRule> getRuntimeDeps() {
+    // Return the actual executable as a runtime dependency.
+    // Without this, the file is not written when we get a cache hit.
+    return ImmutableSortedSet.<BuildRule>naturalOrder()
+      .addAll(executable.getDeps(getResolver()))
+      .build();
   }
 }

@@ -1,7 +1,0 @@
-android_library(
-  name = 'small',
-  srcs = glob(['*.java']),
-  visibility = [
-    'PUBLIC',
-  ],
-)

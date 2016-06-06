@@ -16,12 +16,13 @@
 
 package com.facebook.buck.cli;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
 
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
 import com.facebook.buck.testutil.integration.ProjectWorkspace.ProcessResult;
 import com.facebook.buck.testutil.integration.TestDataHelper;
+import com.facebook.buck.util.MoreStringsForTests;
 
 import org.junit.Rule;
 import org.junit.Test;
@@ -42,18 +43,51 @@ public class AuditRulesCommandIntegrationTest {
     // Print all of the rules in a file.
     ProcessResult result1 = workspace.runBuckCommand("audit", "rules", "example/BUCK");
     result1.assertSuccess();
-    assertEquals(workspace.getFileContents("stdout.all"), result1.getStdout());
+    assertThat(
+        result1.getStdout(),
+        MoreStringsForTests.equalToIgnoringPlatformNewlines(
+            workspace.getFileContents("stdout.all")));
 
     // Print all of the rules filtered by type.
     ProcessResult result2 = workspace.runBuckCommand(
         "audit", "rules", "--type", "genrule", "example/BUCK");
     result2.assertSuccess();
-    assertEquals(workspace.getFileContents("stdout.genrule"), result2.getStdout());
+    assertThat(
+        result2.getStdout(),
+        MoreStringsForTests.equalToIgnoringPlatformNewlines(
+            workspace.getFileContents("stdout.genrule")));
 
     // Print all of the rules using multiple filters.
     ProcessResult result3 = workspace.runBuckCommand(
         "audit", "rules", "-t", "genrule", "-t", "keystore", "example/BUCK");
     result3.assertSuccess();
-    assertEquals(workspace.getFileContents("stdout.all"), result3.getStdout());
+    assertThat(
+        result3.getStdout(),
+        MoreStringsForTests.equalToIgnoringPlatformNewlines(
+            workspace.getFileContents("stdout.all")));
+  }
+
+  @Test
+  public void testBuckAuditRulesJsonOutput() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "audit_rules", tmp);
+    workspace.setUp();
+
+    // Print all of the rules in a file.
+    ProcessResult result1 = workspace.runBuckCommand("audit", "rules", "--json", "example/BUCK");
+    result1.assertSuccess();
+    assertThat(
+        result1.getStdout(),
+        MoreStringsForTests.equalToIgnoringPlatformNewlines(
+            workspace.getFileContents("stdout.all.json")));
+
+    // Print all of the rules filtered by type.
+    ProcessResult result2 = workspace.runBuckCommand(
+        "audit", "rules", "--type", "genrule", "--json", "example/BUCK");
+    result2.assertSuccess();
+    assertThat(
+        result2.getStdout(),
+        MoreStringsForTests.equalToIgnoringPlatformNewlines(
+            workspace.getFileContents("stdout.genrule.json")));
   }
 }

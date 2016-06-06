@@ -16,17 +16,20 @@
 
 package com.facebook.buck.cli;
 
+import com.facebook.buck.event.ConsoleEvent;
 import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.DefaultJavaPackageFinder;
-import com.facebook.buck.java.GenerateCodeCoverageReportStep;
-import com.facebook.buck.java.JUnitStep;
-import com.facebook.buck.java.JavaLibrary;
-import com.facebook.buck.java.JavaTest;
+import com.facebook.buck.jvm.java.DefaultJavaPackageFinder;
+import com.facebook.buck.jvm.java.GenerateCodeCoverageReportStep;
+import com.facebook.buck.jvm.java.JacocoConstants;
+import com.facebook.buck.jvm.java.JavaBuckConfig;
+import com.facebook.buck.jvm.java.JavaLibrary;
+import com.facebook.buck.jvm.java.JavaRuntimeLauncher;
+import com.facebook.buck.jvm.java.JavaTest;
 import com.facebook.buck.log.Logger;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.HasBuildTarget;
-import com.facebook.buck.rules.BuildContext;
+import com.facebook.buck.model.HasTests;
 import com.facebook.buck.rules.BuildEngine;
 import com.facebook.buck.rules.BuildResult;
 import com.facebook.buck.rules.BuildRule;
@@ -34,6 +37,7 @@ import com.facebook.buck.rules.BuildRuleSuccessType;
 import com.facebook.buck.rules.IndividualTestEvent;
 import com.facebook.buck.rules.TestRule;
 import com.facebook.buck.rules.TestRunEvent;
+import com.facebook.buck.rules.TestStatusMessageEvent;
 import com.facebook.buck.rules.TestSummaryEvent;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
@@ -45,11 +49,11 @@ import com.facebook.buck.test.TestCaseSummary;
 import com.facebook.buck.test.TestResultSummary;
 import com.facebook.buck.test.TestResults;
 import com.facebook.buck.test.TestRuleEvent;
-import com.facebook.buck.test.result.groups.TestResultsGrouper;
+import com.facebook.buck.test.TestRunningOptions;
+import com.facebook.buck.test.TestStatusMessage;
 import com.facebook.buck.test.result.type.ResultType;
 import com.facebook.buck.util.BuckConstant;
 import com.facebook.buck.util.HumanReadableException;
-import com.facebook.buck.util.Verbosity;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Charsets;
 import com.google.common.base.Functions;
@@ -57,6 +61,7 @@ import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.base.Strings;
+import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -81,8 +86,8 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.io.Writer;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -90,8 +95,8 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
-import javax.annotation.Nullable;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
@@ -117,7 +122,6 @@ public class TestRunning {
   public static int runTests(
       final CommandRunnerParams params,
       Iterable<TestRule> tests,
-      BuildContext buildContext,
       ExecutionContext executionContext,
       final TestRunningOptions options,
       ListeningExecutorService service,
@@ -135,11 +139,19 @@ public class TestRunning {
       rulesUnderTest = getRulesUnderTest(tests);
       if (!rulesUnderTest.isEmpty()) {
         try {
+          // We'll use the filesystem of the first rule under test. This will fail if there are any
+          // tests from a different repo, but it'll help us bootstrap ourselves to being able to
+          // support multiple repos
+          // TODO(t8220837): Support tests in multiple repos
+          JavaLibrary library = rulesUnderTest.iterator().next();
           stepRunner.runStepForBuildTarget(
-              new MakeCleanDirectoryStep(JUnitStep.JACOCO_OUTPUT_DIR),
+              new MakeCleanDirectoryStep(
+                  library.getProjectFilesystem(),
+                  JacocoConstants.getJacocoOutputDir(library.getProjectFilesystem())),
               Optional.<BuildTarget>absent());
         } catch (StepFailedException e) {
-          params.getConsole().printBuildFailureWithoutStacktrace(e);
+          params.getBuckEventBus().post(
+              ConsoleEvent.severe(Throwables.getRootCause(e).getLocalizedMessage()));
           return 1;
         }
       }
@@ -166,23 +178,7 @@ public class TestRunning {
     // ListenableFuture.
     List<ListenableFuture<TestResults>> results = Lists.newArrayList();
 
-    // Unless `--verbose 0` is specified, print out test results as they become available.
-    // Failures with the ListenableFuture should always be printed, as they indicate an error with
-    // Buck, not the test being run.
-    Verbosity verbosity = params.getConsole().getVerbosity();
-    final boolean printTestResults = (verbosity != Verbosity.SILENT);
-
-    // For grouping results!
-    final TestResultsGrouper grouper;
-    if (options.isIgnoreFailingDependencies()) {
-      grouper = new TestResultsGrouper(tests);
-    } else {
-      grouper = null;
-    }
-
-    TestRuleKeyFileHelper testRuleKeyFileHelper = new TestRuleKeyFileHelper(
-        executionContext.getProjectFilesystem(),
-        buildEngine);
+    TestRuleKeyFileHelper testRuleKeyFileHelper = new TestRuleKeyFileHelper(buildEngine);
     final AtomicInteger lastReportedTestSequenceNumber = new AtomicInteger();
     final List<TestRun> separateTestRuns = Lists.newArrayList();
     List<TestRun> parallelTestRuns = Lists.newArrayList();
@@ -195,13 +191,43 @@ public class TestRunning {
           executionContext,
           testRuleKeyFileHelper,
           options.isResultsCacheEnabled(),
-          !options.getTestSelectorList().isEmpty());
+          !options.getTestSelectorList().isEmpty(),
+          !options.getEnvironmentOverrides().isEmpty());
 
       final Map<String, UUID> testUUIDMap = new HashMap<>();
+      final AtomicReference<TestStatusMessageEvent.Started> currentTestStatusMessageEvent =
+          new AtomicReference<>();
       TestRule.TestReportingCallback testReportingCallback = new TestRule.TestReportingCallback() {
           @Override
           public void testsDidBegin() {
             LOG.debug("Tests for rule %s began", test.getBuildTarget());
+          }
+
+          @Override
+          public void statusDidBegin(TestStatusMessage didBeginMessage) {
+            LOG.debug("Test status did begin: %s", didBeginMessage);
+            TestStatusMessageEvent.Started startedEvent = TestStatusMessageEvent.started(
+                didBeginMessage);
+            TestStatusMessageEvent.Started previousEvent =
+                currentTestStatusMessageEvent.getAndSet(startedEvent);
+            Preconditions.checkState(
+                previousEvent == null,
+                "Received begin status before end status (%s)",
+                previousEvent);
+            params.getBuckEventBus().post(startedEvent);
+          }
+
+          @Override
+          public void statusDidEnd(TestStatusMessage didEndMessage) {
+            LOG.debug("Test status did end: %s", didEndMessage);
+            TestStatusMessageEvent.Started previousEvent = currentTestStatusMessageEvent.getAndSet(
+                null);
+            Preconditions.checkState(
+                previousEvent != null,
+                "Received end status before begin status (%s)",
+                previousEvent);
+            params.getBuckEventBus().post(
+                TestStatusMessageEvent.finished(previousEvent, didEndMessage));
           }
 
           @Override
@@ -256,11 +282,8 @@ public class TestRunning {
         ImmutableList.Builder<Step> stepsBuilder = ImmutableList.builder();
         Preconditions.checkState(buildEngine.isRuleBuilt(test.getBuildTarget()));
         List<Step> testSteps = test.runTests(
-            buildContext,
             executionContext,
-            options.isDryRun(),
-            options.isShufflingTests(),
-            options.getTestSelectorList(),
+            options,
             testReportingCallback);
         if (!testSteps.isEmpty()) {
           stepsBuilder.addAll(testSteps);
@@ -322,11 +345,9 @@ public class TestRunning {
             transformTestResults(
                 params,
                 testResults,
-                grouper,
                 testRun.getTest(),
                 testRun.getTestReportingCallback(),
                 testTargets,
-                printTestResults,
                 lastReportedTestSequenceNumber,
                 totalNumberOfTests));
     }
@@ -355,11 +376,9 @@ public class TestRunning {
                           Optional.of(testRun.getTest().getBuildTarget()),
                           directExecutorService,
                           testStepRunningCallback),
-                      grouper,
                       testRun.getTest(),
                       testRun.getTestReportingCallback(),
                       testTargets,
-                      printTestResults,
                       lastReportedTestSequenceNumber,
                       totalNumberOfTests));
             }
@@ -427,13 +446,17 @@ public class TestRunning {
             getReportCommand(
                 rulesUnderTest,
                 defaultJavaPackageFinderOptional,
-                params.getRepository().getFilesystem(),
-                JUnitStep.JACOCO_OUTPUT_DIR,
+                new JavaBuckConfig(params.getBuckConfig())
+                    .getDefaultJavaOptions()
+                    .getJavaRuntimeLauncher(),
+                params.getCell().getFilesystem(),
+                JacocoConstants.getJacocoOutputDir(params.getCell().getFilesystem()),
                 options.getCoverageReportFormat(),
                 options.getCoverageReportTitle()),
             Optional.<BuildTarget>absent());
       } catch (StepFailedException e) {
-        params.getConsole().printBuildFailureWithoutStacktrace(e);
+        params.getBuckEventBus().post(
+            ConsoleEvent.severe(Throwables.getRootCause(e).getLocalizedMessage()));
         return 1;
       }
     }
@@ -452,20 +475,16 @@ public class TestRunning {
   private static ListenableFuture<TestResults> transformTestResults(
       final CommandRunnerParams params,
       ListenableFuture<TestResults> originalTestResults,
-      @Nullable final TestResultsGrouper grouper,
       final TestRule testRule,
       final TestRule.TestReportingCallback testReportingCallback,
       final ImmutableSet<String> testTargets,
-      final boolean printTestResults,
       final AtomicInteger lastReportedTestSequenceNumber,
       final int totalNumberOfTests) {
 
     final SettableFuture<TestResults> transformedTestResults = SettableFuture.create();
     FutureCallback<TestResults> callback = new FutureCallback<TestResults>() {
 
-      private void postTestResults(TestResults testResults) {
-        testResults.setSequenceNumber(lastReportedTestSequenceNumber.incrementAndGet());
-        testResults.setTotalNumberOfTests(totalNumberOfTests);
+      private TestResults postTestResults(TestResults testResults) {
         if (!testRule.supportsStreamingTests()) {
           // For test rules which don't support streaming tests, we'll
           // stream test summary events after interpreting the
@@ -483,10 +502,16 @@ public class TestRunning {
           testReportingCallback.testsDidEnd(testResults.getTestCases());
           LOG.debug("Done simulating streaming test events for rule %s", testRule);
         }
+        TestResults transformedTestResults = TestResults.builder()
+            .from(testResults)
+            .setSequenceNumber(lastReportedTestSequenceNumber.incrementAndGet())
+            .setTotalNumberOfTests(totalNumberOfTests)
+            .build();
         params.getBuckEventBus().post(
             IndividualTestEvent.finished(
                 testTargets,
-                testResults));
+                transformedTestResults));
+        return transformedTestResults;
       }
 
       private String getStackTrace(Throwable throwable) {
@@ -499,16 +524,7 @@ public class TestRunning {
       @Override
       public void onSuccess(TestResults testResults) {
         LOG.debug("Transforming successful test results %s", testResults);
-        if (printTestResults) {
-          if (grouper == null) {
-            postTestResults(testResults);
-          } else {
-            Map<TestRule, TestResults> postableTestResultsMap = grouper.post(testRule, testResults);
-            for (TestResults rr : postableTestResultsMap.values()) {
-              postTestResults(rr);
-            }
-          }
-        }
+        postTestResults(testResults);
         transformedTestResults.set(testResults);
       }
 
@@ -517,7 +533,7 @@ public class TestRunning {
         LOG.warn(throwable, "Test command step failed, marking %s as failed", testRule);
         // If the test command steps themselves fail, report this as special test result.
         TestResults testResults =
-            new TestResults(
+            TestResults.of(
                 testRule.getBuildTarget(),
                 ImmutableList.of(
                     new TestCaseSummary(
@@ -535,10 +551,8 @@ public class TestRunning {
                 testRule.getContacts(),
                 FluentIterable.from(
                     testRule.getLabels()).transform(Functions.toStringFunction()).toSet());
-        if (printTestResults) {
-          postTestResults(testResults);
-        }
-        transformedTestResults.set(testResults);
+        TestResults newTestResults = postTestResults(testResults);
+        transformedTestResults.set(newTestResults);
       }
     };
     Futures.addCallback(originalTestResults, callback);
@@ -559,7 +573,7 @@ public class TestRunning {
             .from(originalTestResults.getTestCases())
             .transform(TestCaseSummary.TO_CACHED_TRANSFORMATION)
             .toList();
-        return new TestResults(
+        return TestResults.of(
             originalTestResults.getBuildTarget(),
             cachedTestResults,
             originalTestResults.getContacts(),
@@ -575,7 +589,8 @@ public class TestRunning {
       ExecutionContext executionContext,
       TestRuleKeyFileHelper testRuleKeyFileHelper,
       boolean isResultsCacheEnabled,
-      boolean isRunningWithTestSelectors)
+      boolean isRunningWithTestSelectors,
+      boolean hasEnvironmentOverrides)
       throws IOException, ExecutionException, InterruptedException {
     boolean isTestRunRequired;
     BuildResult result;
@@ -586,13 +601,16 @@ public class TestRunning {
     } else if (isRunningWithTestSelectors) {
       // As a feature to aid developers, we'll assume that when we are using test selectors,
       // we should always run each test (and never look at the cache.)
-      // TODO(user) When #3090004 and #3436849 are closed we can respect the cache again.
+      // TODO(edwardspeyer) When #3090004 and #3436849 are closed we can respect the cache again.
+      isTestRunRequired = true;
+    } else if (hasEnvironmentOverrides) {
+      // This is rather obtuse, ideally the environment overrides can be hashed and compared...
       isTestRunRequired = true;
     } else if (((result = cachingBuildEngine.getBuildRuleResult(
         test.getBuildTarget())) != null) &&
             result.getSuccess() == BuildRuleSuccessType.MATCHING_RULE_KEY &&
             isResultsCacheEnabled &&
-            test.hasTestResultFiles(executionContext) &&
+            test.hasTestResultFiles() &&
             testRuleKeyFileHelper.isRuleKeyInDir(test)) {
       // If this build rule's artifacts (which includes the rule's output and its test result
       // files) are up to date, then no commands are necessary to run the tests. The test result
@@ -614,6 +632,8 @@ public class TestRunning {
     for (TestRule test : tests) {
       if (test instanceof JavaTest) {
         JavaTest javaTest = (JavaTest) test;
+
+        // First, look at sourceUnderTest.
         ImmutableSet<BuildRule> sourceUnderTest = javaTest.getSourceUnderTest();
         for (BuildRule buildRule : sourceUnderTest) {
           if (buildRule instanceof JavaLibrary) {
@@ -622,10 +642,21 @@ public class TestRunning {
           } else {
             throw new HumanReadableException(
                 "Test '%s' is a java_test() " +
-                "but it is testing module '%s' " +
-                "which is not a java_library()!",
+                    "but it is testing module '%s' " +
+                    "which is not a java_library()!",
                 test.getBuildTarget(),
                 buildRule.getBuildTarget());
+          }
+        }
+
+        // Then, look at the transitive dependencies for `tests` attribute that refers to this test.
+        ImmutableSet<JavaLibrary> transitiveDeps = javaTest.getTransitiveClasspathDeps();
+        for (JavaLibrary dep: transitiveDeps) {
+          if (dep instanceof HasTests) {
+            ImmutableSortedSet<BuildTarget> depTests = ((HasTests) dep).getTests();
+            if (depTests.contains(test.getBuildTarget())) {
+              rulesUnderTest.add(dep);
+            }
           }
         }
       }
@@ -732,6 +763,7 @@ public class TestRunning {
   private static Step getReportCommand(
       ImmutableSet<JavaLibrary> rulesUnderTest,
       Optional<DefaultJavaPackageFinder> defaultJavaPackageFinderOptional,
+      JavaRuntimeLauncher javaRuntimeLauncher,
       ProjectFilesystem filesystem,
       Path outputDirectory,
       CoverageReportFormat format,
@@ -754,6 +786,8 @@ public class TestRunning {
     }
 
     return new GenerateCodeCoverageReportStep(
+        javaRuntimeLauncher,
+        filesystem,
         srcDirectories.build(),
         pathsToClasses.build(),
         outputDirectory,
@@ -790,41 +824,50 @@ public class TestRunning {
     Set<String> srcFolders = Sets.newHashSet();
     loopThroughSourcePath:
     for (Path javaSrcPath : javaSrcs) {
-      if (!MorePaths.isGeneratedFile(javaSrcPath)) {
-        // If the source path is already under a known source folder, then we can skip this
-        // source path.
-        for (String srcFolder : srcFolders) {
-          if (javaSrcPath.startsWith(srcFolder)) {
-            continue loopThroughSourcePath;
-          }
-        }
+      if (MorePaths.isGeneratedFile(filesystem, javaSrcPath)) {
+        continue;
+      }
 
-        // If the source path is under one of the source roots, then we can just add the source
-        // root.
-        ImmutableSortedSet<String> pathsFromRoot = defaultJavaPackageFinder.getPathsFromRoot();
-        for (String root : pathsFromRoot) {
-          if (javaSrcPath.startsWith(root)) {
-            srcFolders.add(root);
-            continue loopThroughSourcePath;
-          }
-        }
-
-        // Traverse the file system from the parent directory of the java file until we hit the
-        // parent of the src root directory.
-        ImmutableSet<String> pathElements = defaultJavaPackageFinder.getPathElements();
-        File directory = filesystem.getFileForRelativePath(javaSrcPath.getParent());
-        while (directory != null && !pathElements.contains(directory.getName())) {
-          directory = directory.getParentFile();
-        }
-
-        if (directory != null) {
-          String directoryPath = directory.getPath();
-          if (!directoryPath.endsWith("/")) {
-            directoryPath += "/";
-          }
-          srcFolders.add(directoryPath);
+      // If the source path is already under a known source folder, then we can skip this
+      // source path.
+      for (String srcFolder : srcFolders) {
+        if (javaSrcPath.startsWith(srcFolder)) {
+          continue loopThroughSourcePath;
         }
       }
+
+      // If the source path is under one of the source roots, then we can just add the source
+      // root.
+      ImmutableSortedSet<String> pathsFromRoot = defaultJavaPackageFinder.getPathsFromRoot();
+      for (String root : pathsFromRoot) {
+        if (javaSrcPath.startsWith(root)) {
+          srcFolders.add(root);
+          continue loopThroughSourcePath;
+        }
+      }
+
+      // Traverse the file system from the parent directory of the java file until we hit the
+      // parent of the src root directory.
+      ImmutableSet<String> pathElements = defaultJavaPackageFinder.getPathElements();
+      Path directory = filesystem.getPathForRelativePath(javaSrcPath.getParent());
+      if (pathElements.isEmpty()) {
+        continue;
+      }
+
+      while (directory != null && directory.getFileName() != null &&
+          !pathElements.contains(directory.getFileName().toString())) {
+        directory = directory.getParent();
+      }
+
+      if (directory == null || directory.getFileName() == null) {
+        continue;
+      }
+
+      String directoryPath = directory.toString();
+      if (!directoryPath.endsWith("/")) {
+        directoryPath += "/";
+      }
+      srcFolders.add(directoryPath);
     }
 
     return ImmutableSet.copyOf(srcFolders);

@@ -19,7 +19,6 @@ package com.facebook.buck.android;
 import static org.junit.Assert.assertEquals;
 
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.step.ExecutionContext;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 
@@ -47,20 +46,16 @@ public class ProguardTranslatorFactoryTest {
         .andReturn(ImmutableList.<String>of());
     EasyMock.expect(projectFilesystem.readLines(proguardMappingFile))
         .andReturn(linesInMappingFile);
-
-    ExecutionContext context = EasyMock.createMock(ExecutionContext.class);
-    EasyMock.expect(context.getProjectFilesystem())
-        .andReturn(projectFilesystem).anyTimes();
-
-    EasyMock.replay(projectFilesystem, context);
+    EasyMock.replay(projectFilesystem);
 
     ProguardTranslatorFactory translatorFactory = ProguardTranslatorFactory.create(
-        context, Optional.of(proguardConfigFile), Optional.of(proguardMappingFile));
+        projectFilesystem,
+        Optional.of(proguardConfigFile), Optional.of(proguardMappingFile));
     checkMapping(translatorFactory, "foo/bar/MappedPrimary", "foo/bar/a");
     checkMapping(translatorFactory, "foo/bar/UnmappedPrimary", "foo/bar/UnmappedPrimary");
     checkMapping(translatorFactory, "foo/primary/MappedPackage", "x/a");
 
-    EasyMock.verify(projectFilesystem, context);
+    EasyMock.verify(projectFilesystem);
   }
 
   @Test
@@ -71,18 +66,14 @@ public class ProguardTranslatorFactoryTest {
     ProjectFilesystem projectFilesystem = EasyMock.createMock(ProjectFilesystem.class);
     EasyMock.expect(projectFilesystem.readLines(proguardConfigFile))
         .andReturn(ImmutableList.of("-dontobfuscate"));
-
-    ExecutionContext context = EasyMock.createMock(ExecutionContext.class);
-    EasyMock.expect(context.getProjectFilesystem())
-        .andReturn(projectFilesystem).anyTimes();
-
-    EasyMock.replay(projectFilesystem, context);
+    EasyMock.replay(projectFilesystem);
 
     ProguardTranslatorFactory translatorFactory = ProguardTranslatorFactory.create(
-        context, Optional.of(proguardConfigFile), Optional.of(proguardMappingFile));
+        projectFilesystem,
+        Optional.of(proguardConfigFile), Optional.of(proguardMappingFile));
     checkMapping(translatorFactory, "anything", "anything");
 
-    EasyMock.verify(projectFilesystem, context);
+    EasyMock.verify(projectFilesystem);
   }
 
   private void checkMapping(

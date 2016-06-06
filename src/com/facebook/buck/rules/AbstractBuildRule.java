@@ -16,16 +16,16 @@
 
 package com.facebook.buck.rules;
 
+import com.facebook.buck.artifact_cache.ArtifactCache;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
-import com.facebook.buck.util.immutables.BuckStyleImmutable;
 import com.google.common.annotations.Beta;
 import com.google.common.base.CaseFormat;
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableSortedSet;
 
-import org.immutables.value.Value;
-
-import javax.annotation.Nullable;
+import java.util.Objects;
 
 /**
  * Abstract implementation of a {@link BuildRule} that can be cached. If its current {@link RuleKey}
@@ -36,20 +36,25 @@ import javax.annotation.Nullable;
 public abstract class AbstractBuildRule implements BuildRule {
 
   private final BuildTarget buildTarget;
-  private final ImmutableSortedSet<BuildRule> declaredDeps;
-  private final ImmutableSortedSet<BuildRule> extraDeps;
-  private final ImmutableSortedSet<BuildRule> deps;
-  private final RuleKeyBuilderFactory ruleKeyBuilderFactory;
+  private final Supplier<ImmutableSortedSet<BuildRule>> declaredDeps;
+  private final Supplier<ImmutableSortedSet<BuildRule>> extraDeps;
+  private final Supplier<ImmutableSortedSet<BuildRule>> deps;
   private final SourcePathResolver resolver;
   private final ProjectFilesystem projectFilesystem;
-  @Nullable private volatile RuleKeyPair ruleKeyPair;
+
+  private final Supplier<String> typeSupplier = Suppliers.memoize(
+      new Supplier<String>() {
+        @Override
+        public String get() {
+          return getTypeForClass();
+        }
+      });
 
   protected AbstractBuildRule(BuildRuleParams buildRuleParams, SourcePathResolver resolver) {
     this.buildTarget = buildRuleParams.getBuildTarget();
     this.declaredDeps = buildRuleParams.getDeclaredDeps();
     this.extraDeps = buildRuleParams.getExtraDeps();
-    this.deps = buildRuleParams.getDeps();
-    this.ruleKeyBuilderFactory = buildRuleParams.getRuleKeyBuilderFactory();
+    this.deps = buildRuleParams.getTotalDeps();
     this.resolver = resolver;
     this.projectFilesystem = buildRuleParams.getProjectFilesystem();
   }
@@ -71,20 +76,27 @@ public abstract class AbstractBuildRule implements BuildRule {
 
   @Override
   public final ImmutableSortedSet<BuildRule> getDeps() {
-    return deps;
+    return deps.get();
   }
 
   public final ImmutableSortedSet<BuildRule> getDeclaredDeps() {
-    return declaredDeps;
+    return declaredDeps.get();
   }
 
-  private ImmutableSortedSet<BuildRule> getExtraDeps() {
-    return extraDeps;
+  public final ImmutableSortedSet<BuildRule> deprecatedGetExtraDeps() {
+    return extraDeps.get();
   }
 
   @Override
-  public final String getType() {
-    return CaseFormat.UPPER_CAMEL.to(CaseFormat.LOWER_UNDERSCORE, getClass().getSimpleName());
+  public String getType() {
+    return typeSupplier.get();
+  }
+
+  private String getTypeForClass() {
+    return CaseFormat
+        .UPPER_CAMEL
+        .to(CaseFormat.LOWER_UNDERSCORE, getClass().getSimpleName())
+        .intern();
   }
 
   public final SourcePathResolver getResolver() {
@@ -98,6 +110,10 @@ public abstract class AbstractBuildRule implements BuildRule {
 
   @Override
   public final int compareTo(BuildRule that) {
+    if (this == that) {
+      return 0;
+    }
+
     return this.getBuildTarget().compareTo(that.getBuildTarget());
   }
 
@@ -107,7 +123,8 @@ public abstract class AbstractBuildRule implements BuildRule {
       return false;
     }
     AbstractBuildRule that = (AbstractBuildRule) obj;
-    return this.buildTarget.equals(that.buildTarget);
+    return Objects.equals(this.buildTarget, that.buildTarget) &&
+        Objects.equals(this.getType(), that.getType());
   }
 
   @Override
@@ -120,52 +137,9 @@ public abstract class AbstractBuildRule implements BuildRule {
     return getFullyQualifiedName();
   }
 
-  /**
-   * This method should be overridden only for unit testing.
-   */
   @Override
-  public RuleKey getRuleKey() {
-    return getRuleKeyPair().getTotalRuleKey();
-  }
-
-  /**
-   * Creates a new {@link RuleKey} for this {@link BuildRule} that does not take {@link #getDeps()}
-   * into account.
-   */
-  @Override
-  public RuleKey getRuleKeyWithoutDeps() {
-    return getRuleKeyPair().getRuleKeyWithoutDeps();
-  }
-
-  private RuleKeyPair getRuleKeyPair() {
-    // This uses the "double-checked locking using volatile" pattern:
-    // http://www.cs.umd.edu/~pugh/java/memoryModel/DoubleCheckedLocking.html.
-    if (ruleKeyPair == null) {
-      synchronized (this) {
-        if (ruleKeyPair == null) {
-          RuleKey.Builder builder = ruleKeyBuilderFactory.newInstance(this);
-          RuleKey ruleKeyWithoutDeps = builder.build();
-          // Now introduce the deps into the RuleKey.
-          builder.setReflectively("deps", getDeclaredDeps());
-          builder.setReflectively("buck.extraDeps", getExtraDeps());
-          RuleKey totalRuleKey = builder.build();
-          ruleKeyPair = RuleKeyPair.of(totalRuleKey, ruleKeyWithoutDeps);
-        }
-      }
-    }
-    return ruleKeyPair;
-  }
-
-  @BuckStyleImmutable
-  @Value.Immutable
-  public interface AbstractRuleKeyPair {
-
-    @Value.Parameter
-    RuleKey getTotalRuleKey();
-
-    @Value.Parameter
-    RuleKey getRuleKeyWithoutDeps();
-
+  public boolean isCacheable() {
+    return true;
   }
 
 }

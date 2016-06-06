@@ -16,8 +16,10 @@
 
 package com.facebook.buck.step.fs;
 
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.util.Escaper;
 
 import java.io.IOException;
@@ -28,21 +30,23 @@ import java.nio.file.Path;
  */
 public class MkdirStep implements Step {
 
+  private final ProjectFilesystem filesystem;
   private final Path pathRelativeToProjectRoot;
 
-  public MkdirStep(Path pathRelativeToProjectRoot) {
-    this.pathRelativeToProjectRoot = pathRelativeToProjectRoot;
+  public MkdirStep(ProjectFilesystem filesystem, Path pathRelativeToProjectRootOrJustAbsolute) {
+    this.filesystem = filesystem;
+    this.pathRelativeToProjectRoot = pathRelativeToProjectRootOrJustAbsolute;
   }
 
   @Override
-  public int execute(ExecutionContext context) {
+  public StepExecutionResult execute(ExecutionContext context) {
     try {
-      context.getProjectFilesystem().mkdirs(pathRelativeToProjectRoot);
+      filesystem.mkdirs(pathRelativeToProjectRoot);
     } catch (IOException e) {
       context.logError(e, "Cannot make directories: %s", pathRelativeToProjectRoot);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   @Override
@@ -53,14 +57,14 @@ public class MkdirStep implements Step {
   @Override
   public String getDescription(ExecutionContext context) {
     return String.format("mkdir -p %s",
-        Escaper.escapeAsShellString(getPath(context).toString()));
+        Escaper.escapeAsShellString(getPath().toString()));
   }
 
   /**
    * Get the path of the directory to make.
    * @return Path of the directory to make.
    */
-  public Path getPath(ExecutionContext context) {
-    return context.getProjectFilesystem().resolve(pathRelativeToProjectRoot);
+  public Path getPath() {
+    return filesystem.resolve(pathRelativeToProjectRoot);
   }
 }

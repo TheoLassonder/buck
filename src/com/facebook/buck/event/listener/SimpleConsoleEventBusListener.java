@@ -15,13 +15,18 @@
  */
 package com.facebook.buck.event.listener;
 
+import com.facebook.buck.artifact_cache.HttpArtifactCacheEvent;
 import com.facebook.buck.event.ConsoleEvent;
 import com.facebook.buck.event.InstallEvent;
 import com.facebook.buck.parser.ParseEvent;
 import com.facebook.buck.rules.BuildEvent;
 import com.facebook.buck.rules.BuildRuleEvent;
+import com.facebook.buck.rules.BuildRuleStatus;
 import com.facebook.buck.rules.IndividualTestEvent;
 import com.facebook.buck.rules.TestRunEvent;
+import com.facebook.buck.rules.TestStatusMessageEvent;
+import com.facebook.buck.test.TestResultSummaryVerbosity;
+import com.facebook.buck.test.TestStatusMessage;
 import com.facebook.buck.timing.Clock;
 import com.facebook.buck.util.Console;
 import com.google.common.base.Joiner;
@@ -29,49 +34,93 @@ import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.eventbus.Subscribe;
 
+import java.nio.file.Path;
+import java.util.Collection;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 /**
  * Implementation of {@code AbstractConsoleEventBusListener} for terminals that don't support ansi.
  */
 public class SimpleConsoleEventBusListener extends AbstractConsoleEventBusListener {
+  private final Locale locale;
   private final AtomicLong parseTime;
   private final TestResultFormatter testFormatter;
+  private final ImmutableList.Builder<TestStatusMessage> testStatusMessageBuilder =
+      ImmutableList.builder();
 
-  public SimpleConsoleEventBusListener(Console console, Clock clock) {
-    super(console, clock);
-
+  public SimpleConsoleEventBusListener(
+      Console console,
+      Clock clock,
+      TestResultSummaryVerbosity summaryVerbosity,
+      Locale locale,
+      Path testLogPath) {
+    super(console, clock, locale);
+    this.locale = locale;
     this.parseTime = new AtomicLong(0);
-    this.testFormatter = new TestResultFormatter(console.getAnsi(), console.getVerbosity());
+    this.testFormatter = new TestResultFormatter(
+        console.getAnsi(),
+        console.getVerbosity(),
+        summaryVerbosity,
+        locale,
+        Optional.of(testLogPath));
   }
 
   @Override
   @Subscribe
   public void parseFinished(ParseEvent.Finished finished) {
     super.parseFinished(finished);
+    if (console.getVerbosity().isSilent()) {
+      return;
+    }
     ImmutableList.Builder<String> lines = ImmutableList.builder();
-    this.parseTime.set(logEventPair("PARSING BUCK FILES",
+    this.parseTime.set(logEventPair(
+        "PARSING BUCK FILES",
         /* suffix */ Optional.<String>absent(),
         clock.currentTimeMillis(),
         0L,
-        parseStarted,
-        parseFinished,
+        buckFilesProcessing.values(),
+        getEstimatedProgressOfProcessingBuckFiles(),
         lines));
     printLines(lines);
+
   }
 
   @Override
   @Subscribe
   public void buildFinished(BuildEvent.Finished finished) {
     super.buildFinished(finished);
+    if (console.getVerbosity().isSilent()) {
+      return;
+    }
+    long currentMillis = clock.currentTimeMillis();
     ImmutableList.Builder<String> lines = ImmutableList.builder();
-    logEventPair("BUILDING",
+    long buildStartedTime = buildStarted != null
+        ? buildStarted.getTimestamp()
+        : Long.MAX_VALUE;
+    long buildFinishedTime = buildFinished != null
+        ? buildFinished.getTimestamp()
+        : currentMillis;
+    Collection<EventPair> processingEvents = getEventsBetween(buildStartedTime,
+        buildFinishedTime,
+        buckFilesProcessing.values());
+    long offsetMs = getTotalCompletedTimeFromEventPairs(processingEvents);
+    logEventPair(
+        "BUILDING",
         /* suffix */ Optional.<String>absent(),
-        clock.currentTimeMillis(),
-        parseTime.get(),
+        currentMillis,
+        offsetMs,
         buildStarted,
         buildFinished,
+        getApproximateBuildProgress(),
         lines);
+
+    Optional<String> httpStatus = renderHttpUploads();
+    if (httpStatus.isPresent()) {
+      lines.add("WAITING FOR HTTP CACHE UPLOADS " + httpStatus.get());
+    }
+
     printLines(lines);
   }
 
@@ -79,19 +128,29 @@ public class SimpleConsoleEventBusListener extends AbstractConsoleEventBusListen
   @Subscribe
   public void installFinished(InstallEvent.Finished finished) {
     super.installFinished(finished);
+    if (console.getVerbosity().isSilent()) {
+      return;
+    }
     ImmutableList.Builder<String> lines = ImmutableList.builder();
-    logEventPair("INSTALLING",
+    logEventPair(
+        "INSTALLING",
         /* suffix */ Optional.<String>absent(),
         clock.currentTimeMillis(),
         0L,
         installStarted,
         installFinished,
+        Optional.<Double>absent(),
         lines);
     printLines(lines);
   }
 
   @Subscribe
   public void logEvent(ConsoleEvent event) {
+    if (console.getVerbosity().isSilent() &&
+        !event.getLevel().equals(Level.WARNING) &&
+        !event.getLevel().equals(Level.SEVERE)) {
+      return;
+    }
     ImmutableList.Builder<String> lines = ImmutableList.builder();
     formatConsoleEvent(event, lines);
     printLines(lines);
@@ -99,8 +158,12 @@ public class SimpleConsoleEventBusListener extends AbstractConsoleEventBusListen
 
   @Subscribe
   public void testRunStarted(TestRunEvent.Started event) {
+    if (console.getVerbosity().isSilent()) {
+      return;
+    }
     ImmutableList.Builder<String> lines = ImmutableList.builder();
-    testFormatter.runStarted(lines,
+    testFormatter.runStarted(
+        lines,
         event.isRunAllTests(),
         event.getTestSelectorList(),
         event.shouldExplainTestSelectorList(),
@@ -111,28 +174,90 @@ public class SimpleConsoleEventBusListener extends AbstractConsoleEventBusListen
 
   @Subscribe
   public void testRunCompleted(TestRunEvent.Finished event) {
+    if (console.getVerbosity().isSilent()) {
+      return;
+    }
     ImmutableList.Builder<String> lines = ImmutableList.builder();
-    testFormatter.runComplete(lines, event.getResults());
+    ImmutableList<TestStatusMessage> testStatusMessages;
+    synchronized (testStatusMessageBuilder) {
+      testStatusMessages = testStatusMessageBuilder.build();
+    }
+    testFormatter.runComplete(lines, event.getResults(), testStatusMessages);
     printLines(lines);
   }
 
   @Subscribe
   public void testResultsAvailable(IndividualTestEvent.Finished event) {
+    if (console.getVerbosity().isSilent()) {
+      return;
+    }
     ImmutableList.Builder<String> lines = ImmutableList.builder();
     testFormatter.reportResult(lines, event.getResults());
     printLines(lines);
   }
 
+  @Override
   @Subscribe
   public void buildRuleFinished(BuildRuleEvent.Finished finished) {
-    String line = String.format("BUILT %s", finished.getBuildRule().getFullyQualifiedName());
+    super.buildRuleFinished(finished);
+    if (finished.getStatus() != BuildRuleStatus.SUCCESS ||
+        console.getVerbosity().isSilent()) {
+      return;
+    }
+    String line = String.format(
+        locale,
+        "%s %s",
+        finished.getResultString(),
+        finished.getBuildRule().getFullyQualifiedName());
     if (ruleCount.isPresent()) {
       line += String.format(
+          locale,
           " (%d/%d JOBS)",
           numRulesCompleted.get(),
           ruleCount.get());
     }
     console.getStdErr().println(line);
+  }
+
+  @Override
+  @Subscribe
+  public void onHttpArtifactCacheShutdownEvent(HttpArtifactCacheEvent.Shutdown event) {
+    super.onHttpArtifactCacheShutdownEvent(event);
+    if (console.getVerbosity().isSilent()) {
+      return;
+    }
+    ImmutableList.Builder<String> lines = ImmutableList.builder();
+    logEventPair(
+        "HTTP CACHE UPLOAD",
+        renderHttpUploads(),
+        clock.currentTimeMillis(),
+        0L,
+        firstHttpCacheUploadScheduled.get(),
+        httpShutdownEvent,
+        Optional.<Double>absent(),
+        lines);
+
+    printLines(lines);
+  }
+
+  @Subscribe
+  public void testStatusMessageStarted(TestStatusMessageEvent.Started started) {
+    synchronized (testStatusMessageBuilder) {
+      if (console.getVerbosity().isSilent()) {
+        return;
+      }
+      testStatusMessageBuilder.add(started.getTestStatusMessage());
+    }
+  }
+
+  @Subscribe
+  public void testStatusMessageFinished(TestStatusMessageEvent.Finished finished) {
+    synchronized (testStatusMessageBuilder) {
+      if (console.getVerbosity().isSilent()) {
+        return;
+      }
+      testStatusMessageBuilder.add(finished.getTestStatusMessage());
+    }
   }
 
   private void printLines(ImmutableList.Builder<String> lines) {

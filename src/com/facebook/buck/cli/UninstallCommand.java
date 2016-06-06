@@ -17,20 +17,20 @@
 package com.facebook.buck.cli;
 
 import com.facebook.buck.android.AdbHelper;
-import com.facebook.buck.android.AdbOptions;
-import com.facebook.buck.android.TargetDeviceOptions;
+import com.facebook.buck.event.ConsoleEvent;
 import com.facebook.buck.json.BuildFileParseException;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetException;
-import com.facebook.buck.model.Pair;
-import com.facebook.buck.parser.ParserConfig;
-import com.facebook.buck.rules.ActionGraph;
+import com.facebook.buck.parser.NoSuchBuildTargetException;
 import com.facebook.buck.rules.BuildRule;
+import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.InstallableApk;
-import com.facebook.buck.rules.TargetGraph;
-import com.facebook.buck.rules.TargetGraphToActionGraph;
-import com.facebook.buck.rules.TargetGraphTransformer;
+import com.facebook.buck.rules.TargetGraphAndBuildTargets;
+import com.facebook.buck.step.AdbOptions;
 import com.facebook.buck.step.ExecutionContext;
+import com.facebook.buck.step.TargetDeviceOptions;
+import com.facebook.buck.util.HumanReadableException;
+import com.facebook.buck.util.MoreExceptions;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
@@ -88,8 +88,8 @@ public class UninstallCommand extends AbstractCommand {
     return uninstallOptions;
   }
 
-  public AdbOptions adbOptions() {
-    return adbOptions.getAdbOptions();
+  public AdbOptions adbOptions(BuckConfig buckConfig) {
+    return adbOptions.getAdbOptions(buckConfig);
   }
 
   public TargetDeviceOptions targetDeviceOptions() {
@@ -100,47 +100,58 @@ public class UninstallCommand extends AbstractCommand {
   public int runWithoutHelp(CommandRunnerParams params) throws IOException, InterruptedException {
 
     // Parse all of the build targets specified by the user.
-    ActionGraph actionGraph;
+    BuildRuleResolver resolver;
     ImmutableSet<BuildTarget> buildTargets;
-    try {
-      Pair<ImmutableSet<BuildTarget>, TargetGraph> result = params.getParser()
+    try (CommandThreadManager pool = new CommandThreadManager(
+        "Uninstall",
+        params.getBuckConfig().getWorkQueueExecutionOrder(),
+        getConcurrencyLimit(params.getBuckConfig()))) {
+      TargetGraphAndBuildTargets result = params.getParser()
           .buildTargetGraphForTargetNodeSpecs(
+              params.getBuckEventBus(),
+              params.getCell(),
+              getEnableParserProfiling(),
+              pool.getExecutor(),
               parseArgumentsAsTargetNodeSpecs(
                   params.getBuckConfig(),
-                  params.getRepository().getFilesystem().getIgnorePaths(),
                   getArguments()),
-              new ParserConfig(params.getBuckConfig()),
+              /* ignoreBuckAutodepsFiles */ false);
+      buildTargets = result.getBuildTargets();
+      resolver = Preconditions.checkNotNull(
+          params.getActionGraphCache().getActionGraph(
               params.getBuckEventBus(),
-              params.getConsole(),
-              params.getEnvironment(),
-              getEnableProfiling());
-      buildTargets = result.getFirst();
-      TargetGraphTransformer targetGraphTransformer = new TargetGraphToActionGraph(
-          params.getBuckEventBus(),
-          new BuildTargetNodeToBuildRuleTransformer(),
-          params.getFileHashCache());
-      actionGraph = targetGraphTransformer.apply(result.getSecond());
+              BuildIdSampler.apply(
+                  params.getBuckConfig().getActionGraphCacheCheckSampleRate(),
+                  params.getBuckEventBus().getBuildId()),
+              result.getTargetGraph(),
+              params.getBuckConfig().getKeySeed())
+          ).getResolver();
     } catch (BuildTargetException | BuildFileParseException e) {
-      params.getConsole().printBuildFailureWithoutStacktrace(e);
+      params.getBuckEventBus().post(ConsoleEvent.severe(
+          MoreExceptions.getHumanReadableOrLocalizedMessage(e)));
       return 1;
     }
 
     // Make sure that only one build target is specified.
     if (buildTargets.size() != 1) {
-      params.getConsole().getStdErr().println("Must specify exactly one android_binary() rule.");
+      params.getBuckEventBus().post(ConsoleEvent.severe(
+          "Must specify exactly one android_binary() rule."));
       return 1;
     }
     BuildTarget buildTarget = Iterables.get(buildTargets, 0);
 
     // Find the android_binary() rule from the parse.
-    BuildRule buildRule = Preconditions.checkNotNull(
-        actionGraph.findBuildRuleByTarget(buildTarget));
+    BuildRule buildRule;
+    try {
+      buildRule = resolver.requireRule(buildTarget);
+    } catch (NoSuchBuildTargetException e) {
+      throw new HumanReadableException(e.getHumanReadableErrorMessage());
+    }
     if (!(buildRule instanceof InstallableApk)) {
-      params.getConsole().printBuildFailure(
-          String.format(
-              "Specified rule %s must be of type android_binary() or apk_genrule() but was %s().\n",
-              buildRule.getFullyQualifiedName(),
-              buildRule.getType()));
+      params.getBuckEventBus().post(ConsoleEvent.severe(String.format(
+          "Specified rule %s must be of type android_binary() or apk_genrule() but was %s().\n",
+          buildRule.getFullyQualifiedName(),
+          buildRule.getType())));
       return 1;
     }
     InstallableApk installableApk = (InstallableApk) buildRule;
@@ -148,7 +159,7 @@ public class UninstallCommand extends AbstractCommand {
     // We need this in case adb isn't already running.
     try (ExecutionContext context = createExecutionContext(params)) {
       final AdbHelper adbHelper = new AdbHelper(
-          adbOptions(),
+          adbOptions(params.getBuckConfig()),
           targetDeviceOptions(),
           context,
           params.getConsole(),
@@ -156,7 +167,7 @@ public class UninstallCommand extends AbstractCommand {
           params.getBuckConfig().getRestartAdbOnFailure());
 
       // Find application package name from manifest and uninstall from matching devices.
-      String appId = AdbHelper.tryToExtractPackageNameFromManifest(installableApk, context);
+      String appId = AdbHelper.tryToExtractPackageNameFromManifest(installableApk);
       return adbHelper.uninstallApp(
           appId,
           uninstallOptions().shouldKeepUserData()

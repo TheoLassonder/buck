@@ -16,8 +16,10 @@
 
 package com.facebook.buck.zip;
 
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -30,9 +32,11 @@ import java.util.zip.ZipEntry;
 
 public class ZipScrubberStep implements Step {
 
+  private final ProjectFilesystem filesystem;
   private final Path zip;
 
-  public ZipScrubberStep(Path zip) {
+  public ZipScrubberStep(ProjectFilesystem filesystem, Path zip) {
+    this.filesystem = filesystem;
     this.zip = zip;
   }
 
@@ -53,8 +57,8 @@ public class ZipScrubberStep implements Step {
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
-    Path zipPath = context.getProjectFilesystem().resolve(zip);
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
+    Path zipPath = filesystem.resolve(zip);
     try (FileChannel channel =
              FileChannel.open(zipPath, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
       MappedByteBuffer map = channel.map(FileChannel.MapMode.READ_WRITE, 0, channel.size());
@@ -88,12 +92,12 @@ public class ZipScrubberStep implements Step {
         ByteBuffer entry = map.slice();
         entry.order(ByteOrder.LITTLE_ENDIAN);
         check(entry.getInt() == ZipEntry.CENSIG, "expected central directory header signature");
-        entry.putInt(ZipEntry.CENTIM, ZipConstants.DOS_EPOCH_START);
+        entry.putInt(ZipEntry.CENTIM, ZipConstants.DOS_FAKE_TIME);
 
         // Find the local file header and zero it's timestamp out.
         int locOff = entry.getInt(ZipEntry.CENOFF);
         check(map.getInt(locOff) == ZipEntry.LOCSIG, "expected local header signature");
-        map.putInt(locOff + ZipEntry.LOCTIM, ZipConstants.DOS_EPOCH_START);
+        map.putInt(locOff + ZipEntry.LOCTIM, ZipConstants.DOS_FAKE_TIME);
 
         // Advance to the next entry.
         map.position(map.position() + 46);
@@ -104,9 +108,9 @@ public class ZipScrubberStep implements Step {
 
     } catch (IOException e) {
       context.logError(e, "Error scrubbing non-deterministic metadata from %s", zipPath);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
 }

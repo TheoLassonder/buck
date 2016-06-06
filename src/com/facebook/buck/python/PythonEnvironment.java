@@ -16,12 +16,20 @@
 
 package com.facebook.buck.python;
 
-import com.facebook.buck.rules.RuleKey;
+import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.RuleKeyAppendable;
+import com.facebook.buck.rules.RuleKeyObjectSink;
+import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.Tool;
+import com.google.common.collect.ImmutableCollection;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSortedSet;
 
 import java.nio.file.Path;
 
-public class PythonEnvironment implements RuleKeyAppendable {
+public class PythonEnvironment implements RuleKeyAppendable, Tool {
   private final Path pythonPath;
   private final PythonVersion pythonVersion;
 
@@ -39,7 +47,28 @@ public class PythonEnvironment implements RuleKeyAppendable {
   }
 
   @Override
-  public RuleKey.Builder appendToRuleKey(RuleKey.Builder builder) {
-    return builder.setReflectively("python-version", getPythonVersion().getVersionString());
+  public void appendToRuleKey(RuleKeyObjectSink sink) {
+    sink.setReflectively("python-version", getPythonVersion().getVersionString());
   }
+
+  @Override
+  public ImmutableCollection<BuildRule> getDeps(SourcePathResolver resolver) {
+    return ImmutableSortedSet.of();
+  }
+
+  @Override
+  public ImmutableCollection<SourcePath> getInputs() {
+    return ImmutableList.of();
+  }
+
+  @Override
+  public ImmutableList<String> getCommandPrefix(SourcePathResolver resolver) {
+    return ImmutableList.of(pythonPath.toString());
+  }
+
+  @Override
+  public ImmutableMap<String, String> getEnvironment(SourcePathResolver resolver) {
+    return ImmutableMap.of();
+  }
+
 }

@@ -1,17 +1,23 @@
 prebuilt_jar(
   name = 'httpcore',
-  binary_jar = 'httpcore-4.2.5.jar',
+  binary_jar = 'httpcore-4.4.1.jar',
+  licenses = [
+    'LICENSE.txt',
+  ],
 )
 
 prebuilt_jar(
   name = 'httpclient',
-  binary_jar = 'httpclient-4.2.6.jar',
+  binary_jar = 'httpclient-4.4.1.jar',
   deps = [
     '//third-party/java/commons-codec:commons-codec',
     ':httpcore',
   ],
+  licenses = [
+    'LICENSE.txt',
+  ],
   visibility = [
-    '//third-party/java/aether:aether-transport-http',
+    'PUBLIC',
   ],
 )
 

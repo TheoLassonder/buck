@@ -16,19 +16,18 @@
 
 package com.facebook.buck.dalvik;
 
-import com.facebook.buck.java.classes.FileLike;
+import com.facebook.buck.jvm.java.classes.FileLike;
 import com.google.common.base.Charsets;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
-import com.google.common.io.Files;
 
 import java.io.BufferedOutputStream;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.Writer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -41,17 +40,17 @@ class DefaultZipOutputStreamHelper implements ZipOutputStreamHelper {
   private final ZipOutputStream outStream;
   private final Set<String> entryNames = Sets.newHashSet();
   private final long zipSizeHardLimit;
-  private final File reportFile;
+  private final Writer reportFileWriter;
 
   private long currentSize;
 
-  DefaultZipOutputStreamHelper(File outputFile, long zipSizeHardLimit, File reportDir)
-      throws FileNotFoundException {
-    this.outStream = new ZipOutputStream(
-        new BufferedOutputStream(
-            new FileOutputStream(outputFile)));
+  DefaultZipOutputStreamHelper(Path outputFile, long zipSizeHardLimit, Path reportDir)
+      throws IOException {
+    this.outStream =
+        new ZipOutputStream(new BufferedOutputStream(Files.newOutputStream(outputFile)));
     this.zipSizeHardLimit = zipSizeHardLimit;
-    this.reportFile = new File(reportDir, outputFile.getName() + ".txt");
+    Path reportFile = reportDir.resolve(outputFile.getFileName().toString() + ".txt");
+    this.reportFileWriter = Files.newBufferedWriter(reportFile, Charsets.UTF_8);
   }
 
   public long getCurrentSize() {
@@ -62,12 +61,12 @@ class DefaultZipOutputStreamHelper implements ZipOutputStreamHelper {
     return (currentSize + entrySize > zipSizeHardLimit);
   }
 
-  private long getSize(FileLike fileLike) {
+  private long getSize(FileLike fileLike) throws IOException {
     return fileLike.getSize();
   }
 
   @Override
-  public boolean canPutEntry(FileLike fileLike) {
+  public boolean canPutEntry(FileLike fileLike)throws IOException {
     return !isEntryTooBig(getSize(fileLike));
   }
 
@@ -95,12 +94,13 @@ class DefaultZipOutputStreamHelper implements ZipOutputStreamHelper {
       currentSize += entrySize;
 
       String report = String.format("%s %s\n", entrySize, name);
-      Files.append(report, reportFile, Charsets.UTF_8);
+      reportFileWriter.append(report);
     }
   }
 
   @Override
   public void close() throws IOException {
     outStream.close();
+    reportFileWriter.close();
   }
 }

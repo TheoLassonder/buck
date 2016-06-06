@@ -18,10 +18,9 @@ package com.facebook.buck.android;
 
 import com.facebook.buck.android.DexProducedFromJavaLibrary.BuildOutput;
 import com.facebook.buck.dalvik.EstimateLinearAllocStep;
-import com.facebook.buck.java.JavaLibrary;
+import com.facebook.buck.jvm.java.JavaLibrary;
 import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.model.HasBuildTarget;
-import com.facebook.buck.rules.AbiRule;
 import com.facebook.buck.rules.AbstractBuildRule;
 import com.facebook.buck.rules.BuildContext;
 import com.facebook.buck.rules.BuildOutputInitializer;
@@ -32,28 +31,35 @@ import com.facebook.buck.rules.InitializableFromDisk;
 import com.facebook.buck.rules.OnDiskBuildInfo;
 import com.facebook.buck.rules.Sha1HashCode;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.keys.AbiRule;
+import com.facebook.buck.rules.keys.DefaultRuleKeyBuilderFactory;
 import com.facebook.buck.step.AbstractExecutionStep;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.step.fs.MkdirStep;
 import com.facebook.buck.step.fs.RmStep;
+import com.facebook.buck.util.ObjectMappers;
 import com.facebook.buck.zip.ZipScrubberStep;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Functions;
+import com.google.common.base.Optional;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Ordering;
 import com.google.common.hash.HashCode;
 import com.google.common.hash.Hasher;
 import com.google.common.hash.Hashing;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Map;
@@ -74,7 +80,7 @@ import javax.annotation.Nullable;
 public class DexProducedFromJavaLibrary extends AbstractBuildRule
     implements AbiRule, HasBuildTarget, InitializableFromDisk<BuildOutput> {
 
-  private static final ObjectMapper MAPPER = new ObjectMapper();
+  private static final ObjectMapper MAPPER = ObjectMappers.newDefaultInstance();
   private static final Function<String, HashCode> TO_HASHCODE =
       new Function<String, HashCode>() {
         @Override
@@ -85,7 +91,10 @@ public class DexProducedFromJavaLibrary extends AbstractBuildRule
 
   @VisibleForTesting
   static final String LINEAR_ALLOC_KEY_ON_DISK_METADATA = "linearalloc";
+  @VisibleForTesting
   static final String CLASSNAMES_TO_HASHES = "classnames_to_hashes";
+  @VisibleForTesting
+  static final String REFERENCED_RESOURCES = "referenced_resources";
 
   private final JavaLibrary javaLibrary;
   private final BuildOutputInitializer<BuildOutput> buildOutputInitializer;
@@ -106,25 +115,33 @@ public class DexProducedFromJavaLibrary extends AbstractBuildRule
       final BuildableContext buildableContext) {
     ImmutableList.Builder<Step> steps = ImmutableList.builder();
 
-    steps.add(new RmStep(getPathToDex(), /* shouldForceDeletion */ true));
+    steps.add(new RmStep(getProjectFilesystem(), getPathToDex(), /* shouldForceDeletion */ true));
 
     // Make sure that the buck-out/gen/ directory exists for this.buildTarget.
-    steps.add(new MkdirStep(getPathToDex().getParent()));
+    steps.add(new MkdirStep(getProjectFilesystem(), getPathToDex().getParent()));
 
     // If there are classes, run dx.
     final ImmutableSortedMap<String, HashCode> classNamesToHashes =
         javaLibrary.getClassNamesToHashes();
     final boolean hasClassesToDx = !classNamesToHashes.isEmpty();
     final Supplier<Integer> linearAllocEstimate;
+
+    @Nullable
+    final DxStep dx;
+
     if (hasClassesToDx) {
       Path pathToOutputFile = javaLibrary.getPathToOutput();
-      EstimateLinearAllocStep estimate = new EstimateLinearAllocStep(pathToOutputFile);
+      EstimateLinearAllocStep estimate = new EstimateLinearAllocStep(
+          getProjectFilesystem(),
+          pathToOutputFile);
       steps.add(estimate);
       linearAllocEstimate = estimate;
 
       // To be conservative, use --force-jumbo for these intermediate .dex files so that they can be
       // merged into a final classes.dex that uses jumbo instructions.
-      DxStep dx = new DxStep(getPathToDex(),
+      dx = new DxStep(
+          getProjectFilesystem(),
+          getPathToDex(),
           Collections.singleton(pathToOutputFile),
           EnumSet.of(
               DxStep.Option.USE_CUSTOM_DX_IF_AVAILABLE,
@@ -135,9 +152,10 @@ public class DexProducedFromJavaLibrary extends AbstractBuildRule
 
       // The `DxStep` delegates to android tools to build a ZIP with timestamps in it, making
       // the output non-deterministic.  So use an additional scrubbing step to zero these out.
-      steps.add(new ZipScrubberStep(getPathToDex()));
+      steps.add(new ZipScrubberStep(getProjectFilesystem(), getPathToDex()));
 
     } else {
+      dx = null;
       linearAllocEstimate = Suppliers.ofInstance(0);
     }
 
@@ -146,9 +164,17 @@ public class DexProducedFromJavaLibrary extends AbstractBuildRule
     String stepName = hasClassesToDx ? "record_dx_success" : "record_empty_dx";
     AbstractExecutionStep recordArtifactAndMetadataStep = new AbstractExecutionStep(stepName) {
       @Override
-      public int execute(ExecutionContext context) throws IOException {
+      public StepExecutionResult execute(ExecutionContext context) throws IOException {
         if (hasClassesToDx) {
           buildableContext.recordArtifact(getPathToDex());
+
+          @Nullable
+          Collection<String> referencedResources = dx.getResourcesReferencedInCode();
+          if (referencedResources != null) {
+            buildableContext.addMetadata(
+                REFERENCED_RESOURCES,
+                Ordering.natural().immutableSortedCopy(referencedResources));
+          }
         }
 
         buildableContext.addMetadata(LINEAR_ALLOC_KEY_ON_DISK_METADATA,
@@ -160,7 +186,7 @@ public class DexProducedFromJavaLibrary extends AbstractBuildRule
             context.getObjectMapper().writeValueAsString(
                 Maps.transformValues(classNamesToHashes, Functions.toStringFunction())));
 
-        return 0;
+        return StepExecutionResult.SUCCESS;
       }
     };
     steps.add(recordArtifactAndMetadataStep);
@@ -178,7 +204,12 @@ public class DexProducedFromJavaLibrary extends AbstractBuildRule
             new TypeReference<Map<String, String>>() {
             });
     Map<String, HashCode> classnamesToHashes = Maps.transformValues(map, TO_HASHCODE);
-    return new BuildOutput(linearAllocEstimate, ImmutableSortedMap.copyOf(classnamesToHashes));
+    Optional<ImmutableList<String>> referencedResources =
+        onDiskBuildInfo.getValues(REFERENCED_RESOURCES);
+    return new BuildOutput(
+        linearAllocEstimate,
+        ImmutableSortedMap.copyOf(classnamesToHashes),
+        referencedResources);
   }
 
   @Override
@@ -189,11 +220,15 @@ public class DexProducedFromJavaLibrary extends AbstractBuildRule
   static class BuildOutput {
     private final int linearAllocEstimate;
     private final ImmutableSortedMap<String, HashCode> classnamesToHashes;
+    private final Optional<ImmutableList<String>> referencedResources;
+
     BuildOutput(
         int linearAllocEstimate,
-        ImmutableSortedMap<String, HashCode> classnamesToHashes) {
+        ImmutableSortedMap<String, HashCode> classnamesToHashes,
+        Optional<ImmutableList<String>> referencedResources) {
       this.linearAllocEstimate = linearAllocEstimate;
       this.classnamesToHashes = classnamesToHashes;
+      this.referencedResources = referencedResources;
     }
   }
 
@@ -205,7 +240,7 @@ public class DexProducedFromJavaLibrary extends AbstractBuildRule
   }
 
   public Path getPathToDex() {
-    return BuildTargets.getGenPath(getBuildTarget(), "%s.dex.jar");
+    return BuildTargets.getGenPath(getProjectFilesystem(), getBuildTarget(), "%s.dex.jar");
   }
 
   public boolean hasOutput() {
@@ -213,7 +248,7 @@ public class DexProducedFromJavaLibrary extends AbstractBuildRule
   }
 
   ImmutableSortedMap<String, HashCode> getClassNames() {
-    // TODO(mbolin): Assert that this Buildable has been built. Currently, there is no way to do
+    // TODO(bolinfest): Assert that this Buildable has been built. Currently, there is no way to do
     // that from a Buildable (but there is from an AbstractCachingBuildRule).
     return buildOutputInitializer.getBuildOutput().classnamesToHashes;
   }
@@ -222,12 +257,16 @@ public class DexProducedFromJavaLibrary extends AbstractBuildRule
     return buildOutputInitializer.getBuildOutput().linearAllocEstimate;
   }
 
+  Optional<ImmutableList<String>> getReferencedResources() {
+    return buildOutputInitializer.getBuildOutput().referencedResources;
+  }
+
   /**
    * The only dep for this rule should be {@link #javaLibrary}. Therefore, the ABI key for the deps
    * of this buildable is the hash of the {@code .class} files for {@link #javaLibrary}.
    */
   @Override
-  public Sha1HashCode getAbiKeyForDeps() {
+  public Sha1HashCode getAbiKeyForDeps(DefaultRuleKeyBuilderFactory defaultRuleKeyBuilderFactory) {
     return computeAbiKey(javaLibrary.getClassNamesToHashes());
   }
 
@@ -240,6 +279,6 @@ public class DexProducedFromJavaLibrary extends AbstractBuildRule
       hasher.putUnencodedChars(entry.getValue().toString());
       hasher.putByte((byte) 0);
     }
-    return Sha1HashCode.of(hasher.hash().toString());
+    return Sha1HashCode.fromHashCode(hasher.hash());
   }
 }

@@ -1,0 +1,9 @@
+standard_java_library(
+  immutable_types = [
+    'QueryBuildTarget',
+    'QueryFileTarget',
+  ],
+  tests = [
+    '//test/com/facebook/buck/query:query',
+  ],
+)

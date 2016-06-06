@@ -29,6 +29,7 @@ import com.facebook.buck.rules.Sha1HashCode;
 import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.step.Step;
 import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
+import com.facebook.buck.zip.ZipCompressionLevel;
 import com.facebook.buck.zip.ZipStep;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
@@ -58,6 +59,7 @@ public class PackageStringAssets extends AbstractBuildRule
   private static final String STRING_ASSETS_ZIP_HASH = "STRING_ASSETS_ZIP_HASH";
   @VisibleForTesting
   static final String STRING_ASSET_FILE_EXTENSION = ".fbstr";
+  public static final String STRING_ASSETS_DIR_FORMAT = "__strings_%s__";
 
   private final FilteredResourcesProvider filteredResourcesProvider;
   private final AaptPackageResources aaptPackageResources;
@@ -77,7 +79,7 @@ public class PackageStringAssets extends AbstractBuildRule
     this.buildOutputInitializer = new BuildOutputInitializer<>(params.getBuildTarget(), this);
   }
 
-  // TODO(user): Add an integration test for packaging string assets
+  // TODO(russellporter): Add an integration test for packaging string assets
   @Override
   public ImmutableList<Step> getBuildSteps(
       BuildContext context,
@@ -95,9 +97,9 @@ public class PackageStringAssets extends AbstractBuildRule
     // We need to generate a zip file with the following dir structure:
     // /assets/strings/*.fbstr
     Path pathToBaseDir = getPathToStringAssetsDir();
-    steps.add(new MakeCleanDirectoryStep(pathToBaseDir));
+    steps.add(new MakeCleanDirectoryStep(getProjectFilesystem(), pathToBaseDir));
     Path pathToDirContainingAssetsDir = pathToBaseDir.resolve("string_assets");
-    steps.add(new MakeCleanDirectoryStep(pathToDirContainingAssetsDir));
+    steps.add(new MakeCleanDirectoryStep(getProjectFilesystem(), pathToDirContainingAssetsDir));
     final Path pathToStrings = pathToDirContainingAssetsDir.resolve("assets").resolve("strings");
     Function<String, Path> assetPathBuilder = new Function<String, Path>() {
       @Override
@@ -107,25 +109,32 @@ public class PackageStringAssets extends AbstractBuildRule
     };
     Path pathToStringAssetsZip = getPathToStringAssetsZip();
     Path pathToAllLocalesStringAssetsZip = getPathToAllLocalesStringAssetsZip();
-    steps.add(new MakeCleanDirectoryStep(pathToStrings));
+    steps.add(new MakeCleanDirectoryStep(getProjectFilesystem(), pathToStrings));
     steps.add(new CompileStringsStep(
+            getProjectFilesystem(),
             filteredResourcesProvider.getStringFiles(),
             aaptPackageResources.getPathToRDotTxtDir(),
             assetPathBuilder));
     steps.add(new ZipStep(
+            getProjectFilesystem(),
             pathToAllLocalesStringAssetsZip,
             ImmutableSet.<Path>of(),
             false,
-            ZipStep.MAX_COMPRESSION_LEVEL,
+        ZipCompressionLevel.MAX_COMPRESSION_LEVEL,
             pathToDirContainingAssetsDir));
     steps.add(new ZipStep(
+            getProjectFilesystem(),
             pathToStringAssetsZip,
             FluentIterable.from(locales).transform(assetPathBuilder).toSet(),
             false,
-            ZipStep.MAX_COMPRESSION_LEVEL,
+        ZipCompressionLevel.MAX_COMPRESSION_LEVEL,
             pathToDirContainingAssetsDir));
     steps.add(
-        new RecordFileSha1Step(pathToStringAssetsZip, STRING_ASSETS_ZIP_HASH, buildableContext));
+        new RecordFileSha1Step(
+            getProjectFilesystem(),
+            pathToStringAssetsZip,
+            STRING_ASSETS_ZIP_HASH,
+            buildableContext));
 
     buildableContext.recordArtifact(pathToAllLocalesStringAssetsZip);
     buildableContext.recordArtifact(pathToStringAssetsZip);
@@ -169,6 +178,9 @@ public class PackageStringAssets extends AbstractBuildRule
   }
 
   private Path getPathToStringAssetsDir() {
-    return BuildTargets.getScratchPath(getBuildTarget(), "__strings_%s__");
+    return BuildTargets.getScratchPath(
+        getProjectFilesystem(),
+        getBuildTarget(),
+        STRING_ASSETS_DIR_FORMAT);
   }
 }

@@ -18,8 +18,7 @@ package com.facebook.buck.cli;
 
 import com.facebook.buck.event.listener.JavaUtilsLoggingBuildListener;
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.intellij.Project;
-import com.facebook.buck.util.BuckConstant;
+import com.facebook.buck.jvm.java.intellij.Project;
 
 import org.kohsuke.args4j.Option;
 
@@ -54,19 +53,22 @@ public class CleanCommand extends AbstractCommand {
     // directories itself so we can blow away BuckConstant.ANNOTATION_DIR as part of `buck clean`.
     // This will also reduce how long `buck project` takes.
     //
-    ProjectFilesystem projectFilesystem = params.getRepository().getFilesystem();
+    ProjectFilesystem projectFilesystem = params.getCell().getFilesystem();
     if (isCleanBuckProjectFiles()) {
       // Delete directories that were created for the purpose of `buck project`.
-      // TODO(mbolin): Unify these two directories under a single buck-ide directory,
+      // TODO(bolinfest): Unify these two directories under a single buck-ide directory,
       // which is distinct from the buck-out directory.
-      projectFilesystem.deleteRecursivelyIfExists(Project.ANDROID_GEN_PATH);
-      projectFilesystem.deleteRecursivelyIfExists(BuckConstant.ANNOTATION_PATH);
+      projectFilesystem.deleteRecursivelyIfExists(Project.getAndroidGenPath(projectFilesystem));
+      projectFilesystem.deleteRecursivelyIfExists(
+          projectFilesystem.getBuckPaths().getAnnotationDir());
     } else {
       // On Windows, you have to close all files that will be deleted.
       // Because buck clean will delete build.log, you must close it first.
       JavaUtilsLoggingBuildListener.closeLogFile();
-      projectFilesystem.deleteRecursivelyIfExists(BuckConstant.SCRATCH_PATH);
-      projectFilesystem.deleteRecursivelyIfExists(BuckConstant.GEN_PATH);
+      projectFilesystem.deleteRecursivelyIfExists(
+          projectFilesystem.getBuckPaths().getScratchDir());
+      projectFilesystem.deleteRecursivelyIfExists(
+          projectFilesystem.getBuckPaths().getGenDir());
     }
 
     return 0;

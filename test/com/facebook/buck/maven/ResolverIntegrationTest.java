@@ -24,6 +24,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
+import com.facebook.buck.cli.BuckConfig;
 import com.facebook.buck.cli.FakeBuckConfig;
 import com.facebook.buck.event.BuckEventBusFactory;
 import com.facebook.buck.file.ExplodingDownloader;
@@ -31,17 +32,21 @@ import com.facebook.buck.file.RemoteFileDescription;
 import com.facebook.buck.io.ExecutableFinder;
 import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.PrebuiltJarDescription;
 import com.facebook.buck.json.BuildFileParseException;
 import com.facebook.buck.json.DefaultProjectBuildFileParserFactory;
 import com.facebook.buck.json.ProjectBuildFileParser;
+import com.facebook.buck.json.ProjectBuildFileParserOptions;
+import com.facebook.buck.jvm.java.PrebuiltJarDescription;
 import com.facebook.buck.parser.ParserConfig;
 import com.facebook.buck.python.PythonBuckConfig;
+import com.facebook.buck.rules.ConstructorArgMarshaller;
 import com.facebook.buck.rules.Description;
+import com.facebook.buck.rules.coercer.DefaultTypeCoercerFactory;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.facebook.buck.testutil.TestConsole;
 import com.facebook.buck.testutil.integration.HttpdForTests;
 import com.facebook.buck.testutil.integration.TestDataHelper;
+import com.facebook.buck.util.ObjectMappers;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -49,6 +54,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.hash.HashCode;
 import com.google.common.hash.Hashing;
 
+import org.eclipse.aether.RepositoryException;
 import org.eclipse.aether.artifact.Artifact;
 import org.eclipse.aether.artifact.DefaultArtifact;
 import org.junit.AfterClass;
@@ -58,6 +64,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -95,31 +102,37 @@ public class ResolverIntegrationTest {
   @BeforeClass
   public static void createParser() {
     ProjectFilesystem filesystem = new FakeProjectFilesystem();
-    FakeBuckConfig buckConfig = new FakeBuckConfig();
+    BuckConfig buckConfig = FakeBuckConfig.builder().build();
     ParserConfig parserConfig = new ParserConfig(buckConfig);
     PythonBuckConfig pythonBuckConfig = new PythonBuckConfig(
         buckConfig,
         new ExecutableFinder());
 
-    ImmutableSet<Description<?>> descriptions = ImmutableSet.of(
+    ImmutableSet<Description<?>> descriptions = ImmutableSet.<Description<?>>of(
         new RemoteFileDescription(new ExplodingDownloader()),
         new PrebuiltJarDescription());
 
     DefaultProjectBuildFileParserFactory parserFactory = new DefaultProjectBuildFileParserFactory(
-        filesystem.getRootPath(),
-        pythonBuckConfig.getPythonInterpreter(),
-        parserConfig.getAllowEmptyGlobs(),
-        parserConfig.getBuildFileName(),
-        parserConfig.getDefaultIncludes(),
-        descriptions);
+        ProjectBuildFileParserOptions.builder()
+            .setProjectRoot(filesystem.getRootPath())
+            .setPythonInterpreter(pythonBuckConfig.getPythonInterpreter())
+            .setAllowEmptyGlobs(parserConfig.getAllowEmptyGlobs())
+            .setBuildFileName(parserConfig.getBuildFileName())
+            .setDefaultIncludes(parserConfig.getDefaultIncludes())
+            .setDescriptions(descriptions)
+            .build());
     buildFileParser = parserFactory.createParser(
+        new ConstructorArgMarshaller(new DefaultTypeCoercerFactory(
+            ObjectMappers.newDefaultInstance())),
         new TestConsole(),
         ImmutableMap.<String, String>of(),
-        BuckEventBusFactory.newInstance());
+        BuckEventBusFactory.newInstance(),
+        /* ignoreBuckAutodepsFiles */ false);
   }
 
   @AfterClass
-  public static void closeParser() throws BuildFileParseException, InterruptedException {
+  public static void closeParser()
+      throws BuildFileParseException, InterruptedException, IOException {
     buildFileParser.close();
   }
 
@@ -134,6 +147,16 @@ public class ResolverIntegrationTest {
         thirdPartyRelative,
         localRepo,
         httpd.getUri("/").toString());
+  }
+
+  @Test
+  public void shouldResolveTransitiveDependencyAndIncludeLibraryOnlyOnce()
+  throws IOException, RepositoryException {
+    resolver.resolve("com.example:A-depends-on-B-and-C:jar:1.0");
+    Path groupDir = thirdParty.resolve("example");
+    assertTrue(Files.exists(groupDir));
+    assertTrue(Files.exists(groupDir.resolve("D-depends-on-none-2.0.jar")));
+    assertFalse(Files.exists(groupDir.resolve("D-depends-on-none-1.0.jar")));
   }
 
   @Test
@@ -195,14 +218,20 @@ public class ResolverIntegrationTest {
     @SuppressWarnings("unchecked")
     List<String> visibility = (List<String>) noDeps.get("visibility");
     assertEquals(1, visibility.size());
-    assertEquals(ImmutableList.of(String.format("//%s:with-deps", exampleDir)), visibility);
+    assertEquals(
+        ImmutableList.of(
+            String.format("//%s:with-deps", MorePaths.pathWithUnixSeparators(exampleDir))),
+        visibility);
     assertEquals(ImmutableList.of(), noDeps.get("deps"));
 
     assertEquals(ImmutableList.of(), withDeps.get("visibility"));
     @SuppressWarnings("unchecked")
     List<String> deps = (List<String>) withDeps.get("deps");
     assertEquals(1, deps.size());
-    assertEquals(ImmutableList.of(String.format("//%s:no-deps", otherDir)), deps);
+    assertEquals(
+        ImmutableList.of(
+            String.format("//%s:no-deps", MorePaths.pathWithUnixSeparators(otherDir))),
+        deps);
   }
 
   @Test

@@ -19,8 +19,11 @@ package com.facebook.buck.apple;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableMap;
 
+import com.dd.plist.BinaryPropertyListWriter;
 import com.dd.plist.NSDictionary;
 import com.dd.plist.NSObject;
 import com.dd.plist.PropertyListParser;
@@ -30,54 +33,105 @@ import java.io.InputStream;
 import java.io.BufferedInputStream;
 import java.nio.file.Path;
 
-public class PlistProcessStep implements Step {
+class PlistProcessStep implements Step {
 
+  /** Controls what format the plist is output in. */
+  public enum OutputFormat {
+    /** Output the XML plist format. */
+    XML,
+
+    /** Output the Apple binary plist format. */
+    BINARY,
+    ;
+  }
+
+  private final ProjectFilesystem filesystem;
   private final Path input;
+  private final Optional<Path> additionalInputToMerge;
   private final Path output;
+
+  /** Only valid if the input .plist is a NSDictionary; ignored otherwise. */
   private final ImmutableMap<String, NSObject> additionalKeys;
+
+  /** Only valid if the input .plist is a NSDictionary; ignored otherwise. */
   private final ImmutableMap<String, NSObject> overrideKeys;
+  private final OutputFormat outputFormat;
 
   public PlistProcessStep(
+      ProjectFilesystem filesystem,
       Path input,
+      Optional<Path> additionalInputToMerge,
       Path output,
       ImmutableMap<String, NSObject> additionalKeys,
-      ImmutableMap<String, NSObject> overrideKeys) {
+      ImmutableMap<String, NSObject> overrideKeys,
+      OutputFormat outputFormat) {
+    this.filesystem = filesystem;
     this.input = input;
+    this.additionalInputToMerge = additionalInputToMerge;
     this.output = output;
     this.additionalKeys = additionalKeys;
     this.overrideKeys = overrideKeys;
+    this.outputFormat = outputFormat;
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
     try (InputStream stream = filesystem.newFileInputStream(input);
          BufferedInputStream bufferedStream = new BufferedInputStream(stream)) {
-      NSDictionary infoPlist;
+      NSObject infoPlist;
       try {
-        infoPlist = (NSDictionary) PropertyListParser.parse(bufferedStream);
+        infoPlist = PropertyListParser.parse(bufferedStream);
       } catch (Exception e) {
-        throw new IOException(e);
+        throw new IOException(input.toString() + ": " + e);
       }
 
-      for (ImmutableMap.Entry<String, NSObject> entry : additionalKeys.entrySet()) {
-        if (!infoPlist.containsKey(entry.getKey())) {
-          infoPlist.put(entry.getKey(), entry.getValue());
+      if (infoPlist instanceof NSDictionary) {
+        NSDictionary dictionary = (NSDictionary) infoPlist;
+
+        if (additionalInputToMerge.isPresent()) {
+          try (InputStream mergeStream =
+                   filesystem.newFileInputStream(additionalInputToMerge.get());
+               BufferedInputStream mergeBufferedStream = new BufferedInputStream(mergeStream)) {
+            NSObject mergeInfoPlist;
+            try {
+              mergeInfoPlist = PropertyListParser.parse(mergeBufferedStream);
+            } catch (Exception e) {
+              throw new IOException(additionalInputToMerge.toString() + ": " + e);
+            }
+
+            dictionary.putAll(((NSDictionary) mergeInfoPlist).getHashMap());
+          }
         }
+
+        for (ImmutableMap.Entry<String, NSObject> entry : additionalKeys.entrySet()) {
+          if (!dictionary.containsKey(entry.getKey())) {
+            dictionary.put(entry.getKey(), entry.getValue());
+          }
+        }
+
+        dictionary.putAll(overrideKeys);
       }
 
-      infoPlist.putAll(overrideKeys);
-
-      String serializedInfoPlist = infoPlist.toXMLPropertyList();
-      filesystem.writeContentsToPath(
-          serializedInfoPlist,
-          output);
+      switch (this.outputFormat) {
+        case XML:
+          String serializedInfoPlist = infoPlist.toXMLPropertyList();
+          filesystem.writeContentsToPath(
+              serializedInfoPlist,
+              output);
+          break;
+        case BINARY:
+          byte[] binaryInfoPlist = BinaryPropertyListWriter.writeToArray(infoPlist);
+          filesystem.writeBytesToPath(
+              binaryInfoPlist,
+              output);
+          break;
+      }
     } catch (IOException e) {
       context.logError(e, "error parsing plist %s", input);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   @Override

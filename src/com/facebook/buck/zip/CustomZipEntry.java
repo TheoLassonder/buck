@@ -21,6 +21,8 @@ import static java.util.zip.Deflater.NO_COMPRESSION;
 
 import com.google.common.base.Preconditions;
 
+import java.io.File;
+import java.nio.file.Path;
 import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
 
@@ -31,18 +33,34 @@ public class CustomZipEntry extends ZipEntry {
 
   public CustomZipEntry(ZipEntry other) {
     super(other);
-    setDefaultMethodIfMethodUnset();
+    setDefaultMethodAndTimeIfUnset();
   }
 
   public CustomZipEntry(String name) {
     super(name);
-    setDefaultMethodIfMethodUnset();
+    setDefaultMethodAndTimeIfUnset();
   }
 
-  private void setDefaultMethodIfMethodUnset() {
+  public CustomZipEntry(Path path, boolean isDirectory) {
+    this(path.toString().replace(File.separatorChar, '/') +
+        (isDirectory ? "/" : ""));
+  }
+
+  public CustomZipEntry(Path path) {
+    this(path, false);
+  }
+
+  private void setDefaultMethodAndTimeIfUnset() {
     if (getMethod() == -1) {
       setMethod(DEFLATED);
     }
+    if (getTime() == -1) {
+      setFakeTime();
+    }
+  }
+
+  public void setFakeTime() {
+    setTime(ZipConstants.getFakeTime());
   }
 
   public void setCompressionLevel(int compressionLevel) {

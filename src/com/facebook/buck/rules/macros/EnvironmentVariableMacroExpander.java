@@ -15,11 +15,13 @@
  */
 package com.facebook.buck.rules.macros;
 
-import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.MacroException;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.CellPathResolver;
 import com.facebook.buck.util.environment.Platform;
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 
 /**
@@ -38,8 +40,8 @@ public class EnvironmentVariableMacroExpander implements MacroExpander {
   @Override
   public String expand(
       BuildTarget target,
+      CellPathResolver cellNames,
       BuildRuleResolver resolver,
-      ProjectFilesystem filesystem,
       String input) throws MacroException {
     if (platform == Platform.WINDOWS) {
       if ("pwd".equalsIgnoreCase(input)) {
@@ -52,8 +54,9 @@ public class EnvironmentVariableMacroExpander implements MacroExpander {
   }
 
   @Override
-  public ImmutableList<BuildRule> extractAdditionalBuildTimeDeps(
+  public ImmutableList<BuildRule> extractBuildTimeDeps(
       BuildTarget target,
+      CellPathResolver cellNames,
       BuildRuleResolver resolver,
       String input)
       throws MacroException {
@@ -62,8 +65,20 @@ public class EnvironmentVariableMacroExpander implements MacroExpander {
 
   @Override
   public ImmutableList<BuildTarget> extractParseTimeDeps(
-      BuildTarget target, String input) throws MacroException {
+      BuildTarget target,
+      CellPathResolver cellNames,
+      String input) throws MacroException {
     return ImmutableList.of();
+  }
+
+  @Override
+  public Object extractRuleKeyAppendables(
+      BuildTarget target,
+      CellPathResolver cellNames,
+      BuildRuleResolver resolver,
+      String input)
+      throws MacroException {
+    return Optional.absent();
   }
 
 }

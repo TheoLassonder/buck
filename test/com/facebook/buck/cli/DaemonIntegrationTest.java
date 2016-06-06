@@ -25,18 +25,14 @@ import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeFalse;
-import static org.junit.Assume.assumeNoException;
-import static org.junit.Assume.assumeNotNull;
 import static org.junit.Assume.assumeTrue;
 
 import com.facebook.buck.android.AssumeAndroidPlatform;
 import com.facebook.buck.android.FakeAndroidDirectoryResolver;
-import com.facebook.buck.event.BuckEventBus;
-import com.facebook.buck.event.BuckEventListener;
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.io.Watchman;
 import com.facebook.buck.model.BuildId;
-import com.facebook.buck.rules.TestRepositoryBuilder;
-import com.facebook.buck.rules.TestRunEvent;
+import com.facebook.buck.rules.TestCellBuilder;
 import com.facebook.buck.testutil.TestConsole;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.DelegatingInputStream;
@@ -45,18 +41,14 @@ import com.facebook.buck.testutil.integration.TestContext;
 import com.facebook.buck.testutil.integration.TestDataHelper;
 import com.facebook.buck.timing.FakeClock;
 import com.facebook.buck.util.CapturingPrintStream;
-import com.facebook.buck.util.ProcessExecutor;
-import com.facebook.buck.util.ProcessExecutorParams;
+import com.facebook.buck.util.HumanReadableException;
+import com.facebook.buck.util.ObjectMappers;
 import com.facebook.buck.util.environment.Platform;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Charsets;
 import com.google.common.base.Optional;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.eventbus.Subscribe;
-import com.google.common.io.Files;
-import com.google.gson.Gson;
 import com.martiansoftware.nailgun.NGClientListener;
 import com.martiansoftware.nailgun.NGContext;
 
@@ -64,14 +56,12 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
 
-import java.io.File;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardWatchEventKinds;
-import java.nio.file.WatchEvent;
-import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
@@ -83,30 +73,34 @@ public class DaemonIntegrationTest {
 
   private static final int SUCCESS_EXIT_CODE = 0;
   private ScheduledExecutorService executorService;
-  private static final Gson gson = new Gson();
 
   @Rule
   public DebuggableTemporaryFolder tmp = new DebuggableTemporaryFolder();
 
+  @Rule
+  public ExpectedException thrown = ExpectedException.none();
+
+  private static ImmutableMap<String, String> getWatchmanEnv() {
+    ImmutableMap.Builder<String, String> envBuilder = ImmutableMap.builder();
+    String systemPath = System.getenv("PATH");
+    if (systemPath != null) {
+      envBuilder.put("PATH", systemPath);
+    }
+    return envBuilder.build();
+  }
+
   @Before
   public void setUp() throws IOException, InterruptedException{
     executorService = Executors.newScheduledThreadPool(5);
+    // In case root_restrict_files is enabled in /etc/watchmanconfig, assume
+    // this is one of the entries so it doesn't give up.
+    tmp.newFolder(".git");
+    Watchman watchman = Watchman.build(
+        tmp.getRootPath(), getWatchmanEnv(), new TestConsole(), new FakeClock(0));
+
     // We assume watchman has been installed and configured properly on the system, and that setting
     // up the watch is successful.
-    try {
-      ProcessExecutor.Result result = new ProcessExecutor(new TestConsole()).launchAndExecute(
-          ProcessExecutorParams.builder()
-              .setCommand(ImmutableList.of("watchman", "watchzzz", tmp.getRootPath().toString()))
-              .build());
-      assumeTrue(result.getStdout().isPresent());
-      Map<String, Object> response = gson.<Map<String, Object>>fromJson(
-          result.getStdout().get(),
-          Map.class);
-      assumeNotNull(response);
-      assumeFalse(response.containsKey("error"));
-    } catch (IOException e) {
-      assumeNoException(e);
-    }
+    assumeFalse(watchman == Watchman.NULL_WATCHMAN);
   }
 
   @After
@@ -241,7 +235,10 @@ public class DaemonIntegrationTest {
       @Override
       public void run() {
         try {
-          Main main = new Main(new CapturingPrintStream(), new CapturingPrintStream());
+          Main main = new Main(
+              new CapturingPrintStream(),
+              new CapturingPrintStream(),
+              new ByteArrayInputStream("".getBytes("UTF-8")));
           int exitCode = main.tryRunMainWithExitCode(
               new BuildId(),
               tmp.getRootPath(),
@@ -290,20 +287,20 @@ public class DaemonIntegrationTest {
         ImmutableMap.copyOf(System.getenv()),
         inputStream,
         timeoutMillis)) {
-      BuckEventListener listener = new BuckEventListener() {
-        @Subscribe
-        @SuppressWarnings("unused")
-        public void onEvent(TestRunEvent.Started event) {
-          // When tests start running, make the heartbeat stream time out.
-          inputStream.setDelegate(TestContext.createHeartBeatStream(2 * timeoutMillis));
-        }
-
-        @Override
-        public void outputTrace(BuildId buildId) throws InterruptedException {
-          // do nothing
-        }
-      };
-      ProcessResult result = workspace.runBuckdCommand(context, listener, "test", "//:test");
+      ProcessResult result = workspace.runBuckdCommand(
+          context,
+          new CapturingPrintStream() {
+            @Override
+            public void println(String x) {
+              if (x.contains("TESTING //:test")) {
+                // When tests start running, make the heartbeat stream simulate a disconnection.
+                inputStream.setDelegate(TestContext.createDisconnectionStream(2 * timeoutMillis));
+              }
+              super.println(x);
+            }
+          },
+          "test",
+          "//:test");
       result.assertFailure();
       assertThat(result.getStderr(), containsString("InterruptedException"));
     }
@@ -365,20 +362,20 @@ public class DaemonIntegrationTest {
         ImmutableMap.copyOf(System.getenv()),
         inputStream,
         timeoutMillis)) {
-      BuckEventListener listener = new BuckEventListener() {
-        @Subscribe
-        @SuppressWarnings("unused")
-        public void onEvent(TestRunEvent.Started event) {
-          // When tests start running, make the heartbeat stream simulate a disconnection.
-          inputStream.setDelegate(TestContext.createDisconnectionStream(disconnectMillis));
-        }
-
-        @Override
-        public void outputTrace(BuildId buildId) throws InterruptedException {
-          // do nothing
-        }
-      };
-      ProcessResult result = workspace.runBuckdCommand(context, listener, "test", "//:test");
+      ProcessResult result = workspace.runBuckdCommand(
+          context,
+          new CapturingPrintStream() {
+            @Override
+            public void println(String x) {
+              if (x.contains("TESTING //:test")) {
+                // When tests start running, make the heartbeat stream simulate a disconnection.
+                inputStream.setDelegate(TestContext.createDisconnectionStream(disconnectMillis));
+              }
+              super.println(x);
+            }
+          },
+          "test",
+          "//:test");
       result.assertFailure();
       assertThat(result.getStderr(), containsString("InterruptedException"));
     }
@@ -388,6 +385,7 @@ public class DaemonIntegrationTest {
   public void whenAppBuckFileRemovedThenRebuildFails()
       throws IOException, InterruptedException {
     AssumeAndroidPlatform.assumeSdkIsAvailable();
+
     final ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
         this, "file_watching", tmp);
     workspace.setUp();
@@ -396,8 +394,7 @@ public class DaemonIntegrationTest {
     result.assertSuccess();
 
     String fileName = "apps/myapp/BUCK";
-    assertTrue("Should delete BUCK file successfully", workspace.getFile(fileName).delete());
-    waitForChange(Paths.get(fileName));
+    Files.delete(workspace.getPath(fileName));
 
     workspace.runBuckdCommand("build", "app").assertFailure();
   }
@@ -413,8 +410,7 @@ public class DaemonIntegrationTest {
     workspace.runBuckdCommand("build", "//java/com/example/activity:activity").assertSuccess();
 
     String fileName = "java/com/example/activity/BUCK";
-    assertTrue("Should delete BUCK file successfully.", workspace.getFile(fileName).delete());
-    waitForChange(Paths.get(fileName));
+    Files.delete(workspace.getPath(fileName));
 
     workspace.runBuckdCommand("build", "//java/com/example/activity:activity").assertFailure();
   }
@@ -430,8 +426,7 @@ public class DaemonIntegrationTest {
     workspace.runBuckdCommand("build", "//java/com/example/activity:activity").assertSuccess();
 
     String fileName = "java/com/example/activity/MyFirstActivity.java";
-    assertTrue("Should delete BUCK file successfully.", workspace.getFile(fileName).delete());
-    waitForChange(Paths.get(fileName));
+    Files.delete(workspace.getPath(fileName));
 
     try {
       workspace.runBuckdCommand("build", "//java/com/example/activity:activity");
@@ -453,10 +448,12 @@ public class DaemonIntegrationTest {
     workspace.runBuckdCommand("build", "//java/com/example/activity:activity").assertSuccess();
 
     String fileName = "java/com/example/activity/MyFirstActivity.java";
-    Files.write("Some Illegal Java".getBytes(Charsets.US_ASCII), workspace.getFile(fileName));
-    waitForChange(Paths.get(fileName));
+    Files.delete(workspace.getPath(fileName));
 
-    workspace.runBuckdCommand("build", "//java/com/example/activity:activity").assertFailure();
+    thrown.expect(HumanReadableException.class);
+    thrown.expectMessage(containsString("MyFirstActivity.java"));
+
+    workspace.runBuckdCommand("build", "//java/com/example/activity:activity");
   }
 
   @Test
@@ -470,8 +467,7 @@ public class DaemonIntegrationTest {
     workspace.runBuckdCommand("build", "app").assertSuccess();
 
     String fileName = "apps/myapp/BUCK";
-    Files.write("Some Illegal Python".getBytes(Charsets.US_ASCII), workspace.getFile(fileName));
-    waitForChange(Paths.get(fileName));
+    Files.write(workspace.getPath(fileName), "Some Illegal Python".getBytes(Charsets.US_ASCII));
 
     ProcessResult result = workspace.runBuckdCommand("build", "app");
     assertThat(
@@ -485,40 +481,38 @@ public class DaemonIntegrationTest {
   public void whenBuckConfigChangesParserInvalidated()
       throws IOException, InterruptedException {
     ProjectFilesystem filesystem = new ProjectFilesystem(tmp.getRoot().toPath());
-    ObjectMapper objectMapper = new ObjectMapper();
 
     Object daemon = Main.getDaemon(
-        new TestRepositoryBuilder().setBuckConfig(
-            new FakeBuckConfig(
-                ImmutableMap.of("somesection", ImmutableMap.of("somename", "somevalue"))))
+        new TestCellBuilder().setBuckConfig(
+            FakeBuckConfig.builder().setSections(
+                ImmutableMap.of("somesection", ImmutableMap.of("somename", "somevalue"))).build())
             .setFilesystem(filesystem)
             .build(),
-        new FakeClock(0),
-        objectMapper);
+        ObjectMappers.newDefaultInstance());
 
     assertEquals(
         "Daemon should not be replaced when config equal.", daemon,
         Main.getDaemon(
-            new TestRepositoryBuilder().setBuckConfig(
-                new FakeBuckConfig(
-                    ImmutableMap.of("somesection", ImmutableMap.of("somename", "somevalue"))))
+            new TestCellBuilder().setBuckConfig(
+                FakeBuckConfig.builder()
+                    .setSections(
+                        ImmutableMap.of("somesection", ImmutableMap.of("somename", "somevalue")))
+                    .build())
                 .setFilesystem(filesystem)
                 .build(),
-            new FakeClock(0),
-            objectMapper));
+            ObjectMappers.newDefaultInstance()));
 
     assertNotEquals(
         "Daemon should be replaced when config not equal.", daemon,
         Main.getDaemon(
-            new TestRepositoryBuilder().setBuckConfig(
-                new FakeBuckConfig(
+            new TestCellBuilder().setBuckConfig(
+                FakeBuckConfig.builder().setSections(
                     ImmutableMap.of(
                         "somesection",
-                        ImmutableMap.of("somename", "someothervalue"))))
+                        ImmutableMap.of("somename", "someothervalue"))).build())
                 .setFilesystem(filesystem)
                 .build(),
-            new FakeClock(0),
-            objectMapper));
+            ObjectMappers.newDefaultInstance()));
   }
 
   @Test
@@ -531,80 +525,48 @@ public class DaemonIntegrationTest {
 
     workspace.runBuckdCommand("build", "//java/com/example/activity:activity").assertSuccess();
 
-    File buildLogFile = workspace.getFile("buck-out/bin/build.log");
+    Path buildLogFile = workspace.getPath("buck-out/bin/build.log");
 
-    assertTrue(buildLogFile.isFile());
-    assertTrue(buildLogFile.delete());
+    assertTrue(Files.isRegularFile(buildLogFile));
+    Files.delete(buildLogFile);
 
     ProcessResult rebuild =
         workspace.runBuckdCommand("build", "//java/com/example/activity:activity");
     rebuild.assertSuccess();
 
-    buildLogFile = workspace.getFile("buck-out/bin/build.log");
-    assertTrue(buildLogFile.isFile());
+    buildLogFile = workspace.getPath("buck-out/bin/build.log");
+    assertTrue(Files.isRegularFile(buildLogFile));
   }
 
   @Test
   public void whenAndroidDirectoryResolverChangesParserInvalidated()
       throws IOException, InterruptedException {
     ProjectFilesystem filesystem = new ProjectFilesystem(tmp.getRoot().toPath());
-    ObjectMapper objectMapper = new ObjectMapper();
 
     Object daemon = Main.getDaemon(
-        new TestRepositoryBuilder()
+        new TestCellBuilder()
             .setAndroidDirectoryResolver(
                 new FakeAndroidDirectoryResolver(
+                    Optional.<Path>absent(),
                     Optional.<Path>absent(),
                     Optional.<Path>absent(),
                     Optional.of("something")))
             .setFilesystem(filesystem)
             .build(),
-        new FakeClock(0),
-        objectMapper);
+        ObjectMappers.newDefaultInstance());
 
     assertNotEquals(
         "Daemon should be replaced when not equal.", daemon,
         Main.getDaemon(
-            new TestRepositoryBuilder()
+            new TestCellBuilder()
                 .setAndroidDirectoryResolver(
                     new FakeAndroidDirectoryResolver(
+                        Optional.<Path>absent(),
                         Optional.<Path>absent(),
                         Optional.<Path>absent(),
                         Optional.of("different")))
                 .setFilesystem(filesystem)
                 .build(),
-            new FakeClock(0),
-            objectMapper));
-  }
-
-  private void waitForChange(final Path path) throws IOException, InterruptedException {
-
-    class Watcher {
-      private Path watchedPath;
-      private boolean watchedChange = false;
-
-      public Watcher(Path watchedPath) {
-        this.watchedPath = watchedPath;
-        watchedChange = false;
-      }
-
-      public boolean watchedChange() {
-        return watchedChange;
-      }
-
-      @Subscribe
-      public synchronized void onEvent(WatchEvent<?> event) throws IOException {
-        if (watchedPath.equals(event.context()) ||
-            event.kind() == StandardWatchEventKinds.OVERFLOW) {
-          watchedChange = true;
-        }
-      }
-    }
-
-    Watcher watcher = new Watcher(path);
-    Main.registerFileWatcher(watcher);
-    while (!watcher.watchedChange()) {
-      Main.watchFilesystem(new BuckEventBus(new FakeClock(0), new BuildId()));
-    }
+            ObjectMappers.newDefaultInstance()));
   }
 }

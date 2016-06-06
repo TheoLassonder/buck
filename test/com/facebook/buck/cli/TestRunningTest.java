@@ -19,7 +19,6 @@ package com.facebook.buck.cli;
 import static com.facebook.buck.rules.BuildRuleSuccessType.BUILT_LOCALLY;
 import static com.facebook.buck.rules.BuildRuleSuccessType.FETCHED_FROM_CACHE;
 import static com.facebook.buck.rules.BuildRuleSuccessType.MATCHING_RULE_KEY;
-import static com.facebook.buck.util.BuckConstant.GEN_PATH;
 import static org.easymock.EasyMock.createMock;
 import static org.easymock.EasyMock.createNiceMock;
 import static org.easymock.EasyMock.expect;
@@ -31,34 +30,38 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
+import com.facebook.buck.artifact_cache.CacheResult;
 import com.facebook.buck.io.MorePaths;
-import com.facebook.buck.java.DefaultJavaPackageFinder;
-import com.facebook.buck.java.FakeJavaLibrary;
-import com.facebook.buck.java.JavaLibrary;
+import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.jvm.java.DefaultJavaPackageFinder;
+import com.facebook.buck.jvm.java.FakeJavaLibrary;
+import com.facebook.buck.jvm.java.JavaLibrary;
 import com.facebook.buck.log.Logger;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.rules.BuildResult;
 import com.facebook.buck.rules.BuildRule;
-import com.facebook.buck.rules.BuildRuleParamsFactory;
 import com.facebook.buck.rules.BuildRuleResolver;
-import com.facebook.buck.rules.CacheResult;
 import com.facebook.buck.rules.CachingBuildEngine;
-import com.facebook.buck.rules.FakeBuildContext;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.rules.FakeBuildEngine;
+import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
 import com.facebook.buck.rules.FakeTestRule;
 import com.facebook.buck.rules.Label;
 import com.facebook.buck.rules.RuleKey;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.rules.TestRule;
 import com.facebook.buck.step.DefaultStepRunner;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.ExecutionOrderAwareFakeStep;
 import com.facebook.buck.step.Step;
 import com.facebook.buck.step.TestExecutionContext;
+import com.facebook.buck.test.FakeTestResults;
 import com.facebook.buck.test.TestCaseSummary;
 import com.facebook.buck.test.TestResultSummary;
 import com.facebook.buck.test.TestResults;
+import com.facebook.buck.test.TestRunningOptions;
 import com.facebook.buck.test.result.type.ResultType;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.google.common.base.Optional;
@@ -111,13 +114,17 @@ public class TestRunningTest {
    */
   @Test
   public void testGeneratedSourceFile() {
-    Path pathToGenFile = GEN_PATH.resolve("GeneratedFile.java");
-    assertTrue(MorePaths.isGeneratedFile(pathToGenFile));
+    ProjectFilesystem filesystem = new FakeProjectFilesystem();
+    Path pathToGenFile = filesystem.getBuckPaths().getGenDir().resolve("GeneratedFile.java");
+    assertTrue(MorePaths.isGeneratedFile(filesystem, pathToGenFile));
 
     ImmutableSortedSet<Path> javaSrcs = ImmutableSortedSet.of(pathToGenFile);
+    SourcePathResolver resolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+     );
     JavaLibrary javaLibrary = new FakeJavaLibrary(
-        BuildTarget.builder("//foo", "bar").build(),
-        new SourcePathResolver(new BuildRuleResolver())).setJavaSrcs(javaSrcs);
+        BuildTargetFactory.newInstance("//foo:bar"),
+        resolver).setJavaSrcs(javaSrcs);
 
     DefaultJavaPackageFinder defaultJavaPackageFinder =
         createMock(DefaultJavaPackageFinder.class);
@@ -140,13 +147,17 @@ public class TestRunningTest {
    */
   @Test
   public void testNonGeneratedSourceFile() {
+    ProjectFilesystem filesystem = new FakeProjectFilesystem();
     Path pathToNonGenFile = Paths.get("package/src/SourceFile1.java");
-    assertFalse(MorePaths.isGeneratedFile(pathToNonGenFile));
+    assertFalse(MorePaths.isGeneratedFile(filesystem, pathToNonGenFile));
 
     ImmutableSortedSet<Path> javaSrcs = ImmutableSortedSet.of(pathToNonGenFile);
+    SourcePathResolver resolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+     );
     JavaLibrary javaLibrary = new FakeJavaLibrary(
-        BuildTarget.builder("//foo", "bar").build(),
-        new SourcePathResolver(new BuildRuleResolver())).setJavaSrcs(javaSrcs);
+        BuildTargetFactory.newInstance("//foo:bar"),
+        resolver).setJavaSrcs(javaSrcs);
 
     DefaultJavaPackageFinder defaultJavaPackageFinder =
         createMock(DefaultJavaPackageFinder.class);
@@ -158,25 +169,56 @@ public class TestRunningTest {
     ImmutableSet<String> result = TestRunning.getPathToSourceFolders(
         javaLibrary, Optional.of(defaultJavaPackageFinder), new FakeProjectFilesystem());
 
+    String expected = javaLibrary.getProjectFilesystem().getRootPath().resolve("package/src") + "/";
     assertEquals("All non-generated source files are under one source tmp.",
-        ImmutableSet.of("package/src/"), result);
+        ImmutableSet.of(expected), result);
 
     verify(defaultJavaPackageFinder);
   }
 
+  @Test
+  public void testNonGeneratedSourceFileWithoutPathElements() {
+    ProjectFilesystem filesystem = new FakeProjectFilesystem();
+    Path pathToNonGenFile = Paths.get("package/src/SourceFile1.java");
+    assertFalse(MorePaths.isGeneratedFile(filesystem, pathToNonGenFile));
+
+    ImmutableSortedSet<Path> javaSrcs = ImmutableSortedSet.of(pathToNonGenFile);
+    SourcePathResolver resolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+     );
+    JavaLibrary javaLibrary = new FakeJavaLibrary(
+        BuildTargetFactory.newInstance("//foo:bar"),
+        resolver).setJavaSrcs(javaSrcs);
+
+    DefaultJavaPackageFinder defaultJavaPackageFinder =
+        createMock(DefaultJavaPackageFinder.class);
+    expect(defaultJavaPackageFinder.getPathsFromRoot()).andReturn(pathsFromRoot);
+    expect(defaultJavaPackageFinder.getPathElements()).andReturn(ImmutableSet.of("/"));
+
+    replay(defaultJavaPackageFinder);
+
+    TestRunning.getPathToSourceFolders(
+        javaLibrary, Optional.of(defaultJavaPackageFinder), new FakeProjectFilesystem());
+
+    verify(defaultJavaPackageFinder);
+  }
   /**
    * If the source paths specified are from the new unified source tmp then we should return
    * the correct source tmp corresponding to the unified source path.
    */
   @Test
   public void testUnifiedSourceFile() {
+    ProjectFilesystem filesystem = new FakeProjectFilesystem();
     Path pathToNonGenFile = Paths.get("java/package/SourceFile1.java");
-    assertFalse(MorePaths.isGeneratedFile(pathToNonGenFile));
+    assertFalse(MorePaths.isGeneratedFile(filesystem, pathToNonGenFile));
 
     ImmutableSortedSet<Path> javaSrcs = ImmutableSortedSet.of(pathToNonGenFile);
+    SourcePathResolver resolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+     );
     JavaLibrary javaLibrary = new FakeJavaLibrary(
-        BuildTarget.builder("//foo", "bar").build(),
-        new SourcePathResolver(new BuildRuleResolver())).setJavaSrcs(javaSrcs);
+        BuildTargetFactory.newInstance("//foo:bar"),
+        resolver).setJavaSrcs(javaSrcs);
 
     DefaultJavaPackageFinder defaultJavaPackageFinder =
         createMock(DefaultJavaPackageFinder.class);
@@ -201,7 +243,9 @@ public class TestRunningTest {
    */
   @Test
   public void testMixedSourceFile() {
-    Path pathToGenFile = GEN_PATH.resolve("com/facebook/GeneratedFile.java");
+    ProjectFilesystem filesystem = new FakeProjectFilesystem();
+    Path pathToGenFile =
+        filesystem.getBuckPaths().getGenDir().resolve("com/facebook/GeneratedFile.java");
     Path pathToNonGenFile1 = Paths.get("package/src/SourceFile1.java");
     Path pathToNonGenFile2 = Paths.get("package/src-gen/SourceFile2.java");
 
@@ -213,17 +257,25 @@ public class TestRunningTest {
     expect(defaultJavaPackageFinder.getPathsFromRoot()).andReturn(pathsFromRoot).times(2);
     expect(defaultJavaPackageFinder.getPathElements()).andReturn(pathElements).times(2);
 
+    SourcePathResolver resolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+     );
     JavaLibrary javaLibrary = new FakeJavaLibrary(
-        BuildTarget.builder("//foo", "bar").build(),
-        new SourcePathResolver(new BuildRuleResolver())).setJavaSrcs(javaSrcs);
+        BuildTargetFactory.newInstance("//foo:bar"),
+        resolver).setJavaSrcs(javaSrcs);
 
     replay(defaultJavaPackageFinder);
 
     ImmutableSet<String> result = TestRunning.getPathToSourceFolders(
         javaLibrary, Optional.of(defaultJavaPackageFinder), new FakeProjectFilesystem());
 
+    Path rootPath = javaLibrary.getProjectFilesystem().getRootPath();
+    ImmutableSet<String> expected = ImmutableSet.of(
+        rootPath.resolve("package/src-gen").toString() + "/",
+        rootPath.resolve("package/src").toString() + "/");
+
     assertEquals("The non-generated source files are under two different source folders.",
-        ImmutableSet.of("package/src-gen/", "package/src/"), result);
+        expected, result);
 
     verify(defaultJavaPackageFinder);
   }
@@ -271,7 +323,7 @@ public class TestRunningTest {
     TestCaseSummary testCase = new TestCaseSummary("TestCase", resultList);
     List<TestCaseSummary> testCases = ImmutableList.of(testCase);
 
-    TestResults testResults = new TestResults(testCases);
+    TestResults testResults = FakeTestResults.of(testCases);
     List<TestResults> testResultsList = ImmutableList.of(testResults);
 
     // Call the XML generation method with our test data.
@@ -346,10 +398,10 @@ public class TestRunningTest {
   @Test
   public void testIsTestRunRequiredForTestInDebugMode()
       throws IOException, ExecutionException, InterruptedException {
-    ExecutionContext executionContext = createMock(ExecutionContext.class);
-    expect(executionContext.isDebugEnabled()).andReturn(true);
-
-    replay(executionContext);
+    ExecutionContext executionContext = TestExecutionContext.newBuilder()
+        .setDebugEnabled(true)
+        .build();
+    assertTrue(executionContext.isDebugEnabled());
 
     assertTrue(
         "In debug mode, test should always run regardless of any cached results since " +
@@ -360,28 +412,31 @@ public class TestRunningTest {
             executionContext,
             createMock(TestRuleKeyFileHelper.class),
             true,
-            false));
-
-    verify(executionContext);
+            false,
+            /* hasEnvironmentOverrides */ false));
   }
 
   @Test
   public void testIsTestRunRequiredForTestBuiltFromCacheIfHasTestResultFiles()
       throws IOException, ExecutionException, InterruptedException {
-    ExecutionContext executionContext = createMock(ExecutionContext.class);
-    expect(executionContext.isDebugEnabled()).andReturn(false);
+    ExecutionContext executionContext = TestExecutionContext.newInstance();
+    assertFalse(executionContext.isDebugEnabled());
 
     FakeTestRule testRule = new FakeTestRule(
-        ImmutableSet.<Label>of(Label.of("windows")),
+        ImmutableSet.of(Label.of("windows")),
         BuildTargetFactory.newInstance("//:lulz"),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSortedSet.<BuildRule>of());
 
     CachingBuildEngine cachingBuildEngine = createMock(CachingBuildEngine.class);
-    BuildResult result = new BuildResult(testRule, FETCHED_FROM_CACHE, CacheResult.hit("dir"));
+    BuildResult result = BuildResult.success(testRule, FETCHED_FROM_CACHE, CacheResult.hit("dir"));
     expect(cachingBuildEngine.getBuildRuleResult(BuildTargetFactory.newInstance("//:lulz")))
         .andReturn(result);
-    replay(executionContext, cachingBuildEngine);
+    replay(cachingBuildEngine);
 
     assertTrue(
         "A cache hit updates the build artifact but not the test results. " +
@@ -392,28 +447,33 @@ public class TestRunningTest {
             executionContext,
             createMock(TestRuleKeyFileHelper.class),
             /* results cache enabled */ true,
-            /* running with test selectors */ false));
+            /* running with test selectors */ false,
+            /* hasEnvironmentOverrides */ false));
 
-    verify(executionContext, cachingBuildEngine);
+    verify(cachingBuildEngine);
   }
 
   @Test
   public void testIsTestRunRequiredForTestBuiltLocally()
       throws IOException, ExecutionException, InterruptedException {
-    ExecutionContext executionContext = createMock(ExecutionContext.class);
-    expect(executionContext.isDebugEnabled()).andReturn(false);
+    ExecutionContext executionContext = TestExecutionContext.newInstance();
+    assertFalse(executionContext.isDebugEnabled());
 
     FakeTestRule testRule = new FakeTestRule(
-        ImmutableSet.<Label>of(Label.of("windows")),
+        ImmutableSet.of(Label.of("windows")),
         BuildTargetFactory.newInstance("//:lulz"),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSortedSet.<BuildRule>of());
 
     CachingBuildEngine cachingBuildEngine = createMock(CachingBuildEngine.class);
-    BuildResult result = new BuildResult(testRule, BUILT_LOCALLY, CacheResult.skip());
+    BuildResult result = BuildResult.success(testRule, BUILT_LOCALLY, CacheResult.miss());
     expect(cachingBuildEngine.getBuildRuleResult(BuildTargetFactory.newInstance("//:lulz")))
         .andReturn(result);
-    replay(executionContext, cachingBuildEngine);
+    replay(cachingBuildEngine);
 
     assertTrue(
         "A test built locally should always run regardless of any cached result. ",
@@ -423,25 +483,30 @@ public class TestRunningTest {
             executionContext,
             createMock(TestRuleKeyFileHelper.class),
             /* results cache enabled */ true,
-            /* running with test selectors */ false));
+            /* running with test selectors */ false,
+            /* hasEnvironmentOverrides */ false));
 
-    verify(executionContext, cachingBuildEngine);
+    verify(cachingBuildEngine);
   }
 
   @Test
   public void testIsTestRunRequiredIfRuleKeyNotPresent()
       throws IOException, ExecutionException, InterruptedException {
-    ExecutionContext executionContext = createMock(ExecutionContext.class);
-    expect(executionContext.isDebugEnabled()).andReturn(false);
+    ExecutionContext executionContext = TestExecutionContext.newInstance();
+    assertFalse(executionContext.isDebugEnabled());
 
     FakeTestRule testRule = new FakeTestRule(
-        ImmutableSet.<Label>of(Label.of("windows")),
+        ImmutableSet.of(Label.of("windows")),
         BuildTargetFactory.newInstance("//:lulz"),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSortedSet.<BuildRule>of()) {
 
       @Override
-      public boolean hasTestResultFiles(ExecutionContext context) {
+      public boolean hasTestResultFiles() {
         return true;
       }
     };
@@ -450,10 +515,10 @@ public class TestRunningTest {
     expect(testRuleKeyFileHelper.isRuleKeyInDir(testRule)).andReturn(false);
 
     CachingBuildEngine cachingBuildEngine = createMock(CachingBuildEngine.class);
-    BuildResult result = new BuildResult(testRule, MATCHING_RULE_KEY, CacheResult.skip());
+    BuildResult result = BuildResult.success(testRule, MATCHING_RULE_KEY, CacheResult.miss());
     expect(cachingBuildEngine.getBuildRuleResult(BuildTargetFactory.newInstance("//:lulz")))
         .andReturn(result);
-    replay(executionContext, cachingBuildEngine, testRuleKeyFileHelper);
+    replay(cachingBuildEngine, testRuleKeyFileHelper);
 
     assertTrue(
         "A cached build should run the tests if the test output directory\'s rule key is not " +
@@ -464,9 +529,65 @@ public class TestRunningTest {
             executionContext,
             testRuleKeyFileHelper,
             /* results cache enabled */ true,
-            /* running with test selectors */ false));
+            /* running with test selectors */ false,
+            /* hasEnvironmentOverrides */ false));
 
-    verify(executionContext, cachingBuildEngine, testRuleKeyFileHelper);
+    verify(cachingBuildEngine, testRuleKeyFileHelper);
+  }
+
+  @Test
+  public void testRunAlwaysRequiredIfEnvironmentOverridesPresent() throws Exception {
+    ExecutionContext executionContext = TestExecutionContext.newBuilder()
+        .setDebugEnabled(false)
+        .build();
+
+    FakeTestRule testRule = new FakeTestRule(
+        ImmutableSet.of(Label.of("windows")),
+        BuildTargetFactory.newInstance("//:lulz"),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+                TargetGraph.EMPTY,
+                new DefaultTargetNodeToBuildRuleTransformer())
+        ),
+        ImmutableSortedSet.<BuildRule>of()) {
+
+      @Override
+      public boolean hasTestResultFiles() {
+        return true;
+      }
+    };
+
+    TestRuleKeyFileHelper testRuleKeyFileHelper = createNiceMock(TestRuleKeyFileHelper.class);
+    expect(testRuleKeyFileHelper.isRuleKeyInDir(testRule)).andReturn(true).times(1);
+
+    CachingBuildEngine cachingBuildEngine = createMock(CachingBuildEngine.class);
+    BuildResult result = BuildResult.success(testRule, MATCHING_RULE_KEY, CacheResult.miss());
+    expect(cachingBuildEngine.getBuildRuleResult(BuildTargetFactory.newInstance("//:lulz")))
+        .andReturn(result).times(1);
+    replay(cachingBuildEngine, testRuleKeyFileHelper);
+
+    assertFalse(
+        "Test will normally not be rerun",
+        TestRunning.isTestRunRequiredForTest(
+            testRule,
+            cachingBuildEngine,
+            executionContext,
+            testRuleKeyFileHelper,
+            /* results cache enabled */ true,
+            /* running with test selectors */ false,
+            /* hasEnvironmentOverrides */ false));
+    assertTrue(
+        "Test will be rerun when environment overrides are present",
+        TestRunning.isTestRunRequiredForTest(
+            testRule,
+            cachingBuildEngine,
+            executionContext,
+            testRuleKeyFileHelper,
+            /* results cache enabled */ true,
+            /* running with test selectors */ false,
+            /* hasEnvironmentOverrides */ true));
+
+    verify(cachingBuildEngine, testRuleKeyFileHelper);
   }
 
   @Test
@@ -483,7 +604,7 @@ public class TestRunningTest {
             0,
             atomicExecutionOrder);
     final TestResults fakeTestResults =
-        new TestResults(
+        FakeTestResults.of(
             ImmutableList.of(
                 new TestCaseSummary(
                     "TestCase",
@@ -499,8 +620,12 @@ public class TestRunningTest {
                             null)))));
     BuildTarget separateTest1Target = BuildTargetFactory.newInstance("//:test1");
     FakeTestRule separateTest1 = new FakeTestRule(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(separateTest1Target),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new FakeBuildRuleParamsBuilder(separateTest1Target).build(),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSet.<Label>of(),
         Optional.of(Paths.get("separateTestStep1OutputDir")),
         true, // runTestSeparately
@@ -520,8 +645,12 @@ public class TestRunningTest {
             atomicExecutionOrder);
     BuildTarget separateTest2Target = BuildTargetFactory.newInstance("//:test2");
     FakeTestRule separateTest2 = new FakeTestRule(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(separateTest2Target),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new FakeBuildRuleParamsBuilder(separateTest2Target).build(),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSet.<Label>of(),
         Optional.of(Paths.get("separateTestStep2OutputDir")),
         true, // runTestSeparately
@@ -541,8 +670,12 @@ public class TestRunningTest {
             atomicExecutionOrder);
     BuildTarget separateTest3Target = BuildTargetFactory.newInstance("//:test3");
     FakeTestRule separateTest3 = new FakeTestRule(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(separateTest3Target),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new FakeBuildRuleParamsBuilder(separateTest3Target).build(),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSet.<Label>of(),
         Optional.of(Paths.get("separateTestStep3OutputDir")),
         true, // runTestSeparately
@@ -560,23 +693,23 @@ public class TestRunningTest {
         MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(3));
     FakeBuildEngine fakeBuildEngine = new FakeBuildEngine(
         ImmutableMap.of(
-            separateTest1Target, new BuildResult(separateTest1, BUILT_LOCALLY, CacheResult.skip()),
-            separateTest2Target, new BuildResult(separateTest2, BUILT_LOCALLY, CacheResult.skip()),
-            separateTest3Target, new BuildResult(separateTest3, BUILT_LOCALLY, CacheResult.skip())
+            separateTest1Target,
+            BuildResult.success(separateTest1, BUILT_LOCALLY, CacheResult.miss()),
+            separateTest2Target,
+            BuildResult.success(separateTest2, BUILT_LOCALLY, CacheResult.miss()),
+            separateTest3Target,
+            BuildResult.success(separateTest3, BUILT_LOCALLY, CacheResult.miss())
         ),
         ImmutableMap.of(
             separateTest1Target, new RuleKey("00"),
             separateTest2Target, new RuleKey("00"),
             separateTest3Target, new RuleKey("00")
         ));
-    ExecutionContext fakeExecutionContext = TestExecutionContext.newBuilder()
-        .setProjectFilesystem(new FakeProjectFilesystem())
-        .build();
+    ExecutionContext fakeExecutionContext = TestExecutionContext.newInstance();
     DefaultStepRunner stepRunner = new DefaultStepRunner(fakeExecutionContext);
     int ret = TestRunning.runTests(
         commandRunnerParams,
         ImmutableList.<TestRule>of(separateTest1, separateTest2, separateTest3),
-        FakeBuildContext.NOOP_CONTEXT,
         fakeExecutionContext,
         DEFAULT_OPTIONS,
         service,
@@ -618,7 +751,7 @@ public class TestRunningTest {
             0,
             atomicExecutionOrder);
     final TestResults fakeTestResults =
-        new TestResults(
+        FakeTestResults.of(
             ImmutableList.of(
                 new TestCaseSummary(
                     "TestCase",
@@ -635,8 +768,12 @@ public class TestRunningTest {
 
     BuildTarget separateTest1Target = BuildTargetFactory.newInstance("//:test1");
     FakeTestRule separateTest1 = new FakeTestRule(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(separateTest1Target),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new FakeBuildRuleParamsBuilder(separateTest1Target).build(),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSet.<Label>of(),
         Optional.of(Paths.get("separateTestStep1OutputDir")),
         true, // runTestSeparately
@@ -656,8 +793,12 @@ public class TestRunningTest {
             atomicExecutionOrder);
     BuildTarget separateTest2Target = BuildTargetFactory.newInstance("//:test2");
     FakeTestRule separateTest2 = new FakeTestRule(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(separateTest2Target),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new FakeBuildRuleParamsBuilder(separateTest2Target).build(),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSet.<Label>of(),
         Optional.of(Paths.get("separateTestStep2OutputDir")),
         true, // runTestSeparately
@@ -677,8 +818,12 @@ public class TestRunningTest {
             atomicExecutionOrder);
     BuildTarget separateTest3Target = BuildTargetFactory.newInstance("//:test3");
     FakeTestRule separateTest3 = new FakeTestRule(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(separateTest3Target),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new FakeBuildRuleParamsBuilder(separateTest3Target).build(),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSet.<Label>of(),
         Optional.of(Paths.get("separateTestStep3OutputDir")),
         true, // runTestSeparately
@@ -698,8 +843,12 @@ public class TestRunningTest {
             atomicExecutionOrder);
     BuildTarget parallelTest1Target = BuildTargetFactory.newInstance("//:paralleltest1");
     FakeTestRule parallelTest1 = new FakeTestRule(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(parallelTest1Target),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new FakeBuildRuleParamsBuilder(parallelTest1Target).build(),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSet.<Label>of(),
         Optional.of(Paths.get("parallelTestStep1OutputDir")),
         false, // runTestSeparately
@@ -719,8 +868,12 @@ public class TestRunningTest {
             atomicExecutionOrder);
     BuildTarget parallelTest2Target = BuildTargetFactory.newInstance("//:paralleltest2");
     FakeTestRule parallelTest2 = new FakeTestRule(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(parallelTest2Target),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new FakeBuildRuleParamsBuilder(parallelTest2Target).build(),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSet.<Label>of(),
         Optional.of(Paths.get("parallelTestStep2OutputDir")),
         false, // runTestSeparately
@@ -740,8 +893,12 @@ public class TestRunningTest {
             atomicExecutionOrder);
     BuildTarget parallelTest3Target = BuildTargetFactory.newInstance("//:paralleltest3");
     FakeTestRule parallelTest3 = new FakeTestRule(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(parallelTest3Target),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new FakeBuildRuleParamsBuilder(parallelTest3Target).build(),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSet.<Label>of(),
         Optional.of(Paths.get("parallelTestStep3OutputDir")),
         false, // runTestSeparately
@@ -761,22 +918,22 @@ public class TestRunningTest {
         ImmutableMap.<BuildTarget, BuildResult>builder()
             .put(
                 separateTest1Target,
-                new BuildResult(separateTest1, BUILT_LOCALLY, CacheResult.skip()))
+                BuildResult.success(separateTest1, BUILT_LOCALLY, CacheResult.miss()))
             .put(
                 separateTest2Target,
-                new BuildResult(separateTest2, BUILT_LOCALLY, CacheResult.skip()))
+                BuildResult.success(separateTest2, BUILT_LOCALLY, CacheResult.miss()))
             .put(
                 separateTest3Target,
-                new BuildResult(separateTest3, BUILT_LOCALLY, CacheResult.skip()))
+                BuildResult.success(separateTest3, BUILT_LOCALLY, CacheResult.miss()))
             .put(
                 parallelTest1Target,
-                new BuildResult(parallelTest1, BUILT_LOCALLY, CacheResult.skip()))
+                BuildResult.success(parallelTest1, BUILT_LOCALLY, CacheResult.miss()))
             .put(
                 parallelTest2Target,
-                new BuildResult(parallelTest2, BUILT_LOCALLY, CacheResult.skip()))
+                BuildResult.success(parallelTest2, BUILT_LOCALLY, CacheResult.miss()))
             .put(
                 parallelTest3Target,
-                new BuildResult(parallelTest3, BUILT_LOCALLY, CacheResult.skip()))
+                BuildResult.success(parallelTest3, BUILT_LOCALLY, CacheResult.miss()))
             .build(),
         ImmutableMap.<BuildTarget, RuleKey>builder()
             .put(separateTest1Target, new RuleKey("00"))
@@ -786,9 +943,7 @@ public class TestRunningTest {
             .put(parallelTest2Target, new RuleKey("00"))
             .put(parallelTest3Target, new RuleKey("00"))
             .build());
-    ExecutionContext fakeExecutionContext = TestExecutionContext.newBuilder()
-        .setProjectFilesystem(new FakeProjectFilesystem())
-        .build();
+    ExecutionContext fakeExecutionContext = TestExecutionContext.newInstance();
     DefaultStepRunner stepRunner = new DefaultStepRunner(fakeExecutionContext);
     int ret = TestRunning.runTests(
         commandRunnerParams,
@@ -799,7 +954,6 @@ public class TestRunningTest {
             parallelTest2,
             separateTest3,
             parallelTest3),
-        FakeBuildContext.NOOP_CONTEXT,
         fakeExecutionContext,
         DEFAULT_OPTIONS,
         service,
@@ -876,7 +1030,7 @@ public class TestRunningTest {
         .builder()
         .build();
     final TestResults failingTestResults =
-        new TestResults(
+        FakeTestResults.of(
             ImmutableList.of(
                 new TestCaseSummary(
                     "TestCase",
@@ -892,8 +1046,12 @@ public class TestRunningTest {
                             null)))));
     BuildTarget failingTestTarget = BuildTargetFactory.newInstance("//:failingtest");
     FakeTestRule failingTest = new FakeTestRule(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(failingTestTarget),
-        new SourcePathResolver(new BuildRuleResolver()),
+        new FakeBuildRuleParamsBuilder(failingTestTarget).build(),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         ImmutableSet.<Label>of(),
         Optional.of(Paths.get("failingTestStep1OutputDir")),
         true, // runTestSeparately
@@ -909,19 +1067,16 @@ public class TestRunningTest {
         MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(3));
     FakeBuildEngine fakeBuildEngine = new FakeBuildEngine(
         ImmutableMap.of(
-            failingTestTarget, new BuildResult(failingTest, BUILT_LOCALLY, CacheResult.skip())
+            failingTestTarget, BuildResult.success(failingTest, BUILT_LOCALLY, CacheResult.miss())
         ),
         ImmutableMap.of(
             failingTestTarget, new RuleKey("00")
         ));
-    ExecutionContext fakeExecutionContext = TestExecutionContext.newBuilder()
-        .setProjectFilesystem(new FakeProjectFilesystem())
-        .build();
+    ExecutionContext fakeExecutionContext = TestExecutionContext.newInstance();
     DefaultStepRunner stepRunner = new DefaultStepRunner(fakeExecutionContext);
     int ret = TestRunning.runTests(
         commandRunnerParams,
         ImmutableList.<TestRule>of(failingTest),
-        FakeBuildContext.NOOP_CONTEXT,
         fakeExecutionContext,
         DEFAULT_OPTIONS,
         service,

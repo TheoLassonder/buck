@@ -1,25 +1,28 @@
+UTIL_SRCS = [
+  'AetherUtil.java',
+]
+
 java_library(
   name = 'maven',
-  srcs = glob(['*.java']),
+  srcs = glob(['*.java'], excludes = UTIL_SRCS),
   resources = [
     'build-file.st',
   ],
-  deps = [
-    '//src/com/facebook/buck/graph:graph',
-    '//third-party/java/aether:aether-api',
-    '//third-party/java/aether:aether-connector-basic',
-    '//third-party/java/aether:aether-impl',
-    '//third-party/java/aether:aether-spi',
-    '//third-party/java/aether:aether-transport-http',
-    '//third-party/java/aether:aether-util',
-    '//third-party/java/guava:guava',
-    '//third-party/java/jsr:jsr305',
-    '//third-party/java/maven:maven-aether-provider',
-    '//third-party/java/stringtemplate:stringtemplate',
-  ],
+  autodeps = True,
   visibility = [
+    '//src/com/facebook/buck/cli:cli',
+    '//src/com/facebook/buck/jvm/java:rules',
+    '//test/com/facebook/buck/cli:cli',
     '//test/com/facebook/buck/maven:maven',
+    '//test/com/facebook/buck/maven:testutil',
   ],
+)
+
+java_library(
+  name = 'util',
+  srcs = UTIL_SRCS,
+  autodeps = True,
+  visibility = ['PUBLIC'],
 )
 
 java_binary(

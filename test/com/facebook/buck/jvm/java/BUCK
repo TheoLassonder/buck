@@ -1,0 +1,55 @@
+java_library(
+  name = 'testutil',
+  srcs = [
+    'FakeJavaLibrary.java',
+    'JavaBinaryRuleBuilder.java',
+    'JavaLibraryBuilder.java',
+    'JavaTestBuilder.java',
+    'KeystoreBuilder.java',
+    'OptionAccumulator.java',
+    'PrebuiltJarBuilder.java',
+  ],
+  autodeps = True,
+  visibility = [
+    '//test/...',
+  ],
+)
+
+java_library(
+  name = 'fakepackagefinder',
+  srcs = [
+    'FakeJavaPackageFinder.java',
+  ],
+  autodeps = True,
+  visibility = [
+    '//test/...',
+  ],
+)
+
+java_library(
+  name = 'javac-env',
+  srcs = [ 'JavaCompilationConstants.java', ],
+  autodeps = True,
+  visibility = [
+    '//test/...',
+  ],
+)
+
+SLOW_INTEGRATION_TESTS = [
+  'JavaTestIntegrationTest.java',
+]
+
+java_test(
+  name = 'integration-slow',
+  srcs = SLOW_INTEGRATION_TESTS,
+  resources = glob(['testdata/**'], include_dotfiles=True),
+  run_test_separately = True,
+  autodeps = True,
+)
+
+java_test(
+  name = 'java',
+  srcs = glob(['*Test.java'], excludes = SLOW_INTEGRATION_TESTS),
+  resources = glob(['testdata/**'], include_dotfiles=True),
+  autodeps = True,
+)

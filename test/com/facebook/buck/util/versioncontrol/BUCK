@@ -1,0 +1,1 @@
+standard_java_test(run_test_separately = True)

@@ -183,7 +183,7 @@ def create_additional_excludes(modules):
                     # If we find a module that specifies the directory as the
                     # source folder, then keep all folders under that module.
                     #
-                    # TODO(royw): Be smarter here and actually keep track of
+                    # TODO(rowillia): Be smarter here and actually keep track of
                     # the additional directories being tracked by sub modules.
                     if source_folder['url'] != 'file://$MODULE_DIR$/gen':
                         found_relevant_source_folder = True
@@ -213,6 +213,18 @@ def get_path_from_map(map, key, fallback=None):
         return '/' + fallback
 
     return ''
+
+
+def formatSourceFolderXMLTag(source_folder):
+    if 'packagePrefix' in source_folder:
+        package_prefix = 'packagePrefix="%s" ' % source_folder['packagePrefix']
+    else:
+        package_prefix = ''
+    return '<sourceFolder url="%(url)s" isTestSource="%(is_test_source)s" %(package_prefix)s/>' % {
+        'url': source_folder['url'],
+        'is_test_source': str(source_folder['isTestSource']).lower(),
+        'package_prefix': package_prefix
+    }
 
 
 def write_modules(modules, generate_minimum_project, android_auto_generation_disabled):
@@ -273,24 +285,29 @@ def write_modules(modules, generate_minimum_project, android_auto_generation_dis
         if num_source_folders > 1 and module['hasAndroidFacet']:
             xml = add_buck_android_source_folder(xml, module)
 
-        # Source folders.
+        relative_prefix = 'file://$MODULE_DIR$/..'
+        source_folders_under_base_path = \
+            filter(lambda x: not x['url'].startswith(relative_prefix), module['sourceFolders'])
+        source_folders_in_different_path = \
+            filter(lambda x: x['url'].startswith(relative_prefix), module['sourceFolders'])
+
+        # Source folders that are in different path should have their own <content>
+        for source_folder in source_folders_in_different_path:
+            xml += '\n    <content url="%s">' % source_folder['url']
+            xml += '\n      ' + formatSourceFolderXMLTag(source_folder)
+            xml += '\n    </content>'
+
+        # Source folders under module's base path can all live under one <content>.
         xml += '\n    <content url="file://$MODULE_DIR$">'
-        for source_folder in module['sourceFolders']:
-            if 'packagePrefix' in source_folder:
-                package_prefix = 'packagePrefix="%s" ' % source_folder['packagePrefix']
-            else:
-                package_prefix = ''
-            xml += '\n      <sourceFolder url="%(url)s" isTestSource="%(is_test_source)s" %(package_prefix)s/>' % {
-                'url': source_folder['url'],
-                'is_test_source': str(source_folder['isTestSource']).lower(),
-                'package_prefix': package_prefix
-            }
+        for source_folder in source_folders_under_base_path:
+            xml += '\n      ' + formatSourceFolderXMLTag(source_folder)
         for exclude_folder in module['excludeFolders']:
             xml += '\n      <excludeFolder url="%s" />' % exclude_folder['url']
         for exclude_folder in sorted(additional_excludes[module['pathToImlFile']]):
             normalized_dir = os.path.dirname(os.path.normpath(
                 module['pathToImlFile']))
-            xml += '\n      <excludeFolder url="file://$MODULE_DIR$/%s" />' % os.path.relpath(exclude_folder, normalized_dir)
+            xml += '\n      <excludeFolder url="file://$MODULE_DIR$/%s" />' % \
+                   os.path.relpath(exclude_folder, normalized_dir).replace('\\', '/')
         xml += '\n    </content>'
 
         xml = add_annotation_generated_source_folder(xml, module)
@@ -381,7 +398,7 @@ def write_modules(modules, generate_minimum_project, android_auto_generation_dis
             elif dep_type == 'module':
                 dep_module_name = dep['moduleName']
 
-                # TODO(mbolin): Eliminate this special-case for jackson. It
+                # TODO(bolinfest): Eliminate this special-case for jackson. It
                 # exists because jackson is not an ordinary module: it is a
                 # module that functions as a library. Project.java should add
                 # it as such in project.json to eliminate this special case.
@@ -467,7 +484,6 @@ def write_misc_file(java_settings):
         'java_language_level': java_settings.get('languageLevel', 'JDK_1_6'),
         'project_jdk_name': java_settings.get('jdkName', 'Android API 21 Platform'),
         'project_jdk_type': java_settings.get('jdkType', 'Android SDK'),
-        'project_jdk_type': java_settings.get('jdkType', 'Android SDK'),
         'project_output_url': output_url
     }
 
@@ -545,6 +561,9 @@ def write_file_if_changed(path, content):
     else:
         needs_update = True
     if needs_update:
+        dirname = os.path.dirname(path)
+        if dirname:
+            mkdir_p(dirname)
         out = open(path, 'wb')
         out.write(content)
         MODIFIED_FILES.append(path)

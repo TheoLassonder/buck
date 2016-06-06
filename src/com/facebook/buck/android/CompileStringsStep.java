@@ -16,10 +16,12 @@
 
 package com.facebook.buck.android;
 
+import com.facebook.buck.android.StringResources.Gender;
 import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.util.XmlDomParser;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
@@ -38,11 +40,14 @@ import org.xml.sax.SAXException;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Collection;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import javax.annotation.Nullable;
 
 /**
  * This {@link Step} takes a list of string resource files (strings.xml), groups them by locales,
@@ -67,7 +72,7 @@ import java.util.regex.Pattern;
  *     </string-array>
  *   </resources>
  *   }
- * </pre></p>
+ * </pre>
  *
  * <p>For more information on the xml file format, refer to:
  * <a href="http://developer.android.com/guide/topics/resources/string-resource.html">
@@ -81,12 +86,16 @@ import java.util.regex.Pattern;
  *   <li> a map of plurals </li>
  *   <li> a list of strings </li>
  * </ol>
- * and dumps this map into the output file. See {@link StringResources} for the file format.</p>
+ * and dumps this map into the output file. See {@link StringResources} for the file format.
  */
 public class CompileStringsStep implements Step {
 
   private static final String ENGLISH_STRING_PATH_SUFFIX = "res/values/strings.xml";
   private static final String ENGLISH_LOCALE = "en";
+  private static final String FEMALE_SUFFIX = "_f1gender";
+  private static final String MALE_SUFFIX = "_m2gender";
+  private static final int FEMALE_SUFFIX_LENGTH = FEMALE_SUFFIX.length();
+  private static final int MALE_SUFFIX_LENGTH = MALE_SUFFIX.length();
 
   @VisibleForTesting
   static final Pattern NON_ENGLISH_STRING_FILE_PATTERN = Pattern.compile(
@@ -96,10 +105,13 @@ public class CompileStringsStep implements Step {
   static final Pattern R_DOT_TXT_STRING_RESOURCE_PATTERN = Pattern.compile(
       "^int (string|plurals|array) (\\w+) 0x([0-9a-f]+)$");
 
+  private final ProjectFilesystem filesystem;
   private final ImmutableList<Path> stringFiles;
   private final Path rDotTxtDir;
   private final Map<String, String> regionSpecificToBaseLocaleMap;
-  private final Map<String, Integer> resourceNameToIdMap;
+  private final Map<String, Integer> stringResourceNameToIdMap;
+  private final Map<String, Integer> pluralsResourceNameToIdMap;
+  private final Map<String, Integer> arrayResourceNameToIdMap;
   private final Function<String, Path> pathBuilder;
 
   /**
@@ -114,24 +126,32 @@ public class CompileStringsStep implements Step {
    * @param pathBuilder Builds a path to store a .fbstr file at.
    */
   public CompileStringsStep(
+      ProjectFilesystem filesystem,
       ImmutableList<Path> stringFiles,
       Path rDotTxtDir,
       Function<String, Path> pathBuilder) {
+    this.filesystem = filesystem;
     this.stringFiles = stringFiles;
     this.rDotTxtDir = rDotTxtDir;
     this.pathBuilder = pathBuilder;
     this.regionSpecificToBaseLocaleMap = Maps.newHashMap();
-    this.resourceNameToIdMap = Maps.newHashMap();
+    this.stringResourceNameToIdMap = Maps.newHashMap();
+    this.pluralsResourceNameToIdMap = Maps.newHashMap();
+    this.arrayResourceNameToIdMap = Maps.newHashMap();
   }
 
   @Override
-  public int execute(ExecutionContext context) {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
+  public StepExecutionResult execute(ExecutionContext context) {
     try {
-      buildResourceNameToIdMap(filesystem, rDotTxtDir.resolve("R.txt"), resourceNameToIdMap);
+      buildResourceNameToIdMap(
+          filesystem,
+          rDotTxtDir.resolve("R.txt"),
+          stringResourceNameToIdMap,
+          pluralsResourceNameToIdMap,
+          arrayResourceNameToIdMap);
     } catch (IOException e) {
       context.logError(e, "Failure parsing R.txt file.");
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
     ImmutableMultimap<String, Path> filesByLocale = groupFilesByLocale(stringFiles);
@@ -141,7 +161,7 @@ public class CompileStringsStep implements Step {
         resourcesByLocale.put(locale, compileStringFiles(filesystem, filesByLocale.get(locale)));
       } catch (IOException | SAXException e) {
         context.logError(e, "Error parsing string file for locale: %s", locale);
-        return 1;
+        return StepExecutionResult.ERROR;
       }
     }
 
@@ -152,10 +172,10 @@ public class CompileStringsStep implements Step {
     // (United States)" requests for a string, the Android runtime first looks for the string in
     // "es_US" set of resources, and if not found, returns the resource from the "es" set.
     // We merge these because we want the individual .fbstr files to be self contained for
-    // simplicity.
+    // simplicity except for "en" because the string is already in Android resources.
     for (String regionSpecificLocale : regionSpecificToBaseLocaleMap.keySet()) {
       String baseLocale = regionSpecificToBaseLocaleMap.get(regionSpecificLocale);
-      if (!resourcesByLocale.containsKey(baseLocale)) {
+      if (!resourcesByLocale.containsKey(baseLocale) || ENGLISH_LOCALE.equals(baseLocale)) {
         continue;
       }
 
@@ -171,11 +191,11 @@ public class CompileStringsStep implements Step {
             pathBuilder.apply(locale));
       } catch (IOException e) {
         context.logError(e, "Error creating binary file for locale: %s", locale);
-        return 1;
+        return StepExecutionResult.ERROR;
       }
     }
 
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   /**
@@ -237,7 +257,9 @@ public class CompileStringsStep implements Step {
   public static void buildResourceNameToIdMap(
       ProjectFilesystem filesystem,
       Path pathToRDotTxtFile,
-      Map<String, Integer> resultMap
+      Map<String, Integer> stringResourceNameToIdMap,
+      Map<String, Integer> pluralsResourceNameToIdMap,
+      Map<String, Integer> arrayResourceNameToIdMap
   ) throws IOException {
     List<String> fileLines = filesystem.readLines(pathToRDotTxtFile);
     for (String line : fileLines) {
@@ -245,19 +267,35 @@ public class CompileStringsStep implements Step {
       if (!matcher.matches()) {
         continue;
       }
-      resultMap.put(matcher.group(2), Integer.parseInt(matcher.group(3), 16));
+
+      String type = matcher.group(1);
+      String resourceName = matcher.group(2);
+      Integer resourceId = Integer.parseInt(matcher.group(3), 16);
+      switch (type) {
+        case "string":
+          stringResourceNameToIdMap.put(resourceName, resourceId);
+          break;
+        case "plurals":
+          pluralsResourceNameToIdMap.put(resourceName, resourceId);
+          break;
+        case "array":
+          arrayResourceNameToIdMap.put(resourceName, resourceId);
+          break;
+        default:
+          throw new IllegalArgumentException("Invalid resource type: " + type);
+      }
     }
   }
 
   private StringResources compileStringFiles(
       ProjectFilesystem filesystem,
       Collection<Path> filepaths) throws IOException, SAXException {
-    TreeMap<Integer, String> stringsMap = Maps.newTreeMap();
-    TreeMap<Integer, ImmutableMap<String, String>> pluralsMap = Maps.newTreeMap();
-    TreeMap<Integer, ImmutableList<String>> arraysMap = Maps.newTreeMap();
+    TreeMap<Integer, EnumMap<Gender, String>> stringsMap = Maps.newTreeMap();
+    TreeMap<Integer, EnumMap<Gender, ImmutableMap<String, String>>> pluralsMap = Maps.newTreeMap();
+    TreeMap<Integer, EnumMap<Gender, ImmutableList<String>>> arraysMap = Maps.newTreeMap();
 
     for (Path stringFilePath : filepaths) {
-      Document dom = XmlDomParser.parse(filesystem.getFileForRelativePath(stringFilePath));
+      Document dom = XmlDomParser.parse(filesystem.getPathForRelativePath(stringFilePath));
 
       NodeList stringNodes = dom.getElementsByTagName("string");
       scrapeStringNodes(stringNodes, stringsMap);
@@ -278,21 +316,30 @@ public class CompileStringsStep implements Step {
    * {@code stringsMap}, ignoring resource names that are already present in the map.
    *
    * @param stringNodes A list of {@code <string></string>} nodes.
-   * @param stringsMap Map from string resource name to its value.
+   * @param stringsMap Map from string resource id to its values.
    */
   @VisibleForTesting
-  void scrapeStringNodes(NodeList stringNodes, Map<Integer, String> stringsMap) {
+  void scrapeStringNodes(NodeList stringNodes, Map<Integer, EnumMap<Gender, String>> stringsMap) {
     for (int i = 0; i < stringNodes.getLength(); ++i) {
-      Node node = stringNodes.item(i);
-      String resourceName = node.getAttributes().getNamedItem("name").getNodeValue();
-      if (!resourceNameToIdMap.containsKey(resourceName)) {
+      Element element = (Element) stringNodes.item(i);
+      String resourceName = element.getAttribute("name");
+      Gender gender = getGender(element);
+
+      Integer resId = getResourceId(resourceName, gender, stringResourceNameToIdMap);
+      // Ignore a resource if R.txt does not contain an entry for it.
+      if (resId == null) {
         continue;
       }
-      int resourceId = Preconditions.checkNotNull(resourceNameToIdMap.get(resourceName));
-      // Ignore a resource if it has already been found.
-      if (!stringsMap.containsKey(resourceId)) {
-        stringsMap.put(resourceId, node.getTextContent());
+
+      EnumMap<Gender, String> genderMap = stringsMap.get(resId);
+      if (genderMap == null)  {
+        genderMap = Maps.newEnumMap(Gender.class);
+      } else if (genderMap.containsKey(gender)) { // Ignore a resource if it has already been found
+        continue;
       }
+
+      genderMap.put(gender, element.getTextContent());
+      stringsMap.put(resId, genderMap);
     }
   }
 
@@ -302,29 +349,37 @@ public class CompileStringsStep implements Step {
   @VisibleForTesting
   void scrapePluralsNodes(
       NodeList pluralNodes,
-      Map<Integer, ImmutableMap<String, String>> pluralsMap) {
+      Map<Integer, EnumMap<Gender, ImmutableMap<String, String>>> pluralsMap) {
 
     for (int i = 0; i < pluralNodes.getLength(); ++i) {
-      Node node = pluralNodes.item(i);
-      String resourceName = node.getAttributes().getNamedItem("name").getNodeValue();
-      if (!resourceNameToIdMap.containsKey(resourceName)) {
-        continue;
-      }
-      int resourceId = Preconditions.checkNotNull(resourceNameToIdMap.get(resourceName));
+      Element element = (Element) pluralNodes.item(i);
+      String resourceName = element.getAttribute("name");
+      Gender gender = getGender(element);
 
-      // Ignore a resource if it has already been found.
-      if (pluralsMap.containsKey(resourceId)) {
+      Integer resourceId = getResourceId(resourceName, gender, pluralsResourceNameToIdMap);
+      // Ignore a resource if R.txt does not contain an entry for it.
+      if (resourceId == null) {
         continue;
       }
+
+      EnumMap<Gender, ImmutableMap<String, String>> genderMap = pluralsMap.get(resourceId);
+      if (genderMap == null)  {
+        genderMap = Maps.newEnumMap(Gender.class);
+      } else if (genderMap.containsKey(gender)) { // Ignore a resource if it has already been found
+        continue;
+      }
+
       ImmutableMap.Builder<String, String> quantityToStringBuilder = ImmutableMap.builder();
 
-      NodeList itemNodes = ((Element) node).getElementsByTagName("item");
+      NodeList itemNodes = element.getElementsByTagName("item");
       for (int j = 0; j < itemNodes.getLength(); ++j) {
         Node itemNode = itemNodes.item(j);
         String quantity = itemNode.getAttributes().getNamedItem("quantity").getNodeValue();
         quantityToStringBuilder.put(quantity, itemNode.getTextContent());
       }
-      pluralsMap.put(resourceId, quantityToStringBuilder.build());
+
+      genderMap.put(gender, quantityToStringBuilder.build());
+      pluralsMap.put(resourceId, genderMap);
     }
   }
 
@@ -332,31 +387,39 @@ public class CompileStringsStep implements Step {
    * Similar to {@code scrapeStringNodes}, but for string array nodes.
    */
   @VisibleForTesting
-  void scrapeStringArrayNodes(NodeList arrayNodes, Map<Integer, ImmutableList<String>> arraysMap) {
+  void scrapeStringArrayNodes(
+      NodeList arrayNodes,
+      Map<Integer, EnumMap<Gender, ImmutableList<String>>> arraysMap) {
+
     for (int i = 0; i < arrayNodes.getLength(); ++i) {
-      Node node = arrayNodes.item(i);
-      String resourceName = node.getAttributes().getNamedItem("name").getNodeValue();
+      Element element = (Element) arrayNodes.item(i);
+      String resourceName = element.getAttribute("name");
+      Gender gender = getGender(element);
+
+      Integer resourceId = getResourceId(resourceName, gender, arrayResourceNameToIdMap);
       // Ignore a resource if R.txt does not contain an entry for it.
-      if (!resourceNameToIdMap.containsKey(resourceName)) {
+      if (resourceId == null) {
         continue;
       }
 
-      int resourceId = Preconditions.checkNotNull(resourceNameToIdMap.get(resourceName));
-      // Ignore a resource if it has already been found.
-      if (arraysMap.containsKey(resourceId)) {
+      EnumMap<Gender, ImmutableList<String>> genderMap = arraysMap.get(resourceId);
+      if (genderMap == null)  {
+        genderMap = Maps.newEnumMap(Gender.class);
+      } else if (genderMap.containsKey(gender)) { // Ignore a resource if it has already been found
         continue;
       }
 
       ImmutableList.Builder<String> arrayValues = ImmutableList.builder();
-
-      NodeList itemNodes = ((Element) node).getElementsByTagName("item");
+      NodeList itemNodes = element.getElementsByTagName("item");
       if (itemNodes.getLength() == 0) {
         continue;
       }
       for (int j = 0; j < itemNodes.getLength(); ++j) {
         arrayValues.add(itemNodes.item(j).getTextContent());
       }
-      arraysMap.put(resourceId, arrayValues.build());
+
+      genderMap.put(gender, arrayValues.build());
+      arraysMap.put(resourceId, genderMap);
     }
   }
 
@@ -364,8 +427,18 @@ public class CompileStringsStep implements Step {
    * Used in unit tests to inject the resource name to id map.
    */
   @VisibleForTesting
-  void addResourceNameToIdMap(Map<String, Integer> nameToIdMap) {
-    resourceNameToIdMap.putAll(nameToIdMap);
+  void addStringResourceNameToIdMap(Map<String, Integer> nameToIdMap) {
+    stringResourceNameToIdMap.putAll(nameToIdMap);
+  }
+
+  @VisibleForTesting
+  void addPluralsResourceNameToIdMap(Map<String, Integer> nameToIdMap) {
+    pluralsResourceNameToIdMap.putAll(nameToIdMap);
+  }
+
+  @VisibleForTesting
+  void addArrayResourceNameToIdMap(Map<String, Integer> nameToIdMap) {
+    arrayResourceNameToIdMap.putAll(nameToIdMap);
   }
 
   @Override
@@ -376,5 +449,37 @@ public class CompileStringsStep implements Step {
   @Override
   public String getDescription(ExecutionContext context) {
     return "Combine, parse string resource xml files into one binary file per locale.";
+  }
+
+  @Nullable private static Integer getResourceId(
+      String name,
+      Gender gender,
+      Map<String, Integer> resourceToIdMap) {
+    Integer resId = null;
+    if (name.endsWith(FEMALE_SUFFIX) && gender.equals(Gender.female)) {
+      resId = resourceToIdMap.get(name.substring(0, name.length() - FEMALE_SUFFIX_LENGTH));
+    } else if (name.endsWith(MALE_SUFFIX) && gender.equals(Gender.male)) {
+      resId = resourceToIdMap.get(name.substring(0, name.length() - MALE_SUFFIX_LENGTH));
+    }
+
+    if (resId == null) {
+      resId = resourceToIdMap.get(name);
+    }
+
+    return resId;
+  }
+
+  /**
+   * Returns the Gender present in the passed in element's attribute, defaults to unknown gender
+   * @param element the element for which gender attribute is to be determined
+   * @return gender present in the element and unknown gender if not
+   */
+  private static Gender getGender(Element element) {
+    Gender gender = Gender.unknown;
+    boolean hasGender = element.hasAttribute("gender");
+    if (hasGender) {
+      gender = Gender.valueOf(element.getAttribute("gender"));
+    }
+    return gender;
   }
 }

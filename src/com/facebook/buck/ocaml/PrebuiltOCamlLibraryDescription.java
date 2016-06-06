@@ -17,6 +17,7 @@
 package com.facebook.buck.ocaml;
 
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.rules.AbstractDescriptionArg;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.BuildRuleType;
@@ -24,6 +25,7 @@ import com.facebook.buck.rules.Description;
 import com.facebook.buck.rules.PathSourcePath;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.base.Function;
 import com.google.common.base.Optional;
@@ -53,11 +55,14 @@ public class PrebuiltOCamlLibraryDescription
 
   @Override
   public <A extends Arg> OCamlLibrary createBuildRule(
+      TargetGraph targetGraph,
       final BuildRuleParams params,
       BuildRuleResolver resolver,
       final A args) {
 
     final BuildTarget target = params.getBuildTarget();
+
+    final boolean bytecodeOnly = args.bytecodeOnly.or(false);
 
     final String libDir = args.libDir.or("lib");
 
@@ -70,9 +75,14 @@ public class PrebuiltOCamlLibraryDescription
     final Path libPath = target.getBasePath().resolve(libDir);
     final Path includeDir = libPath.resolve(args.includeDir.or(""));
 
-    final SourcePath staticNativeLibraryPath = new PathSourcePath(
+    final Optional<SourcePath> staticNativeLibraryPath = bytecodeOnly
+        ? Optional.<SourcePath>absent()
+        : Optional.<SourcePath>of(new PathSourcePath(
+          params.getProjectFilesystem(),
+          libPath.resolve(nativeLib)));
+    final SourcePath staticBytecodeLibraryPath = new PathSourcePath(
         params.getProjectFilesystem(),
-        libPath.resolve(nativeLib));
+        libPath.resolve(bytecodeLib));
     final ImmutableList<SourcePath> staticCLibraryPaths =
         FluentIterable.from(cLibs)
           .transform(new Function<String, SourcePath>() {
@@ -91,9 +101,8 @@ public class PrebuiltOCamlLibraryDescription
     return new PrebuiltOCamlLibrary(
         params,
         new SourcePathResolver(resolver),
-        nativeLib,
-        bytecodeLib,
         staticNativeLibraryPath,
+        staticBytecodeLibraryPath,
         staticCLibraryPaths,
         bytecodeLibraryPath,
         libPath,
@@ -101,7 +110,7 @@ public class PrebuiltOCamlLibraryDescription
   }
 
   @SuppressFieldNotInitialized
-  public static class Arg {
+  public static class Arg extends AbstractDescriptionArg {
     public Optional<String> libDir;
     public Optional<String> includeDir;
     public Optional<String> libName;
@@ -109,6 +118,7 @@ public class PrebuiltOCamlLibraryDescription
     public Optional<String> bytecodeLib;
     public Optional<ImmutableList<String>> cLibs;
     public Optional<ImmutableSortedSet<BuildTarget>> deps;
+    public Optional<Boolean> bytecodeOnly;
   }
 
 }

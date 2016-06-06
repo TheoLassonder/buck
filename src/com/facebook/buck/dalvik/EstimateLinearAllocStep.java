@@ -17,12 +17,13 @@
 package com.facebook.buck.dalvik;
 
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.classes.ClasspathTraversal;
-import com.facebook.buck.java.classes.DefaultClasspathTraverser;
-import com.facebook.buck.java.classes.FileLike;
-import com.facebook.buck.java.classes.FileLikes;
+import com.facebook.buck.jvm.java.classes.ClasspathTraversal;
+import com.facebook.buck.jvm.java.classes.DefaultClasspathTraverser;
+import com.facebook.buck.jvm.java.classes.FileLike;
+import com.facebook.buck.jvm.java.classes.FileLikes;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
@@ -52,6 +53,7 @@ public class EstimateLinearAllocStep implements Step, Supplier<Integer> {
     }
   };
 
+  private final ProjectFilesystem filesystem;
   private final Path pathToJarOrClassesDirectory;
   private final LinearAllocEstimator linearAllocEstimator;
 
@@ -63,20 +65,22 @@ public class EstimateLinearAllocStep implements Step, Supplier<Integer> {
    * priority, an estimator based on {@link DalvikStatsTool#getEstimate(java.io.InputStream)} should
    * be used instead.
    */
-  public EstimateLinearAllocStep(Path pathToJarOrClassesDirectory) {
-    this(pathToJarOrClassesDirectory, DEFAULT_LINEAR_ALLOC_ESTIMATOR);
+  public EstimateLinearAllocStep(ProjectFilesystem filesystem, Path pathToJarOrClassesDirectory) {
+    this(filesystem, pathToJarOrClassesDirectory, DEFAULT_LINEAR_ALLOC_ESTIMATOR);
   }
 
   @VisibleForTesting
-  EstimateLinearAllocStep(Path pathToJarOrClassesDirectory,
+  EstimateLinearAllocStep(
+      ProjectFilesystem filesystem,
+      Path pathToJarOrClassesDirectory,
       LinearAllocEstimator linearAllocEstimator) {
+    this.filesystem = filesystem;
     this.pathToJarOrClassesDirectory = pathToJarOrClassesDirectory;
     this.linearAllocEstimator = linearAllocEstimator;
   }
 
   @Override
-  public int execute(ExecutionContext context) {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
+  public StepExecutionResult execute(ExecutionContext context) {
     Path path = filesystem.resolve(pathToJarOrClassesDirectory);
     ClasspathTraversal traversal = new ClasspathTraversal(Collections.singleton(path), filesystem) {
 
@@ -103,11 +107,11 @@ public class EstimateLinearAllocStep implements Step, Supplier<Integer> {
       new DefaultClasspathTraverser().traverse(traversal);
     } catch (IOException e) {
       context.logError(e, "Error accumulating class names for %s.", pathToJarOrClassesDirectory);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
     this.linearAllocEstimate = (Integer) traversal.getResult();
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   @Override

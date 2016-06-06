@@ -16,19 +16,18 @@
 
 package com.facebook.buck.dalvik;
 
-import com.facebook.buck.java.classes.FileLike;
+import com.facebook.buck.jvm.java.classes.FileLike;
 import com.google.common.base.Charsets;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
-import com.google.common.io.Files;
 
 import java.io.BufferedOutputStream;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.Writer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -39,27 +38,31 @@ import java.util.zip.ZipOutputStream;
 public class DalvikAwareOutputStreamHelper implements ZipOutputStreamHelper {
 
   private static final int MAX_METHOD_REFERENCES = 64 * 1024;
+  // Making this 60k for now instead of 64 because the analyzer doesn't find all field references.
+  // This only comes into play in rare cases, so it's not hi-pri to fix.
+  private static final int MAX_FIELD_REFERENCES = 60 * 1024;
 
   private final ZipOutputStream outStream;
   private final Set<String> entryNames = Sets.newHashSet();
   private final long linearAllocLimit;
-  private final File reportFile;
+  private final Writer reportFileWriter;
   private final DalvikStatsCache dalvikStatsCache;
 
   private final Set<DalvikStatsTool.MethodReference> currentMethodReferences = Sets.newHashSet();
+  private final Set<DalvikStatsTool.FieldReference> currentFieldReferences = Sets.newHashSet();
   private long currentLinearAllocSize;
 
   DalvikAwareOutputStreamHelper(
-      File outputFile,
+      Path outputFile,
       long linearAllocLimit,
-      File reportDir,
+      Path reportDir,
       DalvikStatsCache dalvikStatsCache)
-      throws FileNotFoundException {
-    this.outStream = new ZipOutputStream(
-      new BufferedOutputStream(
-          new FileOutputStream(outputFile)));
+      throws IOException {
+    this.outStream =
+        new ZipOutputStream(new BufferedOutputStream(Files.newOutputStream(outputFile)));
     this.linearAllocLimit = linearAllocLimit;
-    this.reportFile = new File(reportDir, outputFile.getName() + ".txt");
+    Path reportFile = reportDir.resolve(outputFile.getFileName().toString() + ".txt");
+    this.reportFileWriter = Files.newBufferedWriter(reportFile, Charsets.UTF_8);
     this.dalvikStatsCache = dalvikStatsCache;
   }
 
@@ -68,8 +71,12 @@ public class DalvikAwareOutputStreamHelper implements ZipOutputStreamHelper {
     if (currentLinearAllocSize + stats.estimatedLinearAllocSize > linearAllocLimit) {
       return true;
     }
-    int newReferences = Sets.difference(stats.methodReferences, currentMethodReferences).size();
-    if (currentMethodReferences.size() + newReferences > MAX_METHOD_REFERENCES) {
+    int newMethodRefs = Sets.difference(stats.methodReferences, currentMethodReferences).size();
+    if (currentMethodReferences.size() + newMethodRefs > MAX_METHOD_REFERENCES) {
+      return true;
+    }
+    int newFieldRefs = Sets.difference(stats.fieldReferences, currentFieldReferences).size();
+    if (currentFieldReferences.size() + newFieldRefs > MAX_FIELD_REFERENCES) {
       return true;
     }
     return false;
@@ -104,15 +111,17 @@ public class DalvikAwareOutputStreamHelper implements ZipOutputStreamHelper {
           name, stats.estimatedLinearAllocSize, linearAllocLimit);
       currentLinearAllocSize += stats.estimatedLinearAllocSize;
       currentMethodReferences.addAll(stats.methodReferences);
+      currentFieldReferences.addAll(stats.fieldReferences);
       String report = String.format(
           "%d %d %s\n",
           stats.estimatedLinearAllocSize, stats.methodReferences.size(), name);
-      Files.append(report, reportFile, Charsets.UTF_8);
+      reportFileWriter.append(report);
     }
   }
 
   @Override
   public void close() throws IOException {
     outStream.close();
+    reportFileWriter.close();
   }
 }

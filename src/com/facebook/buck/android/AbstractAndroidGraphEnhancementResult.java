@@ -16,15 +16,15 @@
 
 package com.facebook.buck.android;
 
+import com.facebook.buck.jvm.java.JavaLibrary;
 import com.facebook.buck.rules.BuildRule;
+import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.util.immutables.BuckStyleImmutable;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 
 import org.immutables.value.Value;
-
-import java.nio.file.Path;
 
 @Value.Immutable
 @BuckStyleImmutable
@@ -35,13 +35,20 @@ interface AbstractAndroidGraphEnhancementResult {
   Optional<PackageStringAssets> getPackageStringAssets();
   Optional<PreDexMerge> getPreDexMerge();
   Optional<ComputeExopackageDepsAbi> getComputeExopackageDepsAbi();
+  Optional<Boolean> getPackageAssetLibraries();
+
+  /**
+   * Compiled R.java for use by ProGuard.  This should go away if/when
+   * we create a separate rule for ProGuard.
+   */
+  JavaLibrary getCompiledUberRDotJava();
 
   /**
    * This includes everything from the corresponding
    * {@link AndroidPackageableCollection#getClasspathEntriesToDex}, and may include additional
-   * entries due to {@link AndroidBuildConfig}s.
+   * entries due to {@link AndroidBuildConfig}s (or R.java, in the future).
    */
-  ImmutableSet<Path> getClasspathEntriesToDex();
+  ImmutableSet<SourcePath> getClasspathEntriesToDex();
 
   ImmutableSortedSet<BuildRule> getFinalDeps();
 }

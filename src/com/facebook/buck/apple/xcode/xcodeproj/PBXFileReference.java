@@ -30,7 +30,11 @@ public class PBXFileReference extends PBXReference {
   private Optional<String> explicitFileType;
   private Optional<String> lastKnownFileType;
 
-  public PBXFileReference(String name, @Nullable String path, SourceTree sourceTree) {
+  public PBXFileReference(
+      String name,
+      @Nullable String path,
+      SourceTree sourceTree,
+      Optional<String> defaultType) {
     super(name, path, sourceTree);
 
     // PBXVariantGroups create file references where the name doesn't contain the file
@@ -41,12 +45,16 @@ public class PBXFileReference extends PBXReference {
     String pathOrName = MoreObjects.firstNonNull(path, name);
 
     // this is necessary to prevent O(n^2) behavior in xcode project loading
-    String fileType = FileTypes.FILE_EXTENSION_TO_UTI.get(Files.getFileExtension(pathOrName));
-    if (fileType != null && FileTypes.EXPLICIT_FILE_TYPE_BROKEN_UTIS.contains(fileType)) {
+    String fileType = FileTypes.FILE_EXTENSION_TO_IDENTIFIER.get(
+        Files.getFileExtension(pathOrName));
+    if (fileType != null && FileTypes.EXPLICIT_FILE_TYPE_BROKEN_IDENTIFIERS.contains(fileType)) {
       explicitFileType = Optional.absent();
       lastKnownFileType = Optional.of(fileType);
+    } else if (fileType != null) {
+      explicitFileType = Optional.of(fileType);
+      lastKnownFileType = Optional.absent();
     } else {
-      explicitFileType = Optional.fromNullable(fileType);
+      explicitFileType = defaultType;
       lastKnownFileType = Optional.absent();
     }
   }

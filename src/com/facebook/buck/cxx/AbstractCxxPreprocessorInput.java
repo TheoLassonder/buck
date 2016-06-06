@@ -17,9 +17,13 @@
 package com.facebook.buck.cxx;
 
 import com.facebook.buck.model.BuildTarget;
-import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.BuildRule;
+import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.coercer.FrameworkPath;
 import com.facebook.buck.util.immutables.BuckStyleImmutable;
 import com.google.common.base.Function;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
@@ -28,9 +32,6 @@ import com.google.common.collect.Multimap;
 import org.immutables.value.Value;
 
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
 
 /**
  * The components that get contributed to a top-level run of the C++ preprocessor.
@@ -39,19 +40,11 @@ import java.util.Set;
 @BuckStyleImmutable
 abstract class AbstractCxxPreprocessorInput {
 
-  public static final Function<CxxPreprocessorInput, CxxHeaders> GET_INCLUDES =
-      new Function<CxxPreprocessorInput, CxxHeaders>() {
+  public static final Function<CxxPreprocessorInput, ImmutableList<CxxHeaders>> GET_INCLUDES =
+      new Function<CxxPreprocessorInput, ImmutableList<CxxHeaders>>() {
         @Override
-        public CxxHeaders apply(CxxPreprocessorInput input) {
+        public ImmutableList<CxxHeaders> apply(CxxPreprocessorInput input) {
           return input.getIncludes();
-        }
-      };
-
-  public static final Function<CxxPreprocessorInput, ImmutableSet<Path>> GET_INCLUDE_ROOTS =
-      new Function<CxxPreprocessorInput, ImmutableSet<Path>>() {
-        @Override
-        public ImmutableSet<Path> apply(CxxPreprocessorInput input) {
-          return input.getIncludeRoots();
         }
       };
 
@@ -63,79 +56,77 @@ abstract class AbstractCxxPreprocessorInput {
         }
       };
 
-  public static final Function<CxxPreprocessorInput, ImmutableSet<Path>> GET_FRAMEWORK_ROOTS =
-      new Function<CxxPreprocessorInput, ImmutableSet<Path>>() {
+  public static final Function<CxxPreprocessorInput, ImmutableSet<FrameworkPath>> GET_FRAMEWORKS =
+      new Function<CxxPreprocessorInput, ImmutableSet<FrameworkPath>>() {
         @Override
-        public ImmutableSet<Path> apply(CxxPreprocessorInput input) {
-          return input.getFrameworkRoots();
+        public ImmutableSet<FrameworkPath> apply(CxxPreprocessorInput input) {
+          return input.getFrameworks();
         }
       };
-
-  // The build rules which produce headers found in the includes below.
-  @Value.Parameter
-  public abstract Set<BuildTarget> getRules();
 
   @Value.Parameter
   public abstract Multimap<CxxSource.Type, String> getPreprocessorFlags();
 
   @Value.Parameter
-  @Value.Default
-  public CxxHeaders getIncludes() {
-    return CxxHeaders.builder().build();
-  }
+  public abstract ImmutableList<CxxHeaders> getIncludes();
 
-  // Normal include directories where headers are found.
+  // Framework paths.
   @Value.Parameter
-  public abstract Set<Path> getIncludeRoots();
+  public abstract ImmutableSet<FrameworkPath> getFrameworks();
+
+  // The build rules which produce headers found in the includes below.
+  @Value.Parameter
+  protected abstract ImmutableSet<BuildTarget> getRules();
 
   // Include directories where system headers.
   @Value.Parameter
-  public abstract Set<Path> getSystemIncludeRoots();
+  public abstract ImmutableSet<Path> getSystemIncludeRoots();
 
-  // Directories where frameworks are stored.
-  @Value.Parameter
-  public abstract Set<Path> getFrameworkRoots();
+  @Value.Check
+  protected void validateAssumptions() {
+    for (Path root : getSystemIncludeRoots()) {
+      Preconditions.checkState(
+          root.isAbsolute(),
+          "Expected system include root to be absolute: %s",
+          root);
+    }
+  }
+
+  public Iterable<BuildRule> getDeps(
+      BuildRuleResolver ruleResolver,
+      SourcePathResolver pathResolver) {
+    ImmutableList.Builder<BuildRule> builder = ImmutableList.builder();
+    for (CxxHeaders cxxHeaders : getIncludes()) {
+      builder.addAll(cxxHeaders.getDeps(pathResolver));
+    }
+    builder.addAll(ruleResolver.getAllRules(getRules()));
+    return builder.build();
+  }
 
   public static final CxxPreprocessorInput EMPTY = CxxPreprocessorInput.builder().build();
 
-  public static CxxPreprocessorInput concat(Iterable<CxxPreprocessorInput> inputs)
-      throws AbstractCxxHeaders.ConflictingHeadersException {
-    ImmutableSet.Builder<BuildTarget> rules = ImmutableSet.builder();
+  public static CxxPreprocessorInput concat(Iterable<CxxPreprocessorInput> inputs) {
     ImmutableMultimap.Builder<CxxSource.Type, String> preprocessorFlags =
       ImmutableMultimap.builder();
-    ImmutableList.Builder<SourcePath> prefixHeaders = ImmutableList.builder();
-    Map<Path, SourcePath> includeNameToPathMap = new HashMap<>();
-    Map<Path, SourcePath> includeFullNameToPathMap = new HashMap<>();
-    ImmutableSet.Builder<Path> includeRoots = ImmutableSet.builder();
+    ImmutableList.Builder<CxxHeaders> headers = ImmutableList.builder();
+    ImmutableSet.Builder<FrameworkPath> frameworks = ImmutableSet.builder();
+    ImmutableSet.Builder<BuildTarget> rules = ImmutableSet.builder();
     ImmutableSet.Builder<Path> systemIncludeRoots = ImmutableSet.builder();
-    ImmutableSet.Builder<Path> frameworkRoots = ImmutableSet.builder();
 
     for (CxxPreprocessorInput input : inputs) {
-      rules.addAll(input.getRules());
       preprocessorFlags.putAll(input.getPreprocessorFlags());
-      prefixHeaders.addAll(input.getIncludes().getPrefixHeaders());
-      CxxHeaders.addAllEntriesToIncludeMap(
-          includeNameToPathMap,
-          input.getIncludes().getNameToPathMap());
-      CxxHeaders.addAllEntriesToIncludeMap(
-          includeFullNameToPathMap,
-          input.getIncludes().getFullNameToPathMap());
-      includeRoots.addAll(input.getIncludeRoots());
+      headers.addAll(input.getIncludes());
+      frameworks.addAll(input.getFrameworks());
+      rules.addAll(input.getRules());
       systemIncludeRoots.addAll(input.getSystemIncludeRoots());
-      frameworkRoots.addAll(input.getFrameworkRoots());
     }
 
     return CxxPreprocessorInput.of(
-        rules.build(),
         preprocessorFlags.build(),
-        CxxHeaders.builder()
-            .addAllPrefixHeaders(prefixHeaders.build())
-            .putAllNameToPathMap(includeNameToPathMap)
-            .putAllFullNameToPathMap(includeFullNameToPathMap)
-            .build(),
-        includeRoots.build(),
-        systemIncludeRoots.build(),
-        frameworkRoots.build());
+        headers.build(),
+        frameworks.build(),
+        rules.build(),
+        systemIncludeRoots.build());
   }
 
 }

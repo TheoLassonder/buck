@@ -18,8 +18,11 @@ package com.facebook.buck.testutil.integration;
 
 import com.google.common.base.Preconditions;
 
+import org.junit.Assert;
 import org.junit.rules.TemporaryFolder;
 
+import java.io.File;
+import java.io.IOException;
 import java.nio.file.Path;
 
 /**
@@ -33,12 +36,15 @@ import java.nio.file.Path;
  * public DebuggableTemporaryFolder tmp = new DebuggableTemporaryFolder().doNotDeleteOnExit();
  * </pre>
  */
-public class DebuggableTemporaryFolder extends TemporaryFolder {
+public class DebuggableTemporaryFolder extends TemporaryFolder implements TemporaryRoot {
 
   private String name;
   private boolean doNotDeleteOnExit;
 
   public DebuggableTemporaryFolder() {}
+  public DebuggableTemporaryFolder(File parentFolder) {
+    super(parentFolder);
+  }
 
   /**
    * If invoked, the directory created by this {@link TemporaryFolder} will not be deleted when the
@@ -69,7 +75,14 @@ public class DebuggableTemporaryFolder extends TemporaryFolder {
     }
   }
 
+  @Override
   public Path getRootPath() {
     return getRoot().toPath();
+  }
+
+  public File newExecutableFile() throws IOException {
+    File file = newFile();
+    Assert.assertTrue(file.setExecutable(true));
+    return file;
   }
 }

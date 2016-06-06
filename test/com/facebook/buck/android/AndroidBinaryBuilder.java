@@ -16,11 +16,13 @@
 
 package com.facebook.buck.android;
 
-import static com.facebook.buck.java.JavaCompilationConstants.ANDROID_JAVAC_OPTIONS;
+import static com.facebook.buck.jvm.java.JavaCompilationConstants.ANDROID_JAVAC_OPTIONS;
+import static com.facebook.buck.jvm.java.JavaCompilationConstants.DEFAULT_JAVA_OPTIONS;
 
 import com.facebook.buck.android.FilterResourcesStep.ResourceFilter;
 import com.facebook.buck.android.ResourcesFilter.ResourceCompressionMode;
 import com.facebook.buck.cli.FakeBuckConfig;
+import com.facebook.buck.cxx.CxxPlatformUtils;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.rules.AbstractNodeBuilder;
 import com.facebook.buck.rules.SourcePath;
@@ -38,10 +40,12 @@ public class AndroidBinaryBuilder extends AbstractNodeBuilder<AndroidBinaryDescr
   private AndroidBinaryBuilder(BuildTarget target) {
     super(
         new AndroidBinaryDescription(
+            DEFAULT_JAVA_OPTIONS,
             ANDROID_JAVAC_OPTIONS,
-            new ProGuardConfig(new FakeBuckConfig()),
+            new ProGuardConfig(FakeBuckConfig.builder().build()),
             ImmutableMap.<NdkCxxPlatforms.TargetCpuType, NdkCxxPlatform>of(),
-            MoreExecutors.newDirectExecutorService()),
+            MoreExecutors.newDirectExecutorService(),
+            CxxPlatformUtils.DEFAULT_CONFIG),
         target);
   }
 
@@ -62,6 +66,11 @@ public class AndroidBinaryBuilder extends AbstractNodeBuilder<AndroidBinaryDescr
   public AndroidBinaryBuilder setKeystore(BuildTarget keystore) {
     arg.keystore = keystore;
     amend(arg.deps, keystore);
+    return this;
+  }
+
+  public AndroidBinaryBuilder setPackageType(String packageType) {
+    arg.packageType = Optional.of(packageType);
     return this;
   }
 

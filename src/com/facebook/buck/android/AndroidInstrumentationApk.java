@@ -16,7 +16,7 @@
 
 package com.facebook.buck.android;
 
-import com.facebook.buck.java.JavaLibrary;
+import com.facebook.buck.jvm.java.JavaLibrary;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
@@ -24,7 +24,6 @@ import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.util.concurrent.ListeningExecutorService;
 
-import java.nio.file.Path;
 import java.util.EnumSet;
 
 
@@ -43,11 +42,14 @@ import java.util.EnumSet;
  */
 public class AndroidInstrumentationApk extends AndroidBinary {
 
+  private AndroidBinary apkUnderTest;
+
   AndroidInstrumentationApk(
       BuildRuleParams buildRuleParams,
       SourcePathResolver resolver,
-      Optional<Path> proGuardJarOverride,
+      Optional<SourcePath> proGuardJarOverride,
       String proGuardMaxHeapSize,
+      Optional<String> proguardAgentPath,
       AndroidBinary apkUnderTest,
       ImmutableSortedSet<JavaLibrary> rulesToExcludeFromDex,
       AndroidGraphEnhancementResult enhancementResult,
@@ -57,6 +59,7 @@ public class AndroidInstrumentationApk extends AndroidBinary {
         resolver,
         proGuardJarOverride,
         proGuardMaxHeapSize,
+        proguardAgentPath,
         apkUnderTest.getKeystore(),
         PackageType.INSTRUMENTED,
         // Do not split the test apk even if the tested apk is split
@@ -74,11 +77,20 @@ public class AndroidInstrumentationApk extends AndroidBinary {
         Optional.<String>absent(),
         rulesToExcludeFromDex,
         enhancementResult,
-        // reordering is not supported in instrumentation. TODO(user): add support
+        // reordering is not supported in instrumentation. TODO(dtarjan): add support
         Optional.<Boolean>absent(),
         Optional.<SourcePath>absent(),
         Optional.<SourcePath>absent(),
         Optional.<Integer>absent(),
-        dxExecutorService);
+        dxExecutorService,
+        Optional.<Boolean>absent(),
+        Optional.<Boolean>absent(),
+        apkUnderTest.getManifestEntries(),
+        apkUnderTest.getJavaRuntimeLauncher());
+    this.apkUnderTest = apkUnderTest;
+  }
+
+  public AndroidBinary getApkUnderTest() {
+    return apkUnderTest;
   }
 }

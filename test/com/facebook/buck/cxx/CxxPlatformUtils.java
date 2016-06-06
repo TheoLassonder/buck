@@ -16,29 +16,59 @@
 
 package com.facebook.buck.cxx;
 
+import com.facebook.buck.cli.FakeBuckConfig;
+import com.facebook.buck.model.FlavorDomain;
 import com.facebook.buck.model.ImmutableFlavor;
-
-import java.nio.file.Paths;
+import com.facebook.buck.rules.CommandTool;
+import com.facebook.buck.rules.ConstantToolProvider;
+import com.facebook.buck.rules.Tool;
 
 public class CxxPlatformUtils {
 
   private CxxPlatformUtils() {}
 
+  public static final CxxBuckConfig DEFAULT_CONFIG =
+      new CxxBuckConfig(new FakeBuckConfig.Builder().build());
+
+  private static final Tool DEFAULT_TOOL = new CommandTool.Builder().build();
+
+  private static final PreprocessorProvider DEFAULT_PREPROCESSOR_PROVIDER =
+      new PreprocessorProvider(
+          new ConstantToolProvider(DEFAULT_TOOL),
+          CxxToolProvider.Type.DEFAULT);
+
+  private static final CompilerProvider DEFAULT_COMPILER_PROVIDER =
+      new CompilerProvider(
+          new ConstantToolProvider(DEFAULT_TOOL),
+          CxxToolProvider.Type.DEFAULT);
+
   public static final CxxPlatform DEFAULT_PLATFORM =
       CxxPlatform.builder()
           .setFlavor(ImmutableFlavor.of("platform"))
-          .setAs(new HashedFileTool(Paths.get("tool")))
-          .setAspp(new HashedFileTool(Paths.get("tool")))
-          .setCc(new DefaultCompiler(new HashedFileTool(Paths.get("tool"))))
-          .setCpp(new HashedFileTool(Paths.get("tool")))
-          .setCxx(new DefaultCompiler(new HashedFileTool(Paths.get("tool"))))
-          .setCxxpp(new HashedFileTool(Paths.get("tool")))
-          .setCxxld(new GnuLinker(new HashedFileTool(Paths.get("tool"))))
-          .setLd(new GnuLinker(new HashedFileTool(Paths.get("tool"))))
-          .setStrip(new HashedFileTool(Paths.get("tool")))
-          .setAr(new GnuArchiver(new HashedFileTool(Paths.get("tool"))))
-          .setSharedLibraryExtension(".so")
+          .setAs(DEFAULT_COMPILER_PROVIDER)
+          .setAspp(DEFAULT_PREPROCESSOR_PROVIDER)
+          .setCc(DEFAULT_COMPILER_PROVIDER)
+          .setCpp(DEFAULT_PREPROCESSOR_PROVIDER)
+          .setCxx(DEFAULT_COMPILER_PROVIDER)
+          .setCxxpp(DEFAULT_PREPROCESSOR_PROVIDER)
+          .setCuda(DEFAULT_COMPILER_PROVIDER)
+          .setCudapp(DEFAULT_PREPROCESSOR_PROVIDER)
+          .setAsm(DEFAULT_COMPILER_PROVIDER)
+          .setAsmpp(DEFAULT_PREPROCESSOR_PROVIDER)
+          .setLd(
+              new DefaultLinkerProvider(
+                  LinkerProvider.Type.GNU,
+                  new ConstantToolProvider(DEFAULT_TOOL)))
+          .setStrip(DEFAULT_TOOL)
+          .setAr(new GnuArchiver(DEFAULT_TOOL))
+          .setRanlib(DEFAULT_TOOL)
+          .setSymbolNameTool(new PosixNmSymbolNameTool(DEFAULT_TOOL))
+          .setSharedLibraryExtension("so")
+          .setSharedLibraryVersionedExtensionFormat("so.%s")
           .setDebugPathSanitizer(CxxPlatforms.DEFAULT_DEBUG_PATH_SANITIZER)
           .build();
+
+    public static final FlavorDomain<CxxPlatform> DEFAULT_PLATFORMS =
+        FlavorDomain.of("C/C++ Platform", DEFAULT_PLATFORM);
 
 }

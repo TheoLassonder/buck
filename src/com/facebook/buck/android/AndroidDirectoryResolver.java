@@ -26,25 +26,34 @@ import java.nio.file.Path;
  */
 public interface AndroidDirectoryResolver {
   /**
-   * @return {@code Optional.absent()} of the Android SDK is not found, Otherwise an
-   * {@code Optional<File>} pointing to the Android SDK.
+   * @return {@code Optional<Path>} pointing to Android SDK or {@code Optional.absent()}.
    */
-  Optional<Path> findAndroidSdkDirSafe();
+  Optional<Path> getSdkOrAbsent();
 
   /**
-   * @return The location of the Android SDK.  If the Android SDK is not found, an exception should
-   * be thrown.
+   * @return {@code Path} pointing to Android SDK or throws an exception why SDK was not found.
    */
-  Path findAndroidSdkDir();
+  Path getSdkOrThrow();
 
   /**
-   * @return {@code Optional.absent()} of the Android NDK is not found, Otherwise an
-   * {@code Optional<File>} pointing to the Android NDK.
+   * @return {@code Path} pointing to Android NDK or throws an exception why NDK was not found.
    */
-  Optional<Path> findAndroidNdkDir();
+  Path getNdkOrThrow();
 
   /**
-   * @return The NDK version in use from the directory returned by {@link #findAndroidNdkDir()}.
+   * @return {@code Path} pointing to Android SDK build tools or throws an exception why the build
+   * tools were not found.
+   */
+  Path getBuildToolsOrThrow();
+
+  /**
+   * @return {@code Optional<Path>} pointing to Android NDK or {@code Optional.absent()}.
+   */
+  Optional<Path> getNdkOrAbsent();
+
+  /**
+   * @return {@code Optional<String>} of the NDK version pointed by {@code #getNdkOrAbsent} or
+   * {@code Optional.absent()}.
    */
   Optional<String> getNdkVersion();
 }

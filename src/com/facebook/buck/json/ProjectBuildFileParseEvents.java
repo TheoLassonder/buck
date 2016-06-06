@@ -17,20 +17,29 @@
 package com.facebook.buck.json;
 
 import com.facebook.buck.event.AbstractBuckEvent;
-import com.facebook.buck.event.BuckEvent;
+import com.facebook.buck.event.EventKey;
 import com.facebook.buck.event.LeafEvent;
+import com.facebook.buck.event.WorkAdvanceEvent;
 
 /**
  * Events posted before and after running buck.py.
  */
-public class ProjectBuildFileParseEvents {
+public abstract class ProjectBuildFileParseEvents
+    extends AbstractBuckEvent
+    implements LeafEvent, WorkAdvanceEvent {
   // This class does nothing; it exists only to group two AbstractBuckEvents.
-  private ProjectBuildFileParseEvents() { }
+  private ProjectBuildFileParseEvents(EventKey eventKey) {
+    super(eventKey);
+  }
 
   /**
    * Event posted immediately before launching buck.py to parse BUCK files.
    */
-  public static class Started extends AbstractBuckEvent implements LeafEvent {
+  public static class Started extends ProjectBuildFileParseEvents {
+    public Started() {
+      super(EventKey.unique());
+    }
+
     @Override
     public String getEventName() {
       return "BuckFilesParseStarted";
@@ -45,17 +54,17 @@ public class ProjectBuildFileParseEvents {
     protected String getValueString() {
       return "";
     }
-
-    @Override
-    public boolean isRelatedTo(BuckEvent event) {
-      return (event instanceof ProjectBuildFileParseEvents.Finished);
-    }
   }
 
   /**
    * Event posted immediately after buck.py exits having parsed BUCK files.
    */
-  public static class Finished extends AbstractBuckEvent implements LeafEvent {
+  public static class Finished extends ProjectBuildFileParseEvents {
+
+    public Finished(Started started) {
+      super(started.getEventKey());
+    }
+
     @Override
     public String getEventName() {
       return "BuckFilesParseFinished";
@@ -69,11 +78,6 @@ public class ProjectBuildFileParseEvents {
     @Override
     protected String getValueString() {
       return "";
-    }
-
-    @Override
-    public boolean isRelatedTo(BuckEvent event) {
-      return (event instanceof ProjectBuildFileParseEvents.Started);
     }
   }
 }

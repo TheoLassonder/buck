@@ -22,7 +22,7 @@ import com.facebook.buck.rules.BuildRuleType;
 import com.facebook.buck.rules.Description;
 import com.facebook.buck.rules.NoopBuildRule;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.facebook.infer.annotation.SuppressFieldNotInitialized;
+import com.facebook.buck.rules.TargetGraph;
 
 /**
  * Description for an xcode_postbuild_script rule which runs a shell script
@@ -35,13 +35,13 @@ import com.facebook.infer.annotation.SuppressFieldNotInitialized;
  *   cmd = '../Tools/pngcrush.sh',
  * )
  * </pre>
- * </p>
+ * <p>
  * This rule is a hack and in the long-term should be replaced with a rule
  * which operates similarly to apk_genrule, or should be removed entirely
  * if possible. Those rules do nothing when building with Buck.
  */
 public class XcodePostbuildScriptDescription
-  implements Description<XcodePostbuildScriptDescription.Arg> {
+  implements Description<XcodeScriptDescriptionArg> {
 
   public static final BuildRuleType TYPE = BuildRuleType.of("xcode_postbuild_script");
 
@@ -51,20 +51,17 @@ public class XcodePostbuildScriptDescription
   }
 
   @Override
-  public Arg createUnpopulatedConstructorArg() {
-    return new Arg();
+  public XcodeScriptDescriptionArg createUnpopulatedConstructorArg() {
+    return new XcodeScriptDescriptionArg();
   }
 
   @Override
-  public <A extends Arg> NoopBuildRule createBuildRule(
-    BuildRuleParams params,
-    BuildRuleResolver resolver,
-    A args) {
+  public <A extends XcodeScriptDescriptionArg> NoopBuildRule createBuildRule(
+      TargetGraph targetGraph,
+      BuildRuleParams params,
+      BuildRuleResolver resolver,
+      A args) {
     return new NoopBuildRule(params, new SourcePathResolver(resolver));
   }
 
-  @SuppressFieldNotInitialized
-  public static class Arg {
-    public String cmd;
-  }
 }

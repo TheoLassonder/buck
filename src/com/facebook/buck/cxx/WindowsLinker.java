@@ -16,12 +16,21 @@
 
 package com.facebook.buck.cxx;
 
-import com.facebook.buck.rules.RuleKey;
+import com.facebook.buck.io.FileScrubber;
+import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.rules.BuildRule;
+import com.facebook.buck.rules.BuildRuleParams;
+import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.RuleKeyObjectSink;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.rules.Tool;
+import com.facebook.buck.rules.args.Arg;
+import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.ImmutableMap;
+
+import java.nio.file.Path;
 
 /**
  * A specialization of {@link Linker} containing information specific to the Windows implementation.
@@ -34,7 +43,12 @@ public class WindowsLinker implements Linker {
   }
 
   @Override
-  public ImmutableSortedSet<SourcePath> getInputs() {
+  public ImmutableCollection<BuildRule> getDeps(SourcePathResolver resolver) {
+    return tool.getDeps(resolver);
+  }
+
+  @Override
+  public ImmutableCollection<SourcePath> getInputs() {
     return tool.getInputs();
   }
 
@@ -44,7 +58,17 @@ public class WindowsLinker implements Linker {
   }
 
   @Override
-  public Iterable<String> linkWhole(String arg) {
+  public ImmutableMap<String, String> getEnvironment(SourcePathResolver resolver) {
+    return tool.getEnvironment(resolver);
+  }
+
+  @Override
+  public ImmutableList<FileScrubber> getScrubbers(ImmutableCollection<Path> cellRoots) {
+    return ImmutableList.of();
+  }
+
+  @Override
+  public Iterable<Arg> linkWhole(Arg input) {
     return ImmutableList.of();
   }
 
@@ -54,8 +78,53 @@ public class WindowsLinker implements Linker {
   }
 
   @Override
-  public RuleKey.Builder appendToRuleKey(RuleKey.Builder builder) {
-    return builder
+  public Iterable<Arg> fileList(Path fileListPath) {
+    return ImmutableList.of();
+  }
+
+  @Override
+  public String origin() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public String libOrigin() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public String searchPathEnvVar() {
+    return "PATH";
+  }
+
+  @Override
+  public String preloadEnvVar() {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public ImmutableList<Arg> createUndefinedSymbolsLinkerArgs(
+      BuildRuleParams baseParams,
+      BuildRuleResolver ruleResolver,
+      SourcePathResolver pathResolver,
+      BuildTarget target,
+      Iterable<? extends SourcePath> symbolFiles) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public Iterable<String> getNoAsNeededSharedLibsFlags() {
+    return ImmutableList.of();
+  }
+
+  @Override
+  public Iterable<String> getIgnoreUndefinedSymbolsFlags() {
+    return ImmutableList.of();
+  }
+
+  @Override
+  public void appendToRuleKey(RuleKeyObjectSink sink) {
+    sink
         .setReflectively("tool", tool)
         .setReflectively("type", getClass().getSimpleName());
   }

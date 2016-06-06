@@ -23,9 +23,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Functions;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.Lists;
-import com.google.common.eventbus.EventBus;
 import com.google.common.eventbus.Subscribe;
-import com.google.common.util.concurrent.MoreExecutors;
 
 import java.util.List;
 import java.util.logging.Level;
@@ -58,16 +56,13 @@ public class BuckEventBusFactory {
    * that would not otherwise be noticed.
    */
   public static BuckEventBus newInstance(Clock clock, BuildId buildId) {
-    BuckEventBus buckEventBus = new BuckEventBus(clock,
-        MoreExecutors.newDirectExecutorService(),
+    BuckEventBus buckEventBus = new BuckEventBus(
+        clock,
+        false,
         buildId,
         BuckEventBus.DEFAULT_SHUTDOWN_TIMEOUT_MS);
     buckEventBus.register(new ErrorListener());
     return buckEventBus;
-  }
-
-  public static EventBus getEventBusFor(BuckEventBus buckEventBus) {
-    return buckEventBus.getEventBus();
   }
 
   /**

@@ -26,16 +26,17 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 
 import com.facebook.buck.android.AndroidPlatformTarget;
+import com.facebook.buck.artifact_cache.ArtifactCache;
 import com.facebook.buck.event.BuckEventBus;
 import com.facebook.buck.event.BuckEventBusFactory;
 import com.facebook.buck.event.BuckEventBusFactory.CapturingConsoleEventListener;
 import com.facebook.buck.io.MorePaths;
-import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.JavaPackageFinder;
+import com.facebook.buck.jvm.core.JavaPackageFinder;
 import com.facebook.buck.model.BuildId;
 import com.facebook.buck.step.StepRunner;
 import com.facebook.buck.timing.Clock;
 import com.facebook.buck.util.HumanReadableException;
+import com.facebook.buck.util.ObjectMappers;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
@@ -56,12 +57,12 @@ public class BuildContextTest {
     // Set to non-null values.
     builder.setActionGraph(createMock(ActionGraph.class));
     builder.setStepRunner(createMock(StepRunner.class));
-    builder.setProjectFilesystem(createMock(ProjectFilesystem.class));
     builder.setArtifactCache(createMock(ArtifactCache.class));
     builder.setJavaPackageFinder(createMock(JavaPackageFinder.class));
     builder.setEventBus(BuckEventBusFactory.newInstance());
     builder.setClock(createMock(Clock.class));
     builder.setBuildId(createMock(BuildId.class));
+    builder.setObjectMapper(ObjectMappers.newDefaultInstance());
 
     AndroidPlatformTarget androidPlatformTarget = createMock(AndroidPlatformTarget.class);
     List<Path> entries = ImmutableList.of(
@@ -100,12 +101,12 @@ public class BuildContextTest {
     // Set to non-null values.
     builder.setActionGraph(createMock(ActionGraph.class));
     builder.setStepRunner(createMock(StepRunner.class));
-    builder.setProjectFilesystem(createMock(ProjectFilesystem.class));
     builder.setArtifactCache(createMock(ArtifactCache.class));
     builder.setJavaPackageFinder(createMock(JavaPackageFinder.class));
     builder.setEventBus(BuckEventBusFactory.newInstance());
     builder.setClock(createMock(Clock.class));
     builder.setBuildId(createMock(BuildId.class));
+    builder.setObjectMapper(ObjectMappers.newDefaultInstance());
 
     BuildContext context = builder.build();
     Supplier<String> androidBootclasspathSupplier = context.getAndroidBootclasspathSupplier();
@@ -122,12 +123,12 @@ public class BuildContextTest {
     // Set to non-null values.
     builder.setActionGraph(createMock(ActionGraph.class));
     builder.setStepRunner(createMock(StepRunner.class));
-    builder.setProjectFilesystem(createMock(ProjectFilesystem.class));
     builder.setArtifactCache(createMock(ArtifactCache.class));
     builder.setJavaPackageFinder(createMock(JavaPackageFinder.class));
     builder.setEventBus(BuckEventBusFactory.newInstance());
     builder.setClock(createMock(Clock.class));
     builder.setBuildId(createMock(BuildId.class));
+    builder.setObjectMapper(ObjectMappers.newDefaultInstance());
 
     // Set to value that throws if executed.
     builder.setAndroidBootclasspathSupplier(
@@ -150,12 +151,12 @@ public class BuildContextTest {
     BuildContext buildContext = ImmutableBuildContext.builder()
         .setActionGraph(createMock(ActionGraph.class))
         .setStepRunner(createMock(StepRunner.class))
-        .setProjectFilesystem(createMock(ProjectFilesystem.class))
         .setArtifactCache(createMock(ArtifactCache.class))
         .setJavaPackageFinder(createMock(JavaPackageFinder.class))
         .setClock(createMock(Clock.class))
         .setBuildId(createMock(BuildId.class))
         .setEventBus(eventBus)
+        .setObjectMapper(ObjectMappers.newDefaultInstance())
         .build();
 
     buildContext.logError(new RuntimeException(), "Error detail: %s", "BUILD_ID");

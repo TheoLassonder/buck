@@ -17,15 +17,21 @@
 package com.facebook.buck.rules;
 
 import com.facebook.buck.event.AbstractBuckEvent;
-import com.facebook.buck.event.BuckEvent;
+import com.facebook.buck.event.EventKey;
 import com.facebook.buck.event.LeafEvent;
+import com.facebook.buck.event.WorkAdvanceEvent;
 
 
 /**
  * Base class for events about building up the action graph from the target graph.
  */
-@SuppressWarnings("PMD.OverrideBothEqualsAndHashcode")
-public abstract class ActionGraphEvent extends AbstractBuckEvent implements LeafEvent {
+public abstract class ActionGraphEvent
+    extends AbstractBuckEvent
+    implements LeafEvent, WorkAdvanceEvent {
+
+  public ActionGraphEvent(EventKey eventKey) {
+    super(eventKey);
+  }
 
   @Override
   protected String getValueString() {
@@ -41,15 +47,18 @@ public abstract class ActionGraphEvent extends AbstractBuckEvent implements Leaf
     return new Started();
   }
 
-  public static Finished finished() {
-    return new Finished();
+  public static Processed processed(int p, int t) {
+    return new Processed(p, t);
+  }
+
+  public static Finished finished(Started started) {
+    return new Finished(started);
   }
 
   public static class Started extends ActionGraphEvent {
 
-    @Override
-    public boolean isRelatedTo(BuckEvent event) {
-      return event instanceof ActionGraphEvent.Finished;
+    public Started() {
+      super(EventKey.unique());
     }
 
     @Override
@@ -58,11 +67,32 @@ public abstract class ActionGraphEvent extends AbstractBuckEvent implements Leaf
     }
   }
 
-  public static class Finished extends ActionGraphEvent {
+  public static class Processed extends ActionGraphEvent {
+
+    private int processed;
+    private int total;
+
+    public Processed(int processed, int total) {
+      super(EventKey.unique());
+      this.processed = processed;
+      this.total = total;
+    }
 
     @Override
-    public boolean isRelatedTo(BuckEvent event) {
-      return event instanceof ActionGraphEvent.Started;
+    public String getEventName() {
+      return "BuildActionGraphProcessed";
+    }
+
+    @Override
+    protected String getValueString() {
+      return processed + " of " + total;
+    }
+  }
+
+  public static class Finished extends ActionGraphEvent {
+
+    public Finished(Started started) {
+      super(started.getEventKey());
     }
 
     @Override

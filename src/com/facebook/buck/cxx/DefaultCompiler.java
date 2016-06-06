@@ -16,13 +16,15 @@
 
 package com.facebook.buck.cxx;
 
-import com.facebook.buck.rules.RuleKey;
+import com.facebook.buck.rules.BuildRule;
+import com.facebook.buck.rules.RuleKeyObjectSink;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.rules.Tool;
 import com.google.common.base.Optional;
+import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.ImmutableMap;
 
 public class DefaultCompiler implements Compiler {
 
@@ -38,7 +40,17 @@ public class DefaultCompiler implements Compiler {
   }
 
   @Override
-  public ImmutableSortedSet<SourcePath> getInputs() {
+  public Optional<ImmutableList<String>> getFlagsForColorDiagnostics() {
+    return Optional.absent();
+  }
+
+  @Override
+  public ImmutableCollection<BuildRule> getDeps(SourcePathResolver resolver) {
+    return tool.getDeps(resolver);
+  }
+
+  @Override
+  public ImmutableCollection<SourcePath> getInputs() {
     return tool.getInputs();
   }
 
@@ -48,8 +60,13 @@ public class DefaultCompiler implements Compiler {
   }
 
   @Override
-  public RuleKey.Builder appendToRuleKey(RuleKey.Builder builder) {
-    return builder
+  public ImmutableMap<String, String> getEnvironment(SourcePathResolver resolver) {
+    return tool.getEnvironment(resolver);
+  }
+
+  @Override
+  public void appendToRuleKey(RuleKeyObjectSink sink) {
+    sink
         .setReflectively("tool", tool)
         .setReflectively("type", getClass().getSimpleName());
   }

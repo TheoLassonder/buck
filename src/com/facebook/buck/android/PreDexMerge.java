@@ -18,7 +18,6 @@ package com.facebook.buck.android;
 
 import com.facebook.buck.android.PreDexMerge.BuildOutput;
 import com.facebook.buck.io.MorePaths;
-import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.rules.AbstractBuildRule;
 import com.facebook.buck.rules.AddToRuleKey;
@@ -34,6 +33,7 @@ import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.step.AbstractExecutionStep;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
 import com.facebook.buck.step.fs.MkdirStep;
 import com.google.common.base.Function;
@@ -90,7 +90,7 @@ public class PreDexMerge extends AbstractBuildRule implements InitializableFromD
   @AddToRuleKey
   private final DexSplitMode dexSplitMode;
   private final ImmutableSet<DexProducedFromJavaLibrary> preDexDeps;
-  private final AaptPackageResources aaptPackageResources;
+  private final DexProducedFromJavaLibrary dexForUberRDotJava;
   private final ListeningExecutorService dxExecutorService;
   private final BuildOutputInitializer<BuildOutput> buildOutputInitializer;
   private final Optional<Integer> xzCompressionLevel;
@@ -101,14 +101,14 @@ public class PreDexMerge extends AbstractBuildRule implements InitializableFromD
       Path primaryDexPath,
       DexSplitMode dexSplitMode,
       ImmutableSet<DexProducedFromJavaLibrary> preDexDeps,
-      AaptPackageResources aaptPackageResources,
+      DexProducedFromJavaLibrary dexForUberRDotJava,
       ListeningExecutorService dxExecutorService,
       Optional<Integer> xzCompressionLevel) {
     super(params, resolver);
     this.primaryDexPath = primaryDexPath;
     this.dexSplitMode = dexSplitMode;
     this.preDexDeps = preDexDeps;
-    this.aaptPackageResources = aaptPackageResources;
+    this.dexForUberRDotJava = dexForUberRDotJava;
     this.dxExecutorService = dxExecutorService;
     this.buildOutputInitializer = new BuildOutputInitializer<>(params.getBuildTarget(), this);
     this.xzCompressionLevel = xzCompressionLevel;
@@ -120,7 +120,7 @@ public class PreDexMerge extends AbstractBuildRule implements InitializableFromD
       BuildableContext buildableContext) {
 
     ImmutableList.Builder<Step> steps = ImmutableList.builder();
-    steps.add(new MkdirStep(primaryDexPath.getParent()));
+    steps.add(new MkdirStep(getProjectFilesystem(), primaryDexPath.getParent()));
 
     if (dexSplitMode.isShouldSplitDex()) {
       addStepsForSplitDex(steps, context, buildableContext);
@@ -143,7 +143,8 @@ public class PreDexMerge extends AbstractBuildRule implements InitializableFromD
     private final Path metadataFile;
 
     private SplitDexPaths() {
-      Path workDir = BuildTargets.getScratchPath(getBuildTarget(), "_%s_output");
+      Path workDir =
+          BuildTargets.getScratchPath(getProjectFilesystem(), getBuildTarget(), "_%s_output");
 
       metadataDir = workDir.resolve("metadata");
       jarfilesDir = workDir.resolve("jarfiles");
@@ -181,15 +182,17 @@ public class PreDexMerge extends AbstractBuildRule implements InitializableFromD
     }
     // Do not clear existing directory which might contain secondary dex files that are not
     // re-merged (since their contents did not change).
-    steps.add(new MkdirStep(paths.jarfilesSubdir));
-    steps.add(new MkdirStep(paths.successDir));
+    steps.add(new MkdirStep(getProjectFilesystem(), paths.jarfilesSubdir));
+    steps.add(new MkdirStep(getProjectFilesystem(), paths.successDir));
 
-    steps.add(new MakeCleanDirectoryStep(paths.metadataSubdir));
-    steps.add(new MakeCleanDirectoryStep(paths.scratchDir));
+    steps.add(new MakeCleanDirectoryStep(getProjectFilesystem(), paths.metadataSubdir));
+    steps.add(new MakeCleanDirectoryStep(getProjectFilesystem(), paths.scratchDir));
 
     buildableContext.addMetadata(
         SECONDARY_DEX_DIRECTORIES_KEY,
-        Iterables.transform(secondaryDexDirectories, Functions.toStringFunction()));
+        FluentIterable.from(secondaryDexDirectories)
+            .transform(Functions.toStringFunction())
+            .toList());
 
     buildableContext.recordArtifact(primaryDexPath);
     buildableContext.recordArtifact(paths.jarfilesSubdir);
@@ -197,7 +200,8 @@ public class PreDexMerge extends AbstractBuildRule implements InitializableFromD
     buildableContext.recordArtifact(paths.successDir);
 
     PreDexedFilesSorter preDexedFilesSorter = new PreDexedFilesSorter(
-        aaptPackageResources.getRDotJavaDexWithClasses(),
+        Optional.fromNullable(
+            DexWithClasses.TO_DEX_WITH_CLASSES.apply(dexForUberRDotJava)),
         dexFilesToMerge,
         dexSplitMode.getPrimaryDexPatterns(),
         paths.scratchDir,
@@ -205,30 +209,36 @@ public class PreDexMerge extends AbstractBuildRule implements InitializableFromD
         dexSplitMode.getDexStore(),
         paths.jarfilesSubdir);
     final PreDexedFilesSorter.Result sortResult =
-        preDexedFilesSorter.sortIntoPrimaryAndSecondaryDexes(context, steps);
+        preDexedFilesSorter.sortIntoPrimaryAndSecondaryDexes(
+            context,
+            getProjectFilesystem(),
+            steps);
 
-    steps.add(new SmartDexingStep(
-        primaryDexPath,
-        Suppliers.ofInstance(sortResult.primaryDexInputs),
-        Optional.of(paths.jarfilesSubdir),
-        Optional.of(Suppliers.ofInstance(sortResult.secondaryOutputToInputs)),
-        sortResult.dexInputHashesProvider,
-        paths.successDir,
-        DX_MERGE_OPTIONS,
-        dxExecutorService,
-        xzCompressionLevel));
+    steps.add(
+        new SmartDexingStep(
+            getProjectFilesystem(),
+            primaryDexPath,
+            Suppliers.ofInstance(sortResult.primaryDexInputs),
+            Optional.of(paths.jarfilesSubdir),
+            Optional.of(Suppliers.ofInstance(sortResult.secondaryOutputToInputs)),
+            sortResult.dexInputHashesProvider,
+            paths.successDir,
+            DX_MERGE_OPTIONS,
+            dxExecutorService,
+            xzCompressionLevel));
 
     // Record the primary dex SHA1 so exopackage apks can use it to compute their ABI keys.
     // Single dex apks cannot be exopackages, so they will never need ABI keys.
-    steps.add(new RecordFileSha1Step(
-        primaryDexPath,
-        PRIMARY_DEX_HASH_KEY,
-        buildableContext));
+    steps.add(
+        new RecordFileSha1Step(
+            getProjectFilesystem(),
+            primaryDexPath,
+            PRIMARY_DEX_HASH_KEY,
+            buildableContext));
 
     steps.add(new AbstractExecutionStep("write_metadata_txt") {
       @Override
-      public int execute(ExecutionContext executionContext) {
-        ProjectFilesystem filesystem = executionContext.getProjectFilesystem();
+      public StepExecutionResult execute(ExecutionContext executionContext) {
         Map<Path, DexWithClasses> metadataTxtEntries = sortResult.metadataTxtDexEntries;
         List<String> lines = Lists.newArrayListWithCapacity(metadataTxtEntries.size());
         if (dexSplitMode.getDexStore() == DexStore.RAW) {
@@ -240,16 +250,16 @@ public class PreDexMerge extends AbstractBuildRule implements InitializableFromD
             Path pathToSecondaryDex = entry.getKey();
             String containedClass = Iterables.get(entry.getValue().getClassNames(), 0);
             containedClass = containedClass.replace('/', '.');
-            String hash = filesystem.computeSha1(pathToSecondaryDex);
+            String hash = getProjectFilesystem().computeSha1(pathToSecondaryDex);
             lines.add(String.format("%s %s %s",
                 pathToSecondaryDex.getFileName(), hash, containedClass));
           }
-          filesystem.writeLinesToPath(lines, paths.metadataFile);
+          getProjectFilesystem().writeLinesToPath(lines, paths.metadataFile);
         } catch (IOException e) {
           executionContext.logError(e, "Failed when writing metadata.txt multi-dex.");
-          return 1;
+          return StepExecutionResult.ERROR;
         }
-        return 0;
+        return StepExecutionResult.SUCCESS;
       }
     });
   }
@@ -274,8 +284,8 @@ public class PreDexMerge extends AbstractBuildRule implements InitializableFromD
         .filter(Predicates.notNull());
 
     // If this APK has Android resources, then the generated R.class files also need to be dexed.
-    Optional<DexWithClasses> rDotJavaDexWithClasses =
-        aaptPackageResources.getRDotJavaDexWithClasses();
+    Optional<DexWithClasses> rDotJavaDexWithClasses = Optional.fromNullable(
+            DexWithClasses.TO_DEX_WITH_CLASSES.apply(dexForUberRDotJava));
     if (rDotJavaDexWithClasses.isPresent()) {
       filesToDex = Iterables.concat(
           filesToDex,
@@ -285,11 +295,16 @@ public class PreDexMerge extends AbstractBuildRule implements InitializableFromD
     buildableContext.recordArtifact(primaryDexPath);
 
     // This will combine the pre-dexed files and the R.class files into a single classes.dex file.
-    steps.add(new DxStep(primaryDexPath, filesToDex, DX_MERGE_OPTIONS));
+    steps.add(
+        new DxStep(
+            getProjectFilesystem(),
+            primaryDexPath,
+            filesToDex,
+            DX_MERGE_OPTIONS));
 
     buildableContext.addMetadata(
         SECONDARY_DEX_DIRECTORIES_KEY,
-        ImmutableSet.<String>of());
+        ImmutableList.<String>of());
   }
 
   public Path getMetadataTxtPath() {

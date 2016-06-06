@@ -16,18 +16,19 @@
 
 package com.facebook.buck.rules;
 
-import com.facebook.buck.graph.AbstractAcyclicDepthFirstPostOrderTraversal;
-import com.facebook.buck.graph.AbstractAcyclicDepthFirstPostOrderTraversal.CycleException;
+import com.facebook.buck.graph.AcyclicDepthFirstPostOrderTraversal;
+import com.facebook.buck.graph.AcyclicDepthFirstPostOrderTraversal.CycleException;
+import com.facebook.buck.graph.GraphTraversable;
+import com.facebook.buck.hashing.FileHashLoader;
 import com.facebook.buck.hashing.PathHashing;
 import com.facebook.buck.hashing.StringHashing;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.log.Logger;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.util.HumanReadableException;
-import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.hash.HashCode;
 import com.google.common.hash.Hasher;
 import com.google.common.hash.Hashing;
@@ -56,113 +57,75 @@ public class TargetGraphHashing {
    * build targets and their dependencies.
    */
   public static ImmutableMap<BuildTarget, HashCode> hashTargetGraph(
-      ProjectFilesystem projectFilesystem,
-      TargetGraph targetGraph,
-      Function<BuildTarget, HashCode> buildTargetToRuleHashCode,
-      BuildTarget... roots
-    ) throws IOException {
-    return hashTargetGraph(
-        projectFilesystem,
-        targetGraph,
-        buildTargetToRuleHashCode,
-        ImmutableList.copyOf(roots)
-    );
-  }
-
-  /**
-   * Given a {@link TargetGraph} and any number of root nodes to traverse,
-   * returns a map of {@code (BuildTarget, HashCode)} pairs for all root
-   * build targets and their dependencies.
-   */
-  public static ImmutableMap<BuildTarget, HashCode> hashTargetGraph(
-      ProjectFilesystem projectFilesystem,
-      TargetGraph targetGraph,
-      Function<BuildTarget, HashCode> buildTargetToRuleHashCode,
-      Iterable<BuildTarget> roots
-    ) throws IOException {
+      Cell rootCell,
+      final TargetGraph targetGraph,
+      FileHashLoader fileHashLoader,
+      Iterable<TargetNode<?>> roots) throws IOException {
     try {
       Map<BuildTarget, HashCode> buildTargetHashes = new HashMap<>();
-      TargetGraphHashingTraversal traversal = new TargetGraphHashingTraversal(
-          projectFilesystem,
-          targetGraph,
-          buildTargetToRuleHashCode,
-          buildTargetHashes);
-      traversal.traverse(targetGraph.getAll(roots));
+      AcyclicDepthFirstPostOrderTraversal<TargetNode<?>> traversal =
+          new AcyclicDepthFirstPostOrderTraversal<>(
+              new GraphTraversable<TargetNode<?>>() {
+                @Override
+                public Iterator<TargetNode<?>> findChildren(TargetNode<?> node) {
+                  return targetGraph.getAll(node.getDeps()).iterator();
+                }
+              });
+      for (TargetNode<?> node : traversal.traverse(roots)) {
+        if (buildTargetHashes.containsKey(node.getBuildTarget())) {
+          LOG.verbose("Already hashed node %s, not hashing again.", node);
+          continue;
+        }
+        Hasher hasher = Hashing.sha1().newHasher();
+        try {
+          hashNode(rootCell, fileHashLoader, hasher, buildTargetHashes, node);
+        } catch (IOException e) {
+          throw new HumanReadableException(
+              e,
+              "Exception while attempting to hash %s: %s",
+              node.getBuildTarget().getFullyQualifiedName(),
+              e.getMessage());
+        }
+        HashCode result = hasher.hash();
+        LOG.debug("Hash for target %s: %s", node.getBuildTarget(), result);
+        buildTargetHashes.put(node.getBuildTarget(), result);
+      }
       return ImmutableMap.copyOf(buildTargetHashes);
-    } catch (CycleException | InterruptedException e) {
+    } catch (CycleException e) {
       throw new RuntimeException(e);
     }
   }
 
-  private static class TargetGraphHashingTraversal
-      extends AbstractAcyclicDepthFirstPostOrderTraversal<TargetNode<?>> {
-    private final ProjectFilesystem projectFilesystem;
-    private final TargetGraph targetGraph;
-    private final Function<BuildTarget, HashCode> buildTargetToRuleHashCode;
-    private final Map<BuildTarget, HashCode> buildTargetHashes;
+  private static void hashNode(
+      Cell rootCell,
+      FileHashLoader fileHashLoader,
+      Hasher hasher,
+      Map<BuildTarget, HashCode> buildTargetHashes,
+      TargetNode<?> node) throws IOException {
+    LOG.verbose("Hashing node %s", node);
+    // Hash the node's build target and rules.
+    StringHashing.hashStringAndLength(hasher, node.getBuildTarget().toString());
+    HashCode targetRuleHashCode = node.getRawInputsHashCode();
+    LOG.verbose("Got rules hash %s", targetRuleHashCode);
+    hasher.putBytes(targetRuleHashCode.asBytes());
 
-    public TargetGraphHashingTraversal(
-        ProjectFilesystem projectFilesystem,
-        TargetGraph targetGraph,
-        Function<BuildTarget, HashCode> buildTargetToRuleHashCode,
-        Map<BuildTarget, HashCode> buildTargetHashes) {
-      this.projectFilesystem = projectFilesystem;
-      this.targetGraph = targetGraph;
-      this.buildTargetToRuleHashCode = buildTargetToRuleHashCode;
-      this.buildTargetHashes = buildTargetHashes;
-    }
+    ProjectFilesystem cellFilesystem = rootCell.getCell(node.getBuildTarget()).getFilesystem();
 
-    @Override
-    protected Iterator<TargetNode<?>> findChildren(TargetNode<?> node) {
-      return targetGraph.getAll(node.getDeps()).iterator();
-    }
+    // Hash the contents of all input files and directories.
+    PathHashing.hashPaths(
+        hasher,
+        fileHashLoader,
+        cellFilesystem,
+        ImmutableSortedSet.copyOf(node.getInputs()));
 
-    @Override
-    protected void onNodeExplored(TargetNode<?> node) {
-      if (buildTargetHashes.containsKey(node.getBuildTarget())) {
-        LOG.verbose("Already hashed node %s, not hashing again.", node);
-        return;
-      }
-      Hasher hasher = Hashing.sha1().newHasher();
-      try {
-        hashNode(hasher, node);
-      } catch (IOException e) {
-        throw new HumanReadableException(
-            e,
-            "Exception while attempting to hash %s: %s",
-            node.getBuildTarget().getFullyQualifiedName(),
-            e.getMessage());
-      }
-      HashCode result = hasher.hash();
-      LOG.debug("Hash for target %s: %s", node.getBuildTarget(), result);
-      buildTargetHashes.put(node.getBuildTarget(), result);
-    }
-
-    private void hashNode(final Hasher hasher, final TargetNode<?> node) throws IOException {
-      LOG.verbose("Hashing node %s", node);
-      // Hash the node's build target and rules.
-      StringHashing.hashStringAndLength(hasher, node.getBuildTarget().toString());
-      HashCode targetRuleHashCode = buildTargetToRuleHashCode.apply(node.getBuildTarget());
-      LOG.verbose("Got rules hash %s", targetRuleHashCode);
-      hasher.putBytes(targetRuleHashCode.asBytes());
-
-      // Hash the contents of all input files and directories.
-      PathHashing.hashPaths(hasher, projectFilesystem, node.getInputs());
-
-      // We've already visited the dependencies (this is a depth-first traversal), so
-      // hash each dependency's build target and that build target's own hash.
-      for (BuildTarget dependency : node.getDeps()) {
-        HashCode dependencyHashCode = buildTargetHashes.get(dependency);
-        Preconditions.checkState(dependencyHashCode != null);
-        LOG.verbose("Node %s: adding dependency %s (%s)", node, dependency, dependencyHashCode);
-        StringHashing.hashStringAndLength(hasher, dependency.toString());
-        hasher.putBytes(dependencyHashCode.asBytes());
-      }
-    }
-
-    @Override
-    protected void onTraversalComplete(Iterable<TargetNode<?>> nodesInExplorationOrder) {
-      // Nothing to do; we did our work in onNodeExplored().
+    // We've already visited the dependencies (this is a depth-first traversal), so
+    // hash each dependency's build target and that build target's own hash.
+    for (BuildTarget dependency : node.getDeps()) {
+      HashCode dependencyHashCode = buildTargetHashes.get(dependency);
+      Preconditions.checkState(dependencyHashCode != null);
+      LOG.verbose("Node %s: adding dependency %s (%s)", node, dependency, dependencyHashCode);
+      StringHashing.hashStringAndLength(hasher, dependency.toString());
+      hasher.putBytes(dependencyHashCode.asBytes());
     }
   }
 }

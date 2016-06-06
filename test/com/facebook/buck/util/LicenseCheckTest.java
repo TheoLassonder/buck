@@ -15,18 +15,19 @@
  */
 package com.facebook.buck.util;
 
+import static com.facebook.buck.io.MorePaths.pathWithPlatformSeparators;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import com.facebook.buck.io.DirectoryTraversal;
-import com.google.common.base.Charsets;
+import com.facebook.buck.io.MorePaths;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.io.Files;
 
 import org.junit.Test;
 
-import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Set;
@@ -38,19 +39,23 @@ public class LicenseCheckTest {
   // exclude all files under "test/**/testdata/"
   private static final Set<String> NON_APACHE_LICENSE_WHITELIST = ImmutableSet.of(
       // Because it's not originally our code.
-      "com/facebook/buck/java/coverage/ReportGenerator.java",
-      "com/facebook/buck/util/WindowsCreateProcessEscape.java",
-      "com/facebook/buck/util/WindowsCreateProcessEscapeTest.java");
+      pathWithPlatformSeparators("com/facebook/buck/jvm/java/coverage/ReportGenerator.java"),
+      pathWithPlatformSeparators("com/facebook/buck/util/WindowsCreateProcessEscape.java"),
+      pathWithPlatformSeparators("com/facebook/buck/util/WindowsCreateProcessEscapeTest.java"));
+
+  private static final String NON_APACHE_LICENSE_WHITELIST_DIR =
+      pathWithPlatformSeparators("com/facebook/buck/cli/quickstart/android/");
 
   @Test
   public void ensureAllSrcFilesHaveTheApacheLicense() throws IOException {
-    new JavaCopyrightTraversal(new File("src"), false).traverse();
-    new JavaCopyrightTraversal(new File("test"), true).traverse();
+    new JavaCopyrightTraversal(Paths.get("src"), false).traverse();
+    new JavaCopyrightTraversal(Paths.get("test"), true).traverse();
   }
 
   private static class JavaCopyrightTraversal extends DirectoryTraversal {
+
     private static final Pattern LICENSE_FRAGMENT = Pattern.compile(
-        // TODO(simons): This is very lame.
+        // TODO(shs96c): This is very lame.
         // The newline character doesn't match "\w", "\\n" so do a non-greedy match until the next
         // part of the copyright.
         "^/\\\\*.*?" +
@@ -62,23 +67,23 @@ public class LicenseCheckTest {
 
     private final boolean ignoreTestData;
 
-    public JavaCopyrightTraversal(File root, boolean ignoreTestData) {
+    public JavaCopyrightTraversal(Path root, boolean ignoreTestData) {
       super(root);
       this.ignoreTestData = ignoreTestData;
     }
 
     @Override
-    public void visit(File file, String relativePath) {
-      if (!"java".equals(Files.getFileExtension(relativePath)) ||
+    public void visit(Path file, String relativePath) {
+      if (!"java".equals(MorePaths.getFileExtension(file)) ||
           // Ignore dangling symlinks.
-          !file.exists() ||
+          !Files.exists(file) ||
           NON_APACHE_LICENSE_WHITELIST.contains(relativePath) ||
-          relativePath.startsWith("com/facebook/buck/cli/quickstart/android/")) {
+          relativePath.startsWith(NON_APACHE_LICENSE_WHITELIST_DIR)) {
         return;
       }
 
       if (ignoreTestData) {
-        for (Path path : file.toPath()) {
+        for (Path path : file) {
            if (TEST_DATA.equals(path)) {
              return;
            }
@@ -86,7 +91,7 @@ public class LicenseCheckTest {
       }
 
       try {
-        String asString = Files.toString(file, Charsets.UTF_8);
+        String asString = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
 
         assertTrue("Check license of: " + relativePath,
             LICENSE_FRAGMENT.matcher(asString).matches());

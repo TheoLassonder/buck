@@ -37,34 +37,9 @@ build of the library, while an Android APK will require a shared PIC-enabled bui
 
 {call cxx_common.platform_headers_arg /}
 
-{call buck.arg}
-  {param name : 'exported_headers' /}
-  {param default : '[]' /}
-  {param desc}
-  The set of header files that are made available for inclusion to the source files in the
-  target and all targets that transitively depend on it. These should be specified as either a list
-  of header files or a dictionary of header names to header files. The headers can be included with
-  <code>#include "$HEADER_NAMESPACE/$HEADER_NAME"</code> or <code>#include
-  &lt;$HEADER_NAMESPACE/$HEADER_NAME&gt;</code>, where <code>$HEADER_NAMESPACE</code> is the value
-  of the target's <code>header_namespace</code> attribute, and <code>$HEADER_NAME</code> is the
-  header name if specified, and the filename of the header file otherwise. Note that the header name
-  can contain forward slashes (<code>/</code>). See <code>header_namespace</code> for more
-  information.
-  {/param}
-{/call}
+{call cxx_common.exported_headers_arg /}
 
-{call buck.arg}
-  {param name : 'platform_exported_headers' /}
-  {param default : '[]' /}
-  {param desc}
-  Platform specific header files. These should be specified as a list of pairs where the first
-  element is an un-anchored regex (in java.util.regex.Pattern syntax) against which the platform
-  name is matched, and the second element is either a list of header files or a dictionary of
-  header names to header files that will be made available for inclusion to the source files in the
-  target and all targets that transitively depend on it if the platform matches the regex. See
-  <code>headers</code> for more information.
-  {/param}
-{/call}
+{call cxx_common.exported_platform_headers_arg /}
 
 {call cxx_common.header_namespace_arg /}
 
@@ -72,28 +47,9 @@ build of the library, while an Android APK will require a shared PIC-enabled bui
 
 {call cxx_common.platform_preprocessor_flags_arg /}
 
-{call buck.arg}
-  {param name : 'exported_preprocessor_flags' /}
-  {param default : '[]' /}
-  {param desc}
-  Just as <code>preprocessor_flags</code>, flags to use when preprocessing any of the above sources
-  (which require preprocessing). However, unlike <code>preprocessor_flags</code>, these preprocessor
-  flags are also used by rules that transitively depend on this rule when preprocessing their own
-  sources.
-  {/param}
-{/call}
+{call cxx_common.exported_preprocessor_flags_arg /}
 
-{call buck.arg}
-  {param name : 'exported_platform_preprocessor_flags' /}
-  {param default : '[]' /}
-  {param desc}
-  Platform specific exported preprocessor flags. These should be specified as a list of pairs where
-  the first element is an un-anchored regex (in java.util.regex.Pattern syntax) against which the
-  platform name is matched, and the second element is a list of flags to use when preprocessing the
-  source files in the target and all targets that transitively depend on it if the platform matches
-  the regex. See <code>exported_preprocessor_flags</code> for more information.
-  {/param}
-{/call}
+{call cxx_common.exported_platform_preprocessor_flags_arg /}
 
 {call cxx_common.compiler_flags_arg /}
 
@@ -103,50 +59,34 @@ build of the library, while an Android APK will require a shared PIC-enabled bui
 
 {call cxx_common.platform_linker_flags_arg /}
 
-{call buck.arg}
-  {param name : 'exported_linker_flags' /}
-  {param default : '[]' /}
-  {param desc}
-  Linker flags to add to this library and to libraries that depend on this library.
-  {/param}
-{/call}
+{call cxx_common.exported_linker_flags_arg /}
+
+{call cxx_common.exported_platform_linker_flags_arg /}
+
+{call native_common.link_style /}
 
 {call buck.arg}
-  {param name : 'exported_platform_linker_flags' /}
-  {param default : '[]' /}
-  {param desc}
-  Platform specific linker flags. These should be specified as a list of pairs where the first
-  element is an un-anchored regex (in java.util.regex.Pattern syntax) against which the platform
-  name is matched, and the second element is a list of flags to use when the target and all targets
-  that transitively depend on it are involved in a link operation if the platform matches the regex.
-  See <code>exported_linker_flags</code> for more information.
-  {/param}
-{/call}
-
-{call buck.arg}
-  {param name : 'supported_platforms_regex' /}
+  {param name : 'soname' /}
   {param default : 'None' /}
   {param desc}
-  If present, an un-anchored regex (in java.util.regex.Pattern syntax) that matches all platforms
-  that this library supports. It will not be built for other platforms. (Currently, this is only
-  respected by android_binary and ndk_library.)
+  Sets the soname ("shared object name") of any shared library produced from this rule.
+  The default value is based on the full rule name.
+  The macro <code>$(ext)</code> will be replaced with a platform-appropriate extension.
+  An argument can be provided, which is a library version.
+  For example <code>soname = 'libfoo.$(ext 2.3)'</code> will be{sp}
+  <code>libfoo.2.3.dylib</code> on Mac and <code>libfoo.so.2.3</code> on Linux.
   {/param}
 {/call}
 
-{call buck.arg}
-  {param name : 'force_static' /}
-  {param default: 'false' /}
-  {param desc}
-  If <code>true</code>, the library will always be linked statically, even if the target that
-  depends on it specifies <code>link_style</code> to be something other than <code>static</code>.
-  Note this will cause duplicate symbols if multiple targets that depend on the library are linked
-  together.
-  {/param}
-{/call}
+{call cxx_common.supported_platforms_regex_arg /}
+
+{call cxx_common.force_static /}
+
+{call cxx_common.preferred_linkage /}
+
+{call cxx_common.exported_deps_arg /}
 
 {call buck.tests_arg /}
-
-{call buck.visibility_arg /}
 
 {/param} // close args
 

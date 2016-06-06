@@ -1,77 +1,48 @@
+PLATFORM_SRCS = [
+  'AbstractAppleCxxPlatform.java',
+  'AbstractApplePlatform.java',
+  'AbstractAppleSdk.java',
+  'AbstractAppleSdkPaths.java',
+  'AbstractAppleToolchain.java',
+  'AbstractMultiarchFileInfo.java',
+  'ApplePlatforms.java',
+]
+java_immutables_library(
+  name = 'platform',
+  srcs = PLATFORM_SRCS,
+  immutable_types = [
+    'AppleCxxPlatform',
+    'ApplePlatform',
+    'AppleSdk',
+    'AppleSdkPaths',
+    'AppleToolchain',
+    'MultiarchFileInfo',
+  ],
+  autodeps = True,
+  visibility = ['PUBLIC'],
+)
+
 java_immutables_library(
   name = 'rules',
-  srcs = glob([
-    '*.java',
-  ]),
-  deps = [
-    '//src/com/facebook/buck/apple/clang:headermap',
-    '//src/com/facebook/buck/apple/xcode:xcode',
-    '//src/com/facebook/buck/cli:config',
-    '//src/com/facebook/buck/cxx:platform',
-    '//src/com/facebook/buck/cxx:rules',
-    '//src/com/facebook/buck/graph:graph',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/js:js',
-    '//src/com/facebook/buck/log:api',
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/parser:rule_pattern',
-    '//src/com/facebook/buck/rules:build_rule',
-    '//src/com/facebook/buck/rules/macros:macros',
-    '//src/com/facebook/buck/rules:rules',
-    '//src/com/facebook/buck/shell:steps',
-    '//src/com/facebook/buck/shell:rules',
-    '//src/com/facebook/buck/step:step',
-    '//src/com/facebook/buck/step/fs:fs',
-    '//src/com/facebook/buck/test/selectors:selectors',
-    '//src/com/facebook/buck/test/result/type:type',
-    '//src/com/facebook/buck/test:test',
-    '//src/com/facebook/buck/util:constants',
-    '//src/com/facebook/buck/util:escaper',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/util:io',
-    '//src/com/facebook/buck/util:util',
-    '//src/com/facebook/buck/util/environment:platform',
-    '//src/com/facebook/buck/zip:steps',
-    '//third-party/java/dd-plist:dd-plist',
-    '//third-party/java/gson:gson',
-    '//third-party/java/guava:guava',
-    '//third-party/java/infer-annotations:infer-annotations',
-    '//third-party/java/jackson:jackson',
-    '//third-party/java/jsr:jsr305',
-    '//third-party/java/stringtemplate:stringtemplate',
+  srcs = glob(['*.java',], excludes=PLATFORM_SRCS),
+  immutable_types = [
+    'ApplePackageConfig',
+    'AppleBundleDestinations',
+    'AppleTestBundleParamsKey',
+    'CodeSignIdentity',
+    'FrameworkDependencies',
+    'GroupedSource',
+    'ProvisioningProfileMetadata',
   ],
-  visibility = [
-    'PUBLIC'
-  ]
-)
-
-python_library(
-  name = 'asset_catalogs_compiler',
-  srcs = [
-    'compile_asset_catalogs.py',
-  ],
-)
-
-python_test(
-  name = 'asset_catalogs_test',
-  srcs = [
-    'compile_asset_catalogs_test.py',
+  tests = [
+    '//test/com/facebook/buck/apple:apple',
+    '//test/com/facebook/buck/apple:apple_test_integration',
   ],
   deps = [
-    ':asset_catalogs_compiler',
+    '//src/com/facebook/buck/android:packageable',
   ],
-)
-
-export_file(
-  name = 'compile_asset_catalogs.py',
+  autodeps = True,
   visibility = [
     'PUBLIC'
-  ]
-)
-
-export_file(
-  name = 'compile_asset_catalogs_build_phase.sh',
-  visibility = [
-    'PUBLIC'
-  ]
+  ],
 )

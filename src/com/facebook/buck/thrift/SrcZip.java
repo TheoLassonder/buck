@@ -16,6 +16,7 @@
 
 package com.facebook.buck.thrift;
 
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.rules.AbstractBuildRule;
 import com.facebook.buck.rules.AddToRuleKey;
 import com.facebook.buck.rules.BuildContext;
@@ -25,6 +26,7 @@ import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.step.Step;
 import com.facebook.buck.step.fs.MkdirStep;
 import com.facebook.buck.step.fs.RmStep;
+import com.facebook.buck.zip.ZipCompressionLevel;
 import com.facebook.buck.zip.ZipStep;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -60,14 +62,16 @@ public class SrcZip extends AbstractBuildRule {
 
     buildableContext.recordArtifact(sourceZip);
 
+    ProjectFilesystem projectFilesystem = getProjectFilesystem();
     return ImmutableList.of(
-        new RmStep(sourceZip, true),
-        new MkdirStep(sourceZip.getParent()),
+        new RmStep(projectFilesystem, sourceZip, true),
+        new MkdirStep(projectFilesystem, sourceZip.getParent()),
         new ZipStep(
+            getProjectFilesystem(),
             sourceZip,
             /* paths */ ImmutableSet.<Path>of(),
             /* junkPaths */ false,
-            ZipStep.MIN_COMPRESSION_LEVEL,
+            ZipCompressionLevel.MIN_COMPRESSION_LEVEL,
             sourceDirectory));
   }
 

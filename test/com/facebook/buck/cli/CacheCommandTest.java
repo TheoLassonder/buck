@@ -16,33 +16,30 @@
 
 package com.facebook.buck.cli;
 
-import static org.easymock.EasyMock.capture;
 import static org.easymock.EasyMock.eq;
 import static org.easymock.EasyMock.expect;
 import static org.easymock.EasyMock.isA;
-import static org.easymock.EasyMock.newCapture;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.startsWith;
 import static org.junit.Assert.assertEquals;
 
-import com.facebook.buck.rules.ArtifactCache;
-import com.facebook.buck.rules.CacheResult;
+import com.facebook.buck.artifact_cache.ArtifactCache;
+import com.facebook.buck.artifact_cache.CacheResult;
+import com.facebook.buck.io.LazyPath;
 import com.facebook.buck.rules.RuleKey;
-import com.facebook.buck.util.Console;
+import com.facebook.buck.testutil.TestConsole;
 import com.google.common.collect.ImmutableList;
 
-import org.easymock.Capture;
 import org.easymock.EasyMockSupport;
 import org.junit.Test;
 
-import java.io.File;
 import java.io.IOException;
 
 public class CacheCommandTest extends EasyMockSupport {
 
   @Test
   public void testRunCommandWithNoArguments() throws IOException, InterruptedException {
-    Console console = createMock(Console.class);
+    TestConsole console = new TestConsole();
     console.printErrorText("No cache keys specified.");
     CommandRunnerParams commandRunnerParams = CommandRunnerParamsForTesting
         .builder()
@@ -62,17 +59,14 @@ public class CacheCommandTest extends EasyMockSupport {
     expect(
         cache.fetch(
             eq(new RuleKey(ruleKeyHash)),
-            isA(File.class)))
+            isA(LazyPath.class)))
         .andReturn(CacheResult.hit("http"));
-    ArtifactCacheFactory artifactCacheFactory = new InstanceArtifactCacheFactory(cache);
 
-    Console console = createMock(Console.class);
-    Capture<String> successMessage = newCapture();
-    console.printSuccess(capture(successMessage));
+    TestConsole console = new TestConsole();
 
     CommandRunnerParams commandRunnerParams = CommandRunnerParamsForTesting.builder()
         .setConsole(console)
-        .setArtifactCacheFactory(artifactCacheFactory)
+        .setArtifactCache(cache)
         .build();
 
     replayAll();
@@ -82,7 +76,7 @@ public class CacheCommandTest extends EasyMockSupport {
     int exitCode = cacheCommand.run(commandRunnerParams);
     assertEquals(0, exitCode);
     assertThat(
-        successMessage.getValue(),
+        console.getTextWrittenToStdErr(),
         startsWith("Successfully downloaded artifact with id " + ruleKeyHash + " at "));
   }
 
@@ -95,16 +89,15 @@ public class CacheCommandTest extends EasyMockSupport {
     expect(
         cache.fetch(
             eq(new RuleKey(ruleKeyHash)),
-            isA(File.class)))
+            isA(LazyPath.class)))
         .andReturn(CacheResult.miss());
-    ArtifactCacheFactory artifactCacheFactory = new InstanceArtifactCacheFactory(cache);
 
-    Console console = createMock(Console.class);
+    TestConsole console = new TestConsole();
     console.printErrorText("Failed to retrieve an artifact with id " + ruleKeyHash + ".");
 
     CommandRunnerParams commandRunnerParams = CommandRunnerParamsForTesting.builder()
         .setConsole(console)
-        .setArtifactCacheFactory(artifactCacheFactory)
+        .setArtifactCache(cache)
         .build();
 
     replayAll();

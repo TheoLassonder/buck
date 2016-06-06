@@ -57,15 +57,13 @@ public class SymlinkFilesIntoDirectoryStepIntegrationTest {
     File outputFolder = tmp.newFolder("output");
 
     ProjectFilesystem projectFilesystem = new ProjectFilesystem(tmp.getRoot().toPath());
-    ExecutionContext executionContext = TestExecutionContext
-        .newBuilder()
-        .setProjectFilesystem(projectFilesystem)
-        .build();
+    ExecutionContext executionContext = TestExecutionContext.newInstance();
     SymlinkFilesIntoDirectoryStep symlinkStep = new SymlinkFilesIntoDirectoryStep(
+        projectFilesystem,
         tmp.getRoot().toPath(),
         ImmutableSet.of(Paths.get("a.txt"), Paths.get("foo/b.txt"), Paths.get("foo/bar/c.txt")),
         outputFolder.toPath());
-    int exitCode = symlinkStep.execute(executionContext);
+    int exitCode = symlinkStep.execute(executionContext).getExitCode();
     assertEquals(0, exitCode);
 
     // The remainder of the checks assert that we've created symlinks, which we may not have done

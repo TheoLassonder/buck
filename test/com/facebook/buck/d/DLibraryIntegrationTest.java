@@ -18,6 +18,9 @@ package com.facebook.buck.d;
 
 import static org.junit.Assert.assertEquals;
 
+import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.model.BuildTargets;
+import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.facebook.buck.testutil.integration.BuckBuildLog;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
@@ -33,20 +36,26 @@ public class DLibraryIntegrationTest {
 
   @Test
   public void compileAndRun() throws Exception {
-    Assumptions.assumeDCompilerAvailable();
+    Assumptions.assumeDCompilerUsable();
 
     ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
         this, "library", tmp);
     workspace.setUp();
 
-    workspace.runBuckBuild("//:greet").assertSuccess();
+    workspace.runBuckBuild("-v", "10", "//:greet").assertSuccess();
     BuckBuildLog buildLog = workspace.getBuildLog();
     buildLog.assertTargetBuiltLocally("//:greet");
     buildLog.assertTargetBuiltLocally("//:greeting");
     workspace.resetBuildLogFile();
 
     ProcessExecutor.Result result = workspace.runCommand(
-        workspace.resolve("buck-out/gen/greet/greet").toString());
+        workspace
+            .resolve(
+                BuildTargets.getGenPath(
+                    new FakeProjectFilesystem(),
+                    BuildTargetFactory.newInstance("//:greet#binary"),
+                    "%s/greet"))
+            .toString());
     assertEquals(0, result.getExitCode());
     assertEquals("Hello, world!\n", result.getStdout().get());
     assertEquals("", result.getStderr().get());

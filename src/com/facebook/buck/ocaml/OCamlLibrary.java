@@ -16,7 +16,7 @@
 
 package com.facebook.buck.ocaml;
 
-import com.facebook.buck.cxx.NativeLinkable;
+import com.facebook.buck.cxx.NativeLinkableInput;
 import com.facebook.buck.rules.BuildRule;
 import com.google.common.collect.ImmutableSortedSet;
 
@@ -25,14 +25,24 @@ import java.nio.file.Path;
 /**
  * An action graph representation of an OCaml library.
  */
-public interface OCamlLibrary extends NativeLinkable, BuildRule {
+public interface OCamlLibrary extends BuildRule {
 
   Path getIncludeLibDir();
 
   Iterable<String> getBytecodeIncludeDirs();
 
-  ImmutableSortedSet<BuildRule> getCompileDeps();
+  /**
+   * Dependencies for the native (ocamlopt) build
+   */
+  ImmutableSortedSet<BuildRule> getNativeCompileDeps();
+
+  /**
+   * Dependencies for the bytecode (ocamlc) build
+   */
   ImmutableSortedSet<BuildRule> getBytecodeCompileDeps();
   ImmutableSortedSet<BuildRule> getBytecodeLinkDeps();
+
+  NativeLinkableInput getNativeLinkableInput();
+  NativeLinkableInput getBytecodeLinkableInput();
 
 }

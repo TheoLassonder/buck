@@ -21,13 +21,17 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.endsWith;
 import static org.hamcrest.Matchers.hasEntry;
 import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.startsWith;
 
 import com.facebook.buck.step.TestExecutionContext;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.facebook.buck.testutil.FakeProjectFilesystem;
+import com.facebook.buck.util.ObjectMappers;
 import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 
 import org.junit.Test;
 
@@ -38,8 +42,11 @@ import java.util.List;
 import java.util.Map;
 
 public class PexStepTest {
+
   private static final Path PYTHON_PATH = Paths.get("/usr/local/bin/python");
-  private static final Path PEXPY_PATH = Paths.get("pex.py");
+  private static final PythonVersion PYTHON_VERSION = PythonVersion.of("CPython", "2.6");
+  private static final ImmutableMap<String, String> PEX_ENVIRONMENT = ImmutableMap.of();
+  private static final ImmutableList<String> PEX_COMMAND = ImmutableList.of();
   private static final Path TEMP_PATH = Paths.get("/tmp/");
   private static final Path DEST_PATH = Paths.get("/dest");
   private static final String ENTRY_POINT = "entry_point.main";
@@ -52,28 +59,54 @@ public class PexStepTest {
       Paths.get("n.so"), Paths.get("/src/n.so"));
   private static final ImmutableSet<Path> PREBUILT_LIBRARIES = ImmutableSet.of(
       Paths.get("/src/p.egg"));
+  private static final ImmutableSortedSet<String> PRELOAD_LIBRARIES = ImmutableSortedSet.of();
 
   @Test
   public void testCommandLine() {
-    PexStep step = new PexStep(
-        PEXPY_PATH, PYTHON_PATH, TEMP_PATH, DEST_PATH, ENTRY_POINT,
-        MODULES, RESOURCES, NATIVE_LIBRARIES, PREBUILT_LIBRARIES,
-        /* zipSafe */ true);
+    PexStep step =
+        new PexStep(
+            new FakeProjectFilesystem(),
+            PEX_ENVIRONMENT,
+            PEX_COMMAND,
+            PYTHON_PATH,
+            PYTHON_VERSION,
+            TEMP_PATH,
+            DEST_PATH,
+            ENTRY_POINT,
+            MODULES,
+            RESOURCES,
+            NATIVE_LIBRARIES,
+            PREBUILT_LIBRARIES,
+            PRELOAD_LIBRARIES,
+            /* zipSafe */ true);
     String command = Joiner.on(" ").join(
         step.getShellCommandInternal(TestExecutionContext.newInstance()));
 
-    assertThat(command, startsWith(PYTHON_PATH + " " + PEXPY_PATH));
+    assertThat(command, startsWith(Joiner.on(" ").join(PEX_COMMAND)));
     assertThat(command, containsString("--python " + PYTHON_PATH));
+    assertThat(command, containsString("--python-version " + PYTHON_VERSION));
     assertThat(command, containsString("--entry-point " + ENTRY_POINT));
     assertThat(command, endsWith(" " + DEST_PATH));
   }
 
   @Test
   public void testCommandLineNoZipSafe() {
-    PexStep step = new PexStep(
-        PEXPY_PATH, PYTHON_PATH, TEMP_PATH, DEST_PATH, ENTRY_POINT,
-        MODULES, RESOURCES, NATIVE_LIBRARIES, PREBUILT_LIBRARIES,
-        /* zipSafe */ false);
+    PexStep step =
+        new PexStep(
+            new FakeProjectFilesystem(),
+            PEX_ENVIRONMENT,
+            PEX_COMMAND,
+            PYTHON_PATH,
+            PYTHON_VERSION,
+            TEMP_PATH,
+            DEST_PATH,
+            ENTRY_POINT,
+            MODULES,
+            RESOURCES,
+            NATIVE_LIBRARIES,
+            PREBUILT_LIBRARIES,
+            PRELOAD_LIBRARIES,
+            /* zipSafe */ false);
     String command = Joiner.on(" ").join(
         step.getShellCommandInternal(TestExecutionContext.newInstance()));
 
@@ -83,12 +116,24 @@ public class PexStepTest {
   @Test
   @SuppressWarnings("unchecked")
   public void testCommandStdin() throws IOException {
-    PexStep step = new PexStep(
-        PEXPY_PATH, PYTHON_PATH, TEMP_PATH, DEST_PATH, ENTRY_POINT,
-        MODULES, RESOURCES, NATIVE_LIBRARIES, PREBUILT_LIBRARIES,
-        /* zipSafe */ true);
+    PexStep step =
+        new PexStep(
+            new FakeProjectFilesystem(),
+            PEX_ENVIRONMENT,
+            PEX_COMMAND,
+            PYTHON_PATH,
+            PYTHON_VERSION,
+            TEMP_PATH,
+            DEST_PATH,
+            ENTRY_POINT,
+            MODULES,
+            RESOURCES,
+            NATIVE_LIBRARIES,
+            PREBUILT_LIBRARIES,
+            PRELOAD_LIBRARIES,
+            /* zipSafe */ true);
 
-    Map<String, Object> args = new ObjectMapper().readValue(
+    Map<String, Object> args = ObjectMappers.newDefaultInstance().readValue(
         step.getStdin(TestExecutionContext.newInstance()).get(),
         Map.class);
     assertThat(
@@ -103,6 +148,32 @@ public class PexStepTest {
     assertThat(
         (List<String>) args.get("prebuiltLibraries"),
         hasItem(Paths.get("/src/p.egg").toString()));
+  }
+
+  @Test
+  public void testArgs() {
+    PexStep step =
+        new PexStep(
+            new FakeProjectFilesystem(),
+            PEX_ENVIRONMENT,
+            ImmutableList.<String>builder()
+                .add("build")
+                .add("--some", "--args")
+                .build(),
+            PYTHON_PATH,
+            PYTHON_VERSION,
+            TEMP_PATH,
+            DEST_PATH,
+            ENTRY_POINT,
+            MODULES,
+            RESOURCES,
+            NATIVE_LIBRARIES,
+            PREBUILT_LIBRARIES,
+            PRELOAD_LIBRARIES,
+            /* zipSafe */ true);
+    assertThat(
+        step.getShellCommandInternal(TestExecutionContext.newInstance()),
+        hasItems("--some", "--args"));
   }
 
 }

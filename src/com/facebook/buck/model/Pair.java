@@ -16,7 +16,7 @@
 
 package com.facebook.buck.model;
 
-import java.util.Comparator;
+import java.lang.ref.WeakReference;
 import java.util.Objects;
 
 /**
@@ -28,6 +28,8 @@ public class Pair<FIRST, SECOND> {
 
   private FIRST first;
   private SECOND second;
+  private WeakReference<Integer> hashCache = null;
+  private WeakReference<String> stringCache = null;
 
   public Pair(FIRST first, SECOND second) {
     this.first = first;
@@ -55,29 +57,42 @@ public class Pair<FIRST, SECOND> {
 
   @Override
   public int hashCode() {
-    return Objects.hash(first, second);
+    synchronized (this) {
+      if (hashCache == null) {
+        return calculateHashAndCache();
+      }
+      Integer hash = hashCache.get();
+      if (hash == null) {
+        return calculateHashAndCache();
+      }
+      return hash;
+    }
+  }
+
+  private int calculateHashAndCache() {
+    int hash = Objects.hash(first, second);
+    hashCache = new WeakReference<>(hash);
+    return hash;
   }
 
   @Override
   public String toString() {
-    return String.format("Pair(%s, %s)", first, second);
+    synchronized (this) {
+      if (stringCache == null) {
+        return createStringAndCache();
+      }
+      String string = stringCache.get();
+      if (string == null) {
+        return createStringAndCache();
+      }
+      return string;
+    }
   }
 
-  /**
-   * Provides a comparison using the natural ordering of contained types (which my be comparable).
-   */
-  public static <FIRST extends Comparable<FIRST>, SECOND extends Comparable<SECOND>>
-      Comparator<Pair<FIRST, SECOND>> comparator() {
-    return new Comparator<Pair<FIRST, SECOND>>() {
-      @Override
-      public int compare(Pair<FIRST, SECOND> o1, Pair<FIRST, SECOND> o2) {
-        int res = o1.first.compareTo(o2.first);
-        if (res != 0) {
-          return res;
-        }
-        return o1.second.compareTo(o2.second);
-      }
-    };
+  private String createStringAndCache() {
+    String string = String.format("Pair(%s, %s)", first, second);
+    stringCache = new WeakReference<>(string);
+    return string;
   }
 
 }

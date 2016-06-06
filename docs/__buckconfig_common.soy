@@ -1,0 +1,234 @@
+{namespace buckconfig}
+
+/**
+ * @param name The name of the section.
+ * @param description Some text describing the section.
+ */
+{template .section}
+  <h2 id="{$name}">[{$name}] <a class="inline-link" href="#{$name}">#</a></h2>
+  <p>
+    {$description|noAutoescape}
+  </p>
+{/template}
+
+/**
+ * @param section The name of the section for this setting.
+ * @param name The name of this setting.
+ * @param description The description of this setting.
+ * @param? example_value An example value for this setting.
+ * @param? raw_example Raw HTML to show the example.
+ */
+{template .entry}
+  <h3 id="{$section}.{$name}">{$name} <a class="inline-link" href="#{$section}.{$name}">#</a></h3>
+  <p>
+    {$description|noAutoescape}
+  </p>
+  {if isNonnull($example_value)}
+    <pre class="prettyprint lang-ini">
+    [{$section}]{\n}{sp}{sp}
+      {$name} = {$example_value}
+    </pre>
+  {/if}
+  {if isNonnull($raw_example)}
+    {$raw_example|noAutoescape}
+  {/if}
+{/template}
+
+/**
+ * @param section The section the entry is in.
+ */
+{template .section_link}
+<a href="{ROOT}concept/buckconfig.html#{$section}"><code>[{$section}]</code></a>
+{/template}
+
+/***/
+{template .httpserver}
+{call .section_link}
+  {param section: 'httpserver' /}
+{/call}
+{/template}
+
+/***/
+{template .maven_repositories}
+{call .section_link}
+  {param section: 'maven_repositories' /}
+{/call}
+{/template}
+
+/**
+ * @param section The section the entry is in.
+ * @param entry The name of the entry to link to.
+ */
+{template .entry_link}
+<a href="{ROOT}concept/buckconfig.html#{$section}.{$entry}">{$section}.{$entry}</a>
+{/template}
+
+/***/
+{template .apple_device_helper_path}
+{call .entry_link}
+  {param section : 'apple' /}
+  {param entry : 'device_helper_path' /}
+{/call}
+{/template}
+
+/***/
+{template .apple_xctool_path}
+{call .entry_link}
+  {param section : 'apple' /}
+  {param entry : 'xctool_path' /}
+{/call}
+{/template}
+
+/***/
+{template .apple_xctool_zip_target}
+{call .entry_link}
+  {param section: 'apple' /}
+  {param entry: 'xctool_zip_target' /}
+{/call}
+{/template}
+
+/***/
+{template .apple_package_command}
+{call .entry_link}
+  {param section: 'apple' /}
+  {param entry: '*_package_command' /}
+{/call}
+{/template}
+
+/***/
+{template .apple_package_extension}
+{call .entry_link}
+  {param section: 'apple' /}
+  {param entry: '*_package_extension' /}
+{/call}
+{/template}
+
+/***/
+{template .build_depfiles}
+{call .entry_link}
+  {param section: 'build' /}
+  {param entry: 'depfiles' /}
+{/call}
+{/template}
+
+/***/
+{template .build_threads}
+{call .entry_link}
+  {param section: 'build' /}
+  {param entry: 'threads' /}
+{/call}
+{/template}
+
+/***/
+{template .cache_http_cache_names}
+{call .entry_link}
+  {param section: 'cache' /}
+  {param entry: 'http_cache_names' /}
+{/call}
+{/template}
+
+/***/
+{template .cache_mode}
+{call .entry_link}
+  {param section: 'cache' /}
+  {param entry: 'mode' /}
+{/call}
+{/template}
+
+/***/
+{template .cache_serve_local_cache}
+{call .entry_link}
+  {param section: 'cache' /}
+  {param entry: 'serve_local_cache' /}
+{/call}
+{/template}
+
+/***/
+{template .log_remote_log_url}
+{call .entry_link}
+    {param section: 'log' /}
+    {param entry: 'remote_log_url' /}
+{/call}
+{/template}
+
+/***/
+{template .lua_cxx_library}
+{call .entry_link}
+    {param section: 'lua' /}
+    {param entry: 'cxx_library' /}
+{/call}
+{/template}
+
+/***/
+{template .ndk_compiler}
+{call .entry_link}
+    {param section: 'ndk' /}
+    {param entry: 'compiler' /}
+{/call}
+{/template}
+
+/***/
+{template .project_parallel_parsing}
+{call .entry_link}
+    {param section: 'project' /}
+    {param entry: 'parallel_parsing' /}
+{/call}
+{/template}
+
+/***/
+{template .python_interpreter}
+{call .entry_link}
+    {param section: 'python' /}
+    {param entry: 'interpreter' /}
+{/call}
+{/template}
+
+/***/
+{template .python_package_style}
+{call .entry_link}
+    {param section: 'python' /}
+    {param entry: 'package_style' /}
+{/call}
+{/template}
+
+/***/
+{template .test_rule_timeout}
+{call .entry_link}
+    {param section: 'test' /}
+    {param entry: 'rule_timeout' /}
+{/call}
+{/template}
+
+/***/
+{template .thrift_compiler}
+{call .entry_link}
+    {param section: 'thrift' /}
+    {param entry: 'compiler' /}
+{/call}
+{/template}
+
+/***/
+{template .ui_thread_line_limit}
+{call .entry_link}
+    {param section: 'ui' /}
+    {param entry: 'thread_line_limit' /}
+{/call}
+{/template}
+
+/***/
+{template .tools_javac}
+{call buckconfig.entry_link}
+  {param section: 'tools' /}
+  {param entry: 'javac' /}
+{/call}
+{/template}
+
+/***/
+{template .tools_java_jar}
+{call buckconfig.entry_link}
+  {param section: 'tools' /}
+  {param entry: 'java_jar' /}
+{/call}
+{/template}
+
+{/namespace}

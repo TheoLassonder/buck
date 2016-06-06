@@ -19,32 +19,38 @@ package com.facebook.buck.rules;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 
 import java.io.IOException;
 import java.nio.file.Path;
 
 public class RecordFileSha1Step implements Step {
 
+  private final ProjectFilesystem filesystem;
   private final Path inputFile;
   private final String metadataKey;
   private final BuildableContext buildableContext;
 
-  public RecordFileSha1Step(Path inputFile, String metadataKey, BuildableContext buildableContext) {
+  public RecordFileSha1Step(
+      ProjectFilesystem filesystem,
+      Path inputFile,
+      String metadataKey,
+      BuildableContext buildableContext) {
+    this.filesystem = filesystem;
     this.inputFile = inputFile;
     this.metadataKey = metadataKey;
     this.buildableContext = buildableContext;
   }
 
   @Override
-  public int execute(ExecutionContext context) {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
+  public StepExecutionResult execute(ExecutionContext context) {
     try {
       buildableContext.addMetadata(metadataKey, filesystem.computeSha1(inputFile));
     } catch (IOException e) {
       context.logError(e, "Error hashing %s", inputFile.toString());
-      return 1;
+      return StepExecutionResult.ERROR;
     }
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   @Override

@@ -17,18 +17,20 @@
 package com.facebook.buck.file;
 
 import com.facebook.buck.event.AbstractBuckEvent;
-import com.facebook.buck.event.BuckEvent;
+import com.facebook.buck.event.EventKey;
+import com.facebook.buck.event.WorkAdvanceEvent;
 import com.google.common.base.Preconditions;
 
 import java.net.URI;
 
-public class DownloadProgressEvent extends AbstractBuckEvent {
+public class DownloadProgressEvent extends AbstractBuckEvent implements WorkAdvanceEvent {
 
   private final URI uri;
   private final long downloadedSoFar;
   private final String size;
 
   public DownloadProgressEvent(URI uri, long size, long downloadedSoFar) {
+    super(EventKey.unique());
     this.uri = uri;
     this.size = size == -1 ? "unknown" : String.valueOf(size);
     Preconditions.checkArgument(downloadedSoFar > 0);
@@ -38,14 +40,6 @@ public class DownloadProgressEvent extends AbstractBuckEvent {
   @Override
   protected String getValueString() {
     return String.format("%s -> %d/%s", uri, downloadedSoFar, size);
-  }
-
-  @Override
-  public boolean isRelatedTo(BuckEvent event) {
-    if (!(event instanceof DownloadProgressEvent)) {
-      return false;
-    }
-    return getValueString().equals(((DownloadProgressEvent) event).getValueString());
   }
 
   @Override

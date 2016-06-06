@@ -16,21 +16,21 @@
 
 package com.facebook.buck.cli;
 
+import com.facebook.buck.config.RawConfig;
+import com.facebook.buck.event.ConsoleEvent;
+import com.facebook.buck.log.LogConfigSetup;
 import com.facebook.buck.model.BuildTarget;
-import com.facebook.buck.model.UnflavoredBuildTarget;
 import com.facebook.buck.parser.BuildTargetParser;
 import com.facebook.buck.parser.BuildTargetPatternParser;
 import com.facebook.buck.parser.BuildTargetPatternTargetNodeParser;
-import com.facebook.buck.parser.ParserConfig;
 import com.facebook.buck.parser.TargetNodeSpec;
-import com.facebook.buck.rules.ArtifactCache;
+import com.facebook.buck.rules.CellPathResolver;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.util.HumanReadableException;
-import com.facebook.buck.util.MoreStrings;
+import com.facebook.buck.util.concurrent.ConcurrencyLimit;
 import com.google.common.base.Optional;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 
@@ -47,10 +47,11 @@ import javax.annotation.Nullable;
 public abstract class AbstractCommand implements Command {
 
   private static final String HELP_LONG_ARG = "--help";
-  private static final String BUILDFILE_INCLUDES_LONG_ARG = "--buildfile:includes";
   private static final String NO_CACHE_LONG_ARG = "--no-cache";
   private static final String OUTPUT_TEST_EVENTS_TO_FILE_LONG_ARG = "--output-test-events-to-file";
-  private static final String PROFILE_LONG_ARG = "--profile";
+  private static final String PROFILE_PARSER_LONG_ARG = "--profile-buck-parser";
+  private static final String NUM_THREADS_LONG_ARG = "--num-threads";
+  private static final String LOAD_LIMIT_LONG_ARG = "--load-limit";
 
   /**
    * This value should never be read. {@link VerbosityParser} should be used instead.
@@ -64,11 +65,16 @@ public abstract class AbstractCommand implements Command {
   @SuppressWarnings("PMD.UnusedPrivateField")
   private int verbosityLevel = -1;
 
-  @Option(
-      name = BUILDFILE_INCLUDES_LONG_ARG,
-      usage = "Specify the default includes file.")
+  @Option(name = NUM_THREADS_LONG_ARG, aliases = "-j", usage = "Default is 1.25 * num processors.")
   @Nullable
-  private String buildFileIncludes = null;
+  private Integer numThreads = null;
+
+  @Nullable
+  @Option(name = LOAD_LIMIT_LONG_ARG,
+      aliases = "-L",
+      usage = "[Float] Do not start new jobs when system load is above this level." +
+          " See uptime(1).")
+  private Double loadLimit = null;
 
   @Option(
       name = "--config",
@@ -77,36 +83,38 @@ public abstract class AbstractCommand implements Command {
   private Map<String, String> configOverrides = Maps.newLinkedHashMap();
 
   @Override
-  public ImmutableMap<String, ImmutableMap<String, String>> getConfigOverrides() {
-    ConfigOverrideBuilder builder = new ConfigOverrideBuilder();
+  public RawConfig getConfigOverrides() {
+    RawConfig.Builder builder = RawConfig.builder();
 
     // Parse command-line config overrides.
     for (Map.Entry<String, String> entry : configOverrides.entrySet()) {
       List<String> key = Splitter.on('.').limit(2).splitToList(entry.getKey());
+      String value = entry.getValue();
+      if (value == null) {
+        value = "";
+      }
       if (key.size() != 2) {
         throw new HumanReadableException(
             "Invalid config override \"%s=%s\".  Expected \"<section>.<field>=<value>\".",
             entry.getKey(),
-            entry.getValue());
+            value);
       }
-      builder.put(key.get(0), key.get(1), entry.getValue());
-    }
 
-    // Handle the special-case build file command-line override.
-    if (buildFileIncludes != null) {
-      String includes = MoreStrings
-          .stripPrefix(buildFileIncludes, BUILDFILE_INCLUDES_LONG_ARG + " ")
-          .or(buildFileIncludes);
-      includes = MoreStrings
-          .stripPrefix(includes, UnflavoredBuildTarget.BUILD_TARGET_PREFIX)
-          .or(includes);
-      builder.put(
-          ParserConfig.BUILDFILE_SECTION_NAME,
-          ParserConfig.INCLUDES_PROPERTY_NAME,
-          UnflavoredBuildTarget.BUILD_TARGET_PREFIX + includes);
+      builder.put(key.get(0), key.get(1), value);
+    }
+    if (numThreads != null) {
+      builder.put("build", "threads", String.valueOf(numThreads));
+    }
+    if (noCache) {
+      builder.put("cache", "mode", "");
     }
 
     return builder.build();
+  }
+
+  @Override
+  public LogConfigSetup getLogConfig() {
+    return LogConfigSetup.DEFAULT_SETUP;
   }
 
   @Option(
@@ -123,9 +131,10 @@ public abstract class AbstractCommand implements Command {
   private String eventsOutputPath = null;
 
   @Option(
-      name = PROFILE_LONG_ARG,
-      usage = "Enable profiling of buck.py in debug log")
-  private boolean enableProfiling = false;
+      name = PROFILE_PARSER_LONG_ARG,
+      usage = "Enable profiling of buck.py internals (not the target being compiled) in the debug" +
+          "log and trace.")
+  private boolean enableParserProfiling = false;
 
   @Option(
       name = HELP_LONG_ARG,
@@ -155,6 +164,14 @@ public abstract class AbstractCommand implements Command {
       new AdditionalOptionsCmdLineParser(this).printUsage(params.getConsole().getStdErr());
       return 1;
     }
+    if (params.getConsole().getAnsi().isAnsiTerminal()) {
+      ImmutableList<String> motd = params.getBuckConfig().getMessageOfTheDay();
+      if (!motd.isEmpty()) {
+        for (String line : motd) {
+          params.getBuckEventBus().post(ConsoleEvent.info(line));
+        }
+      }
+    }
     return runWithoutHelp(params);
   }
 
@@ -166,57 +183,67 @@ public abstract class AbstractCommand implements Command {
     return new CommandLineBuildTargetNormalizer(buckConfig);
   }
 
-  public boolean getEnableProfiling() {
-    return enableProfiling;
+  public boolean getEnableParserProfiling() {
+    return enableParserProfiling;
   }
 
   public ImmutableList<TargetNodeSpec> parseArgumentsAsTargetNodeSpecs(
       BuckConfig config,
-      ImmutableSet<Path> ignorePaths,
       Iterable<String> targetsAsArgs) {
     ImmutableList.Builder<TargetNodeSpec> specs = ImmutableList.builder();
     CommandLineTargetNodeSpecParser parser =
         new CommandLineTargetNodeSpecParser(
             config,
-            new BuildTargetPatternTargetNodeParser(ignorePaths));
+            new BuildTargetPatternTargetNodeParser());
     for (String arg : targetsAsArgs) {
-      specs.add(parser.parse(arg));
+      specs.add(parser.parse(config.getCellRoots(), arg));
     }
     return specs.build();
   }
 
   /**
+   *
+   * @param cellNames
+   * @param buildTargetNames The build targets to parse, represented as strings.
    * @return A set of {@link BuildTarget}s for the input buildTargetNames.
    */
-  protected ImmutableSet<BuildTarget> getBuildTargets(Iterable<String> buildTargetNames) {
+  protected ImmutableSet<BuildTarget> getBuildTargets(
+      CellPathResolver cellNames,
+      Iterable<String> buildTargetNames) {
     ImmutableSet.Builder<BuildTarget> buildTargets = ImmutableSet.builder();
 
     // Parse all of the build targets specified by the user.
     for (String buildTargetName : buildTargetNames) {
-      buildTargets.add(BuildTargetParser.INSTANCE.parse(
+      buildTargets.add(
+          BuildTargetParser.INSTANCE.parse(
               buildTargetName,
-              BuildTargetPatternParser.fullyQualified()));
+              BuildTargetPatternParser.fullyQualified(),
+              cellNames));
     }
 
     return buildTargets.build();
   }
 
-  public ArtifactCache getArtifactCache(CommandRunnerParams params)
-      throws InterruptedException {
-    return params.getArtifactCacheFactory().newInstance(params.getBuckConfig(), isNoCache());
-  }
-
   protected ExecutionContext createExecutionContext(CommandRunnerParams params) {
     return ExecutionContext.builder()
-        .setProjectFilesystem(params.getRepository().getFilesystem())
         .setConsole(params.getConsole())
         .setAndroidPlatformTargetSupplier(params.getAndroidPlatformTargetSupplier())
-        .setEventBus(params.getBuckEventBus())
+        .setBuckEventBus(params.getBuckEventBus())
         .setPlatform(params.getPlatform())
         .setEnvironment(params.getEnvironment())
         .setJavaPackageFinder(params.getJavaPackageFinder())
         .setObjectMapper(params.getObjectMapper())
+        .setExecutors(params.getExecutors())
         .build();
+  }
+
+  public ConcurrencyLimit getConcurrencyLimit(BuckConfig buckConfig) {
+    Double loadLimit = this.loadLimit;
+    if (loadLimit == null) {
+      loadLimit = (double) buckConfig.getLoadLimit();
+    }
+
+    return new ConcurrencyLimit(buckConfig.getNumThreads(), loadLimit);
   }
 
   protected ImmutableList<String> getOptions() {
@@ -225,9 +252,13 @@ public abstract class AbstractCommand implements Command {
       builder.add(VerbosityParser.VERBOSE_LONG_ARG);
       builder.add(String.valueOf(verbosityLevel));
     }
-    if (buildFileIncludes != null) {
-      builder.add(BUILDFILE_INCLUDES_LONG_ARG);
-      builder.add(buildFileIncludes);
+    if (numThreads != null) {
+      builder.add(NUM_THREADS_LONG_ARG);
+      builder.add(numThreads.toString());
+    }
+    if (loadLimit != null) {
+      builder.add(LOAD_LIMIT_LONG_ARG);
+      builder.add(loadLimit.toString());
     }
     if (noCache) {
       builder.add(NO_CACHE_LONG_ARG);
@@ -236,8 +267,8 @@ public abstract class AbstractCommand implements Command {
       builder.add(OUTPUT_TEST_EVENTS_TO_FILE_LONG_ARG);
       builder.add(eventsOutputPath);
     }
-    if (enableProfiling) {
-      builder.add(PROFILE_LONG_ARG);
+    if (enableParserProfiling) {
+      builder.add(PROFILE_PARSER_LONG_ARG);
     }
     return builder.build();
   }

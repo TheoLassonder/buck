@@ -17,35 +17,43 @@
 package com.facebook.buck.cli;
 
 import com.facebook.buck.android.AndroidPlatformTarget;
+import com.facebook.buck.artifact_cache.ArtifactCache;
 import com.facebook.buck.event.BuckEventBus;
 import com.facebook.buck.httpserver.WebServer;
-import com.facebook.buck.java.JavaPackageFinder;
+import com.facebook.buck.jvm.core.JavaPackageFinder;
 import com.facebook.buck.parser.Parser;
-import com.facebook.buck.rules.Repository;
+import com.facebook.buck.rules.ActionGraphCache;
+import com.facebook.buck.rules.Cell;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.timing.Clock;
 import com.facebook.buck.util.Console;
-import com.facebook.buck.util.FileHashCache;
 import com.facebook.buck.util.ProcessManager;
+import com.facebook.buck.util.cache.FileHashCache;
+import com.facebook.buck.util.environment.BuildEnvironmentDescription;
 import com.facebook.buck.util.environment.Platform;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Optional;
 import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.util.concurrent.ListeningExecutorService;
+
+import java.io.InputStream;
+import java.util.Map;
 
 /**
  * {@link CommandRunnerParams} is the collection of parameters needed to run a {@link Command}.
  */
 class CommandRunnerParams {
 
-  private final ArtifactCacheFactory artifactCacheFactory;
+  private final ArtifactCache artifactCache;
   private final Console console;
+  private final InputStream stdIn;
   private final ImmutableMap<String, String> environment;
   private final Parser parser;
   private final BuckEventBus eventBus;
   private final Platform platform;
   private final Supplier<AndroidPlatformTarget> androidPlatformTargetSupplier;
-  private final Repository repository;
+  private final Cell cell;
   private final JavaPackageFinder javaPackageFinder;
   private final ObjectMapper objectMapper;
   private final Clock clock;
@@ -53,12 +61,16 @@ class CommandRunnerParams {
   private final Optional<WebServer> webServer;
   private final BuckConfig buckConfig;
   private final FileHashCache fileHashCache;
+  private final Map<ExecutionContext.ExecutorPool, ListeningExecutorService> executors;
+  private final BuildEnvironmentDescription buildEnvironmentDescription;
+  private final ActionGraphCache actionGraphCache;
 
   public CommandRunnerParams(
       Console console,
-      Repository repository,
+      InputStream stdIn,
+      Cell cell,
       Supplier<AndroidPlatformTarget> androidPlatformTargetSupplier,
-      ArtifactCacheFactory artifactCacheFactory,
+      ArtifactCache artifactCache,
       BuckEventBus eventBus,
       Parser parser,
       Platform platform,
@@ -69,10 +81,14 @@ class CommandRunnerParams {
       Optional<ProcessManager> processManager,
       Optional<WebServer> webServer,
       BuckConfig buckConfig,
-      FileHashCache fileHashCache) {
+      FileHashCache fileHashCache,
+      Map<ExecutionContext.ExecutorPool, ListeningExecutorService> executors,
+      BuildEnvironmentDescription buildEnvironmentDescription,
+      ActionGraphCache actionGraphCache) {
     this.console = console;
-    this.repository = repository;
-    this.artifactCacheFactory = artifactCacheFactory;
+    this.stdIn = stdIn;
+    this.cell = cell;
+    this.artifactCache = artifactCache;
     this.eventBus = eventBus;
     this.parser = parser;
     this.platform = platform;
@@ -85,18 +101,25 @@ class CommandRunnerParams {
     this.webServer = webServer;
     this.buckConfig = buckConfig;
     this.fileHashCache = fileHashCache;
+    this.executors = executors;
+    this.buildEnvironmentDescription = buildEnvironmentDescription;
+    this.actionGraphCache = actionGraphCache;
   }
 
   public Console getConsole() {
     return console;
   }
 
-  public Repository getRepository() {
-    return repository;
+  public InputStream getStdIn() {
+    return stdIn;
   }
 
-  public ArtifactCacheFactory getArtifactCacheFactory() {
-    return artifactCacheFactory;
+  public Cell getCell() {
+    return cell;
+  }
+
+  public ArtifactCache getArtifactCache() {
+    return artifactCache;
   }
 
   public Parser getParser() {
@@ -147,17 +170,16 @@ class CommandRunnerParams {
     return fileHashCache;
   }
 
-  protected ExecutionContext createExecutionContext() {
-    return ExecutionContext.builder()
-        .setProjectFilesystem(repository.getFilesystem())
-        .setConsole(console)
-        .setAndroidPlatformTargetSupplier(androidPlatformTargetSupplier)
-        .setEventBus(eventBus)
-        .setPlatform(platform)
-        .setEnvironment(environment)
-        .setJavaPackageFinder(javaPackageFinder)
-        .setObjectMapper(objectMapper)
-        .build();
+  public Map<ExecutionContext.ExecutorPool, ListeningExecutorService> getExecutors() {
+    return executors;
+  }
+
+  public BuildEnvironmentDescription getBuildEnvironmentDescription() {
+    return buildEnvironmentDescription;
+  }
+
+  public ActionGraphCache getActionGraphCache() {
+    return actionGraphCache;
   }
 
 }

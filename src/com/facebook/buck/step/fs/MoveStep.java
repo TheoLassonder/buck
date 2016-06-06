@@ -19,6 +19,7 @@ package com.facebook.buck.step.fs;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 
 import java.io.IOException;
 import java.nio.file.CopyOption;
@@ -26,26 +27,31 @@ import java.nio.file.Path;
 
 public class MoveStep implements Step {
 
+  private  final ProjectFilesystem filesystem;
   private final Path source;
   private final Path destination;
   private final CopyOption[] options;
 
-  public MoveStep(Path source, Path destination, CopyOption... options) {
+  public MoveStep(
+      ProjectFilesystem filesystem,
+      Path source,
+      Path destination,
+      CopyOption... options) {
+    this.filesystem = filesystem;
     this.source = source;
     this.destination = destination;
     this.options = options;
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
     try {
       filesystem.move(source, destination, options);
     } catch (IOException e) {
       context.logError(e, "error moving %s -> %s", source, destination);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   @Override

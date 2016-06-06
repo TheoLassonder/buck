@@ -29,7 +29,6 @@ import javax.annotation.Nullable;
  * Base class for all build events. Using this makes it easy to add a wildcard listener
  * to the event bus.
  */
-@SuppressWarnings("PMD.OverrideBothEqualsAndHashcode")
 public abstract class AbstractBuckEvent implements BuckEvent {
 
   private boolean isConfigured;
@@ -38,9 +37,11 @@ public abstract class AbstractBuckEvent implements BuckEvent {
   private long threadId;
   @Nullable
   private BuildId buildId;
+  private final EventKey eventKey;
 
-  protected AbstractBuckEvent() {
-    isConfigured = false;
+  protected AbstractBuckEvent(EventKey eventKey) {
+    this.isConfigured = false;
+    this.eventKey = Preconditions.checkNotNull(eventKey);
   }
 
   /**
@@ -56,6 +57,11 @@ public abstract class AbstractBuckEvent implements BuckEvent {
     this.threadId = threadId;
     this.buildId = buildId;
     isConfigured = true;
+  }
+
+  @Override
+  public boolean isConfigured() {
+    return isConfigured;
   }
 
   @Override
@@ -88,12 +94,22 @@ public abstract class AbstractBuckEvent implements BuckEvent {
   }
 
   @Override
-  public String toString() {
-    return String.format("%s(%s)", getEventName(), getValueString());
+  public final EventKey getEventKey() {
+    return eventKey;
+  }
+
+  @Override
+  public final boolean isRelatedTo(BuckEvent event) {
+    return getEventKey().equals(event.getEventKey());
   }
 
   @JsonIgnore
   protected abstract String getValueString();
+
+  @Override
+  public String toString() {
+    return String.format("%s(%s)", getEventName(), getValueString());
+  }
 
   /**
    * The default implementation of equals checks to see if two events are related, are on the same
@@ -102,6 +118,9 @@ public abstract class AbstractBuckEvent implements BuckEvent {
    */
   @Override
   public boolean equals(Object o) {
+    if (o == this) {
+      return true;
+    }
     if (!(o instanceof AbstractBuckEvent)) {
       return false;
     }
@@ -109,12 +128,11 @@ public abstract class AbstractBuckEvent implements BuckEvent {
     AbstractBuckEvent that = (AbstractBuckEvent) o;
 
     return isRelatedTo(that) &&
-        getThreadId() == that.getThreadId() &&
         Objects.equals(getClass(), that.getClass());
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(threadId);
+    return Objects.hash(getClass(), getEventKey());
   }
 }

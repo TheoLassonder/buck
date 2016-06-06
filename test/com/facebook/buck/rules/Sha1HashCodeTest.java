@@ -62,4 +62,49 @@ public class Sha1HashCodeTest {
     assertFalse(hash1.equals(hash2));
   }
 
+  @Test
+  @SuppressWarnings("PMD.UseAssertEqualsInsteadOfAssertTrue")
+  public void testFromTrustedBytesWithValidInput() {
+    byte[] bytes = new byte[] {
+      (byte) 0xfa,
+      (byte) 0xce,
+      (byte) 0xb0,
+      (byte) 0x0c,
+      (byte) 0xfa,
+      (byte) 0xce,
+      (byte) 0xb0,
+      (byte) 0x0c,
+      (byte) 0xfa,
+      (byte) 0xce,
+      (byte) 0xb0,
+      (byte) 0x0c,
+      (byte) 0xfa,
+      (byte) 0xce,
+      (byte) 0xb0,
+      (byte) 0x0c,
+      (byte) 0xfa,
+      (byte) 0xce,
+      (byte) 0xb0,
+      (byte) 0x0c,
+    };
+    Sha1HashCode hashCodeFromRawBytes = Sha1HashCode.fromBytes(bytes);
+    assertEquals(0xfaceb00c, hashCodeFromRawBytes.firstFourBytes);
+    assertEquals(0xfaceb00cfaceb00cL, hashCodeFromRawBytes.nextEightBytes);
+    assertEquals(0xfaceb00cfaceb00cL, hashCodeFromRawBytes.lastEightBytes);
+
+    Sha1HashCode hashCodeFromString = Sha1HashCode.of(Strings.repeat("faceb00c", 5));
+    assertEquals(hashCodeFromString, hashCodeFromRawBytes);
+    assertEquals(0xfaceb00c, hashCodeFromRawBytes.hashCode());
+  }
+
+  @Test(expected = IllegalArgumentException.class)
+  public void testFromTrustedBytes() {
+    byte[] bytes = new byte[] {
+      (byte) 0xfa,
+      (byte) 0xce,
+      (byte) 0xb0,
+      (byte) 0x0c,
+    };
+    Sha1HashCode.fromBytes(bytes);
+  }
 }

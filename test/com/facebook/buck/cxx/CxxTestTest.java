@@ -20,23 +20,30 @@ import static org.junit.Assert.assertEquals;
 
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
-import com.facebook.buck.rules.BuildContext;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
-import com.facebook.buck.rules.BuildRuleParamsFactory;
 import com.facebook.buck.rules.BuildRuleResolver;
-import com.facebook.buck.rules.FakeBuildContext;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
+import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
 import com.facebook.buck.rules.FakeTestRule;
 import com.facebook.buck.rules.Label;
+import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
 import com.facebook.buck.step.TestExecutionContext;
 import com.facebook.buck.test.TestResultSummary;
 import com.facebook.buck.test.TestResults;
+import com.facebook.buck.test.TestRunningOptions;
 import com.facebook.buck.test.selectors.TestSelectorList;
+import com.facebook.buck.testutil.FakeProjectFilesystem;
+import com.google.common.base.Optional;
+import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterables;
 
 import org.junit.Test;
@@ -47,31 +54,41 @@ import java.util.concurrent.Callable;
 
 public class CxxTestTest {
 
+  private static final Optional<Long> TEST_TIMEOUT_MS = Optional.of(24L);
+
   private abstract static class FakeCxxTest extends CxxTest {
 
     private static BuildRuleParams createBuildParams() {
       BuildTarget target = BuildTargetFactory.newInstance("//:target");
-      return BuildRuleParamsFactory.createTrivialBuildRuleParams(target);
+      return new FakeBuildRuleParamsBuilder(target).build();
     }
 
     public FakeCxxTest() {
       super(
           createBuildParams(),
-          new SourcePathResolver(new BuildRuleResolver()),
+          new SourcePathResolver(
+              new BuildRuleResolver(
+                  TargetGraph.EMPTY,
+                  new DefaultTargetNodeToBuildRuleTransformer())),
+          ImmutableMap.<String, String>of(),
+          Suppliers.ofInstance(ImmutableMap.<String, String>of()),
+          Suppliers.ofInstance(ImmutableList.<String>of()),
+          ImmutableSortedSet.<SourcePath>of(),
+          Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()),
           ImmutableSet.<Label>of(),
           ImmutableSet.<String>of(),
-          ImmutableSet.<BuildRule>of());
+          ImmutableSet.<BuildRule>of(),
+          /* runTestSeparately */ false,
+          TEST_TIMEOUT_MS);
     }
 
     @Override
-    protected ImmutableList<String> getShellCommand(
-        ExecutionContext context, Path output) {
+    protected ImmutableList<String> getShellCommand(Path output) {
       return ImmutableList.of();
     }
 
     @Override
     protected ImmutableList<TestResultSummary> parseResults(
-        ExecutionContext context,
         Path exitCode,
         Path output,
         Path results)
@@ -89,27 +106,36 @@ public class CxxTestTest {
         new FakeCxxTest() {
 
           @Override
-          protected ImmutableList<String> getShellCommand(
-              ExecutionContext context, Path output) {
+          public Path getPathToOutput() {
+            return Paths.get("output");
+          }
+
+          @Override
+          protected ImmutableList<String> getShellCommand(Path output) {
             return command;
           }
 
         };
 
-    BuildContext buildContext = FakeBuildContext.NOOP_CONTEXT;
     ExecutionContext executionContext = TestExecutionContext.newInstance();
+    TestRunningOptions options =
+        TestRunningOptions.builder()
+            .setDryRun(false)
+            .setTestSelectorList(TestSelectorList.empty())
+            .build();
     ImmutableList<Step> actualSteps = cxxTest.runTests(
-        buildContext,
         executionContext,
-        /* isDryRun */ false,
-        /* isShufflingTests */ false,
-        TestSelectorList.empty(),
+        options,
         FakeTestRule.NOOP_REPORTING_CALLBACK);
 
-    CxxTestStep cxxTestStep = new CxxTestStep(
-        command,
-        cxxTest.getPathToTestExitCode(),
-        cxxTest.getPathToTestOutput());
+    CxxTestStep cxxTestStep =
+        new CxxTestStep(
+            new FakeProjectFilesystem(),
+            command,
+            ImmutableMap.<String, String>of(),
+            cxxTest.getPathToTestExitCode(),
+            cxxTest.getPathToTestOutput(),
+            TEST_TIMEOUT_MS);
 
     assertEquals(cxxTestStep, Iterables.getLast(actualSteps));
   }
@@ -122,6 +148,11 @@ public class CxxTestTest {
 
     FakeCxxTest cxxTest =
         new FakeCxxTest() {
+
+          @Override
+          public Path getPathToOutput() {
+            return Paths.get("output");
+          }
 
           @Override
           protected Path getPathToTestExitCode() {
@@ -140,7 +171,6 @@ public class CxxTestTest {
 
           @Override
           protected ImmutableList<TestResultSummary> parseResults(
-              ExecutionContext context,
               Path exitCode,
               Path output,
               Path results)

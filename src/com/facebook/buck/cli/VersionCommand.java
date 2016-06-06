@@ -16,7 +16,8 @@
 
 package com.facebook.buck.cli;
 
-import com.google.common.collect.ImmutableMap;
+import com.facebook.buck.config.RawConfig;
+import com.facebook.buck.log.LogConfigSetup;
 
 import java.io.IOException;
 
@@ -59,8 +60,12 @@ public class VersionCommand implements Command {
   }
 
   @Override
-  public ImmutableMap<String, ImmutableMap<String, String>> getConfigOverrides() {
-    return ImmutableMap.of();
+  public RawConfig getConfigOverrides() {
+    return RawConfig.of();
   }
 
+  @Override
+  public LogConfigSetup getLogConfig() {
+    return LogConfigSetup.DEFAULT_SETUP;
+  }
 }

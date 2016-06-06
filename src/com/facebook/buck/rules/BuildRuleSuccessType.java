@@ -16,6 +16,7 @@
 
 package com.facebook.buck.rules;
 
+import com.facebook.buck.artifact_cache.ArtifactCache;
 import com.facebook.buck.step.Step;
 import com.google.common.collect.ImmutableSet;
 
@@ -29,47 +30,77 @@ public enum BuildRuleSuccessType {
 
   /** Built by executing the {@link Step}s for the rule. */
   BUILT_LOCALLY(
+      "BUILT",
       Property.SHOULD_UPLOAD_RESULTING_ARTIFACT,
       Property.SHOULD_UPLOAD_RESULTING_ARTIFACT_INPUT_BASED,
-      Property.SHOULD_CLEAR_AND_WRITE_METADATA_ON_DISK
+      Property.SHOULD_UPLOAD_RESULTING_ARTIFACT_MANIFEST_BASED,
+      Property.SHOULD_CLEAR_AND_WRITE_METADATA_ON_DISK,
+      Property.OUTPUTS_HAVE_CHANGED
   ),
 
   /** Fetched via the {@link ArtifactCache}. */
   FETCHED_FROM_CACHE(
+      "CACHE",
+      Property.OUTPUTS_HAVE_CHANGED
   ),
 
   /** Computed {@link RuleKey} matches the one on disk. */
   MATCHING_RULE_KEY(
+      "FOUND"
   ),
 
   /** Fetched via the {@link ArtifactCache} using an input-based rule key. */
   FETCHED_FROM_CACHE_INPUT_BASED(
+      "CACHE",
       Property.SHOULD_UPLOAD_RESULTING_ARTIFACT,
-      Property.SHOULD_UPDATE_METADATA_ON_DISK
+      Property.SHOULD_UPDATE_METADATA_ON_DISK,
+      Property.OUTPUTS_HAVE_CHANGED
+  ),
+
+  /** Fetched via the {@link ArtifactCache} using an input-based rule key. */
+  FETCHED_FROM_CACHE_MANIFEST_BASED(
+      "CACHE",
+      Property.SHOULD_UPLOAD_RESULTING_ARTIFACT,
+      Property.SHOULD_UPDATE_METADATA_ON_DISK,
+      Property.OUTPUTS_HAVE_CHANGED
   ),
 
   /** Computed input-based {@link RuleKey} matches the one on disk. */
   MATCHING_INPUT_BASED_RULE_KEY(
-      Property.SHOULD_UPLOAD_RESULTING_ARTIFACT,
+      "FOUND",
+      // TODO(#8364892): We should re-upload to the cache under the main rule key once local
+      // caching performance is better and we don't hurt the incremental workflow as much.
       Property.SHOULD_UPDATE_METADATA_ON_DISK
   ),
 
   /**
-   * Computed {@link RuleKey} without deps matches the one on disk <em>AND</em> the ABI key for
-   * the deps matches the one on disk.
+   * Computed ABI {@link RuleKey} matches the one on disk.
    */
-  MATCHING_DEPS_ABI_AND_RULE_KEY_NO_DEPS(
+  MATCHING_ABI_RULE_KEY(
+      "FOUND",
       Property.SHOULD_UPDATE_METADATA_ON_DISK
   ),
+
+  /**
+   * Computed dep-file {@link RuleKey} matches the one on disk
+   */
+  MATCHING_DEP_FILE_RULE_KEY(
+      "FOUND",
+      Property.SHOULD_UPDATE_METADATA_ON_DISK
+  ),
+
   ;
 
+  private final String shortDescription;
   private final EnumSet<Property> properties;
 
-  BuildRuleSuccessType() {
+  BuildRuleSuccessType(String shortDescription) {
+    this.shortDescription = shortDescription;
     this.properties = EnumSet.noneOf(Property.class);
   }
 
-  BuildRuleSuccessType(Property... properties) {
+  BuildRuleSuccessType(String shortDescription, Property... properties) {
+    this.shortDescription = shortDescription;
     this.properties = EnumSet.copyOf(ImmutableSet.copyOf(properties));
   }
 
@@ -91,10 +122,28 @@ public enum BuildRuleSuccessType {
     return properties.contains(Property.SHOULD_UPLOAD_RESULTING_ARTIFACT_INPUT_BASED);
   }
 
+  public boolean shouldUploadResultingArtifactManifestBased() {
+    return properties.contains(Property.SHOULD_UPLOAD_RESULTING_ARTIFACT_MANIFEST_BASED);
+  }
+
+  /**
+   * @return whether a rule completing with this success type may have changed it's outputs.
+   */
+  public boolean outputsHaveChanged() {
+    return properties.contains(Property.OUTPUTS_HAVE_CHANGED);
+  }
+
+  public String getShortDescription() {
+    return shortDescription;
+  }
+
   private enum Property {
     SHOULD_UPLOAD_RESULTING_ARTIFACT,
     SHOULD_UPLOAD_RESULTING_ARTIFACT_INPUT_BASED,
+    SHOULD_UPLOAD_RESULTING_ARTIFACT_MANIFEST_BASED,
     SHOULD_CLEAR_AND_WRITE_METADATA_ON_DISK,
     SHOULD_UPDATE_METADATA_ON_DISK,
+    OUTPUTS_HAVE_CHANGED,
   }
+
 }

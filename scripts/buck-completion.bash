@@ -32,10 +32,15 @@
 # tab, and you should see logs in the original window of what this script is
 # doing.
 
+if [ -n "$ZSH_VERSION" ]; then
+  autoload -U bashcompinit
+  bashcompinit
+fi
+
 function _buck_completion_run() {
   COMPREPLY=()
 
-  local words=( "${COMP_WORDS[@]}" )
+  local -a words; words=( "${COMP_WORDS[@]}" )
   local cword=$COMP_CWORD
   local word="${words[$cword]}"
   local prev="$3"
@@ -44,6 +49,7 @@ function _buck_completion_run() {
   $log "==============================="
   $log "word=$word"
   $log "prev=$prev"
+
   $log "words:"
   for w in "${words[@]}"; do
     $log "  $w"
@@ -56,15 +62,11 @@ function _buck_completion_run() {
       ;;
 
     1)
-      local commands=$(_buck_completion_echo_buck_commands)
+      local commands="$(_buck_completion_echo_buck_commands)"
       COMPREPLY=( $(compgen -W "$commands" -- "$word") )
       ;;
 
     *)
-      if _buck_completion_try_long_arg "--version --help"; then
-        return 0
-      fi
-
       case "${words[1]}" in
         audit)      _buck_completion_try_audit      "$@";;
         build)      _buck_completion_try_build      "$@";;
@@ -94,8 +96,7 @@ function _buck_completion_run() {
 }
 
 function _buck_completion_try_build() {
-  _buck_completion_try_long_arg "--build-dependencies --help --no-cache --num-threads --verbose" \
-    || _buck_completion_try_build_dependencies "$@" \
+  _buck_completion_try_long_arg "--help --no-cache --num-threads --verbose --populate-cache" \
     || _buck_completion_try_target "$@"
 }
 
@@ -138,7 +139,6 @@ function _buck_completion_try_clean() {
 function _buck_completion_try_install() {
   _buck_completion_try_long_arg "
       --activity
-      --build-dependencies
       --help
       --no-cache
       --num-threads
@@ -152,14 +152,15 @@ function _buck_completion_try_install() {
       --device
       --serial" \
     || _buck_completion_try_short_arg "-all" \
-    || _buck_completion_try_build_dependencies "$@" \
     || _buck_completion_try_serial "$@" \
     || _buck_completion_try_target "$@"
 }
 
 function _buck_completion_try_project() {
   _buck_completion_try_long_arg "
+      --build-with-buck
       --combined-project
+      --deprecated-ij-generation
       --help
       --ide
       --no-cache
@@ -180,7 +181,6 @@ function _buck_completion_try_run() {
 
 function _buck_completion_try_targets() {
   _buck_completion_try_long_arg "
-      --build-dependencies
       --help
       --json
       --no-cache
@@ -191,7 +191,6 @@ function _buck_completion_try_targets() {
       --show-rulekey
       --type
       --verbose" \
-    || _buck_completion_try_build_dependencies "$@" \
     || _buck_completion_try_resolve_alias "$@"
   # TODO _buck_completion_try_referenced_file_set
 }
@@ -199,7 +198,6 @@ function _buck_completion_try_targets() {
 function _buck_completion_try_test() {
   _buck_completion_try_long_arg "
       --all
-      --build-dependencies
       --code-coverage
       --debug
       --dry-run
@@ -218,7 +216,6 @@ function _buck_completion_try_test() {
       --explain-test-selectors
       --exclude
       --always_exclude" \
-    || _buck_completion_try_build_dependencies "$@" \
     || _buck_completion_try_serial "$@" \
     || _buck_completion_try_target "$@"
 }
@@ -251,17 +248,6 @@ function _buck_completion_try_short_arg() {
   if [[ "$word" == -* ]]; then
     COMPREPLY=( $(compgen -W "$@" -- "$word") )
   fi
-
-  # Set return status
-  [[ "${#COMPREPLY[@]}" > 0 ]]
-}
-
-function _buck_completion_try_build_dependencies() {
-  case "$prev" in
-    -b | --build-dependencies)
-      COMPREPLY=( $(compgen -W "FIRST_ORDER_ONLY WARN_ON_TRANSITIVE TRANSITIVE" -- "$word") )
-      ;;
-  esac
 
   # Set return status
   [[ "${#COMPREPLY[@]}" > 0 ]]
@@ -388,7 +374,7 @@ function _buck_completion_add_target_alias_or_relative_path() {
 
 function _buck_completion_add_target_alias() {
   local prog='/^\[/ { p=0 } /^\[alias]/ { p=1 } /^ *[a-zA-Z_-]* *= *\/\// { if (p) print $1 }'
-  local aliases=( $(awk "$prog" < "$root/.buckconfig") )
+  local -a aliases; aliases=($(awk "$prog" < "$root/.buckconfig"))
 
   for a in "${aliases[@]}"; do
     if [[ "$a" == "$word"* ]]; then
@@ -407,7 +393,7 @@ function _buck_completion_add_relative_path_with_prefix() {
   local prefix="$2"
 
   # Complete directory containing BUCK file
-  local raw_dirs=( $(compgen -A directory -- "$dir") )
+  local -a raw_dirs; raw_dirs=( $(compgen -A directory -- "$dir") )
 
   for d in "${raw_dirs[@]}"; do
     local suffix

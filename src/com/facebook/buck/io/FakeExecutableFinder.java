@@ -16,32 +16,35 @@
 
 package com.facebook.buck.io;
 
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableCollection;
+import com.google.common.collect.ImmutableList;
 
 import java.nio.file.Path;
-
-import javax.annotation.Nullable;
 
 public class FakeExecutableFinder extends ExecutableFinder {
 
   private final ImmutableCollection<Path> knownPaths;
 
+  public FakeExecutableFinder(Path... knownPaths) {
+    this(ImmutableList.copyOf(knownPaths));
+  }
+
   public FakeExecutableFinder(ImmutableCollection<Path> knownPaths) {
     this.knownPaths = knownPaths;
   }
 
-  @Nullable
   @Override
-  protected Path findExecutable(
+  public Optional<Path> getOptionalExecutable(
       Path suggestedPath,
       ImmutableCollection<Path> searchPath,
       ImmutableCollection<String> fileSuffixes) {
     for (Path path : knownPaths) {
       if (suggestedPath.equals(path.getFileName())) {
-        return path;
+        return Optional.of(path);
       }
     }
     System.out.println("suggestedPath = " + suggestedPath);
-    return null;
+    return Optional.absent();
   }
 }

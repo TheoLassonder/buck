@@ -18,15 +18,18 @@ package com.facebook.buck.gwt;
 
 import com.facebook.buck.graph.AbstractBreadthFirstTraversal;
 import com.facebook.buck.gwt.GwtBinary.Style;
-import com.facebook.buck.java.JavaLibrary;
+import com.facebook.buck.jvm.java.JavaLibrary;
+import com.facebook.buck.jvm.java.JavaOptions;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargets;
+import com.facebook.buck.rules.AbstractDescriptionArg;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.BuildRuleType;
 import com.facebook.buck.rules.Description;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
@@ -58,6 +61,12 @@ public class GwtBinaryDescription implements Description<GwtBinaryDescription.Ar
    */
   private static final Integer DEFAULT_OPTIMIZE = Integer.valueOf(9);
 
+  private final JavaOptions javaOptions;
+
+  public GwtBinaryDescription(JavaOptions javaOptions) {
+    this.javaOptions = javaOptions;
+  }
+
   @Override
   public BuildRuleType getBuildRuleType() {
     return TYPE;
@@ -70,6 +79,7 @@ public class GwtBinaryDescription implements Description<GwtBinaryDescription.Ar
 
   @Override
   public <A extends Arg> BuildRule createBuildRule(
+      TargetGraph targetGraph,
       BuildRuleParams params,
       final BuildRuleResolver resolver,
       A args) {
@@ -110,6 +120,7 @@ public class GwtBinaryDescription implements Description<GwtBinaryDescription.Ar
         params.copyWithExtraDeps(Suppliers.ofInstance(extraDeps.build())),
         new SourcePathResolver(resolver),
         args.modules.get(),
+        javaOptions.getJavaRuntimeLauncher(),
         args.vmArgs.get(),
         args.style.or(DEFAULT_STYLE),
         args.draftCompile.or(DEFAULT_DRAFT_COMPILE),
@@ -121,7 +132,7 @@ public class GwtBinaryDescription implements Description<GwtBinaryDescription.Ar
   }
 
   @SuppressFieldNotInitialized
-  public static class Arg {
+  public static class Arg extends AbstractDescriptionArg {
     public Optional<ImmutableSortedSet<String>> modules;
     public Optional<ImmutableSortedSet<BuildTarget>> moduleDeps;
     public Optional<ImmutableSortedSet<BuildTarget>> deps;

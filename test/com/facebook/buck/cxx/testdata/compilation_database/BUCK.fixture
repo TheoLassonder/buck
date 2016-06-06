@@ -1,0 +1,29 @@
+cxx_binary(
+  name = 'binary_with_dep',
+  srcs = [
+    'foo.cpp',
+  ],
+  deps = [
+    ':library_with_header',
+  ],
+)
+
+cxx_library(
+  name = 'library_with_header',
+  srcs = [
+    'bar.cpp',
+  ],
+  headers = glob(['*.h']),
+  exported_headers = glob(['*.h'], excludes=['*_private.h']),
+)
+
+cxx_test(
+  name = 'test',
+  srcs = [
+    'test.cpp',
+  ],
+)
+
+cxx_library(
+  name = 'fake-gtest',
+)

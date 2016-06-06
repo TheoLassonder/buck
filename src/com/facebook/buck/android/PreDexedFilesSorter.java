@@ -20,12 +20,13 @@ import static com.facebook.buck.android.SmartDexingStep.DexInputHashesProvider;
 
 import com.facebook.buck.dalvik.CanaryFactory;
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.classes.FileLike;
+import com.facebook.buck.jvm.java.classes.FileLike;
 import com.facebook.buck.rules.BuildContext;
 import com.facebook.buck.rules.Sha1HashCode;
 import com.facebook.buck.step.AbstractExecutionStep;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.util.HumanReadableException;
 import com.google.common.base.Charsets;
 import com.google.common.base.Optional;
@@ -89,6 +90,7 @@ public class PreDexedFilesSorter {
 
   public Result sortIntoPrimaryAndSecondaryDexes(
       BuildContext context,
+      ProjectFilesystem filesystem,
       ImmutableList.Builder<Step> steps) {
     List<DexWithClasses> primaryDexContents = Lists.newArrayList();
     List<List<DexWithClasses>> secondaryDexesContents = Lists.newArrayList();
@@ -142,7 +144,10 @@ public class PreDexedFilesSorter {
         // canary.
         if (currentSecondaryDexContents == null ||
             dexWithClasses.getSizeEstimate() + currentSecondaryDexSize > linearAllocHardLimit) {
-          DexWithClasses canary = createCanary(secondaryDexesContents.size() + 1, steps);
+          DexWithClasses canary = createCanary(
+              filesystem,
+              secondaryDexesContents.size() + 1,
+              steps);
 
           currentSecondaryDexContents = Lists.newArrayList(canary);
           currentSecondaryDexSize = canary.getSizeEstimate();
@@ -204,7 +209,10 @@ public class PreDexedFilesSorter {
   /**
    * @see com.facebook.buck.dalvik.CanaryFactory#create(int)
    */
-  private DexWithClasses createCanary(final int index, ImmutableList.Builder<Step> steps) {
+  private DexWithClasses createCanary(
+      final ProjectFilesystem filesystem,
+      final int index,
+      ImmutableList.Builder<Step> steps) {
     final FileLike fileLike = CanaryFactory.create(index);
     final String canaryDirName = "canary_" + String.valueOf(index);
     final Path scratchDirectoryForCanaryClass = scratchDirectory.resolve(canaryDirName);
@@ -217,17 +225,16 @@ public class PreDexedFilesSorter {
     // Write out the .class file.
     steps.add(new AbstractExecutionStep("write_canary_class") {
       @Override
-      public int execute(ExecutionContext context) {
+      public StepExecutionResult execute(ExecutionContext context) {
         Path classFile = scratchDirectoryForCanaryClass.resolve(relativePathToClassFile);
-        ProjectFilesystem projectFilesystem = context.getProjectFilesystem();
         try (InputStream inputStream = fileLike.getInput()) {
-          projectFilesystem.createParentDirs(classFile);
-          projectFilesystem.copyToPath(inputStream, classFile);
+          filesystem.createParentDirs(classFile);
+          filesystem.copyToPath(inputStream, classFile);
         } catch (IOException e) {
           context.logError(e,  "Error writing canary class file: %s.",  classFile.toString());
-          return 1;
+          return StepExecutionResult.ERROR;
         }
-        return 0;
+        return StepExecutionResult.SUCCESS;
       }
     });
 
@@ -255,7 +262,7 @@ public class PreDexedFilesSorter {
         // The only thing unique to canary classes is the index, which is captured by canaryDirName.
         Hasher hasher = Hashing.sha1().newHasher();
         hasher.putString(canaryDirName, Charsets.UTF_8);
-        return Sha1HashCode.of(hasher.hash().toString());
+        return Sha1HashCode.fromHashCode(hasher.hash());
       }
     };
   }

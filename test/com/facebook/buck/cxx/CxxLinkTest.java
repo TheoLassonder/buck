@@ -21,23 +21,27 @@ import static org.junit.Assert.assertNotEquals;
 
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
-import com.facebook.buck.rules.AbstractBuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
-import com.facebook.buck.rules.BuildRuleParamsFactory;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
+import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
+import com.facebook.buck.rules.FakeSourcePath;
+import com.facebook.buck.rules.HashedFileTool;
 import com.facebook.buck.rules.RuleKey;
-import com.facebook.buck.rules.RuleKeyBuilderFactory;
-import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.RuleScheduleInfo;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.facebook.buck.rules.TestSourcePath;
-import com.facebook.buck.rules.Tool;
+import com.facebook.buck.rules.TargetGraph;
+import com.facebook.buck.rules.args.Arg;
+import com.facebook.buck.rules.args.SanitizedArg;
+import com.facebook.buck.rules.args.SourcePathArg;
+import com.facebook.buck.rules.args.StringArg;
 import com.facebook.buck.rules.keys.DefaultRuleKeyBuilderFactory;
 import com.facebook.buck.testutil.FakeFileHashCache;
+import com.google.common.base.Optional;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableBiMap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 
 import org.junit.Test;
 
@@ -47,138 +51,106 @@ import java.nio.file.Paths;
 
 public class CxxLinkTest {
 
-  private static final Tool DEFAULT_LINKER = new HashedFileTool(Paths.get("ld"));
+  private static final Linker DEFAULT_LINKER = new GnuLinker(new HashedFileTool(Paths.get("ld")));
   private static final Path DEFAULT_OUTPUT = Paths.get("test.exe");
-  private static final ImmutableList<SourcePath> DEFAULT_INPUTS = ImmutableList.<SourcePath>of(
-      new TestSourcePath("a.o"),
-      new TestSourcePath("b.o"),
-      new TestSourcePath("libc.a"));
-  private static final ImmutableList<String> DEFAULT_ARGS = ImmutableList.of(
-      "-rpath",
-      "/lib",
-      "libc.a");
-  private static final ImmutableSet<Path> DEFAULT_FRAMEWORK_ROOTS = ImmutableSet.of(
-      Paths.get("/System/Frameworks"));
-  private static final DebugPathSanitizer DEFAULT_SANITIZER =
-      CxxPlatforms.DEFAULT_DEBUG_PATH_SANITIZER;
-
-  private RuleKey generateRuleKey(
-      RuleKeyBuilderFactory factory,
-      AbstractBuildRule rule) {
-
-    RuleKey.Builder builder = factory.newInstance(rule);
-    return builder.build();
-  }
+  private static final SourcePathResolver DEFAULT_SOURCE_PATH_RESOLVER =
+      new SourcePathResolver(
+          new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer()));
+  private static final ImmutableList<Arg> DEFAULT_ARGS =
+      ImmutableList.of(
+          new StringArg("-rpath"),
+          new StringArg("/lib"),
+          new StringArg("libc.a"),
+          new SourcePathArg(DEFAULT_SOURCE_PATH_RESOLVER, new FakeSourcePath("a.o")),
+          new SourcePathArg(DEFAULT_SOURCE_PATH_RESOLVER, new FakeSourcePath("b.o")),
+          new SourcePathArg(DEFAULT_SOURCE_PATH_RESOLVER, new FakeSourcePath("libc.a")),
+          new StringArg("-L"),
+          new StringArg("/System/Libraries/libz.dynlib"),
+          new StringArg("-llibz.dylib"));
 
   @Test
   public void testThatInputChangesCauseRuleKeyChanges() {
-    SourcePathResolver pathResolver = new SourcePathResolver(new BuildRuleResolver());
+    SourcePathResolver pathResolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+    );
     BuildTarget target = BuildTargetFactory.newInstance("//foo:bar");
-    BuildRuleParams params = BuildRuleParamsFactory.createTrivialBuildRuleParams(target);
-    RuleKeyBuilderFactory ruleKeyBuilderFactory =
-        new DefaultRuleKeyBuilderFactory(
-            FakeFileHashCache.createFromStrings(
-                ImmutableMap.of(
-                    "ld", Strings.repeat("0", 40),
-                    "a.o", Strings.repeat("a", 40),
-                    "b.o", Strings.repeat("b", 40),
-                    "libc.a", Strings.repeat("c", 40),
-                    "different", Strings.repeat("d", 40))),
-            pathResolver);
+    BuildRuleParams params = new FakeBuildRuleParamsBuilder(target).build();
+    FakeFileHashCache hashCache = FakeFileHashCache.createFromStrings(
+        ImmutableMap.of(
+            "ld", Strings.repeat("0", 40),
+            "a.o", Strings.repeat("a", 40),
+            "b.o", Strings.repeat("b", 40),
+            "libc.a", Strings.repeat("c", 40),
+            "different", Strings.repeat("d", 40)));
 
     // Generate a rule key for the defaults.
-    RuleKey defaultRuleKey = generateRuleKey(
-        ruleKeyBuilderFactory,
+
+    RuleKey defaultRuleKey = new DefaultRuleKeyBuilderFactory(0, hashCache, pathResolver).build(
         new CxxLink(
             params,
             pathResolver,
             DEFAULT_LINKER,
             DEFAULT_OUTPUT,
-            DEFAULT_INPUTS,
             DEFAULT_ARGS,
-            DEFAULT_FRAMEWORK_ROOTS,
-            DEFAULT_SANITIZER));
+            Optional.<RuleScheduleInfo>absent(),
+            /* cacheable */ true));
 
     // Verify that changing the archiver causes a rulekey change.
-    RuleKey linkerChange = generateRuleKey(
-        ruleKeyBuilderFactory,
+
+    RuleKey linkerChange = new DefaultRuleKeyBuilderFactory(0, hashCache, pathResolver).build(
         new CxxLink(
             params,
             pathResolver,
-            new HashedFileTool(Paths.get("different")),
+            new GnuLinker(new HashedFileTool(Paths.get("different"))),
             DEFAULT_OUTPUT,
-            DEFAULT_INPUTS,
             DEFAULT_ARGS,
-            DEFAULT_FRAMEWORK_ROOTS,
-            DEFAULT_SANITIZER));
+            Optional.<RuleScheduleInfo>absent(),
+            /* cacheable */ true));
     assertNotEquals(defaultRuleKey, linkerChange);
 
     // Verify that changing the output path causes a rulekey change.
-    RuleKey outputChange = generateRuleKey(
-        ruleKeyBuilderFactory,
+
+    RuleKey outputChange = new DefaultRuleKeyBuilderFactory(0, hashCache, pathResolver).build(
         new CxxLink(
             params,
             pathResolver,
             DEFAULT_LINKER,
             Paths.get("different"),
-            DEFAULT_INPUTS,
             DEFAULT_ARGS,
-            DEFAULT_FRAMEWORK_ROOTS,
-            DEFAULT_SANITIZER));
+            Optional.<RuleScheduleInfo>absent(),
+            /* cacheable */ true));
     assertNotEquals(defaultRuleKey, outputChange);
 
-    // Verify that changing the inputs causes a rulekey change.
-    RuleKey inputChange = generateRuleKey(
-        ruleKeyBuilderFactory,
-        new CxxLink(
-            params,
-            pathResolver,
-            DEFAULT_LINKER,
-            DEFAULT_OUTPUT,
-            ImmutableList.<SourcePath>of(new TestSourcePath("different")),
-            DEFAULT_ARGS,
-            DEFAULT_FRAMEWORK_ROOTS,
-            DEFAULT_SANITIZER));
-    assertNotEquals(defaultRuleKey, inputChange);
-
     // Verify that changing the flags causes a rulekey change.
-    RuleKey flagsChange = generateRuleKey(
-        ruleKeyBuilderFactory,
+
+    RuleKey flagsChange = new DefaultRuleKeyBuilderFactory(0, hashCache, pathResolver).build(
         new CxxLink(
             params,
             pathResolver,
             DEFAULT_LINKER,
             DEFAULT_OUTPUT,
-            DEFAULT_INPUTS,
-            ImmutableList.of("-different"),
-            DEFAULT_FRAMEWORK_ROOTS,
-            DEFAULT_SANITIZER));
+            ImmutableList.<Arg>of(
+                new SourcePathArg(
+                    new SourcePathResolver(
+                        new BuildRuleResolver(
+                            TargetGraph.EMPTY,
+                            new DefaultTargetNodeToBuildRuleTransformer())),
+                    new FakeSourcePath("different"))),
+            Optional.<RuleScheduleInfo>absent(),
+            /* cacheable */ true));
     assertNotEquals(defaultRuleKey, flagsChange);
-
-
-    // Verify that changing the framework roots causes a rulekey change.
-    RuleKey frameworkRootsChange = generateRuleKey(
-        ruleKeyBuilderFactory,
-        new CxxLink(
-            params,
-            pathResolver,
-            DEFAULT_LINKER,
-            DEFAULT_OUTPUT,
-            DEFAULT_INPUTS,
-            DEFAULT_ARGS,
-            ImmutableSet.of(Paths.get("/System/DifferentFrameworks")),
-            DEFAULT_SANITIZER));
-    assertNotEquals(defaultRuleKey, frameworkRootsChange);
-
   }
 
   @Test
   public void sanitizedPathsInFlagsDoNotAffectRuleKey() {
-    SourcePathResolver pathResolver = new SourcePathResolver(new BuildRuleResolver());
+    SourcePathResolver pathResolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+    );
     BuildTarget target = BuildTargetFactory.newInstance("//foo:bar");
-    BuildRuleParams params = BuildRuleParamsFactory.createTrivialBuildRuleParams(target);
-    RuleKeyBuilderFactory ruleKeyBuilderFactory =
+    BuildRuleParams params = new FakeBuildRuleParamsBuilder(target).build();
+    DefaultRuleKeyBuilderFactory ruleKeyBuilderFactory =
         new DefaultRuleKeyBuilderFactory(
+            0,
             FakeFileHashCache.createFromStrings(
                 ImmutableMap.of(
                     "ld", Strings.repeat("0", 40),
@@ -204,33 +176,39 @@ public class CxxLinkTest {
             ImmutableBiMap.of(Paths.get("different"), Paths.get("A")));
 
     // Generate a rule with a path we need to sanitize to a consistent value.
-    ImmutableList<String> args1 = ImmutableList.of("-Lsomething/foo");
-    RuleKey ruleKey1 = generateRuleKey(
-        ruleKeyBuilderFactory,
+    ImmutableList<Arg> args1 =
+        ImmutableList.<Arg>of(
+            new SanitizedArg(
+                sanitizer1.sanitize(Optional.<Path>absent()),
+                "-Lsomething/foo"));
+
+    RuleKey ruleKey1 = ruleKeyBuilderFactory.build(
         new CxxLink(
             params,
             pathResolver,
             DEFAULT_LINKER,
             DEFAULT_OUTPUT,
-            DEFAULT_INPUTS,
             args1,
-            ImmutableSet.of(Paths.get("something/Frameworks")),
-            sanitizer1));
+            Optional.<RuleScheduleInfo>absent(),
+            /* cacheable */ true));
 
     // Generate another rule with a different path we need to sanitize to the
     // same consistent value as above.
-    ImmutableList<String> args2 = ImmutableList.of("-Ldifferent/foo");
-    RuleKey ruleKey2 = generateRuleKey(
-        ruleKeyBuilderFactory,
+    ImmutableList<Arg> args2 =
+        ImmutableList.<Arg>of(
+            new SanitizedArg(
+                sanitizer2.sanitize(Optional.<Path>absent()),
+                "-Ldifferent/foo"));
+
+    RuleKey ruleKey2 = ruleKeyBuilderFactory.build(
         new CxxLink(
             params,
             pathResolver,
             DEFAULT_LINKER,
             DEFAULT_OUTPUT,
-            DEFAULT_INPUTS,
             args2,
-            ImmutableSet.of(Paths.get("different/Frameworks")),
-            sanitizer2));
+            Optional.<RuleScheduleInfo>absent(),
+            /* cacheable */ true));
 
     assertEquals(ruleKey1, ruleKey2);
   }

@@ -1,0 +1,136 @@
+{namespace go_test}
+
+/***/
+{template .soyweb}
+  {call buck.page}
+    {param title: 'go_test()' /}
+    {param prettify: true /}
+    {param description}
+      A go_test() rule builds a Go library with the sources and runs them as a
+      "testing" package test.
+    {/param}
+    {param content}
+
+{call buck.rule}
+{param status: 'UNFROZEN' /}
+{param overview}
+<p>
+  A go_test() rule builds a native binary from the supplied set of Go source files
+  and a generated main file. It's similar to the <i>go test</i> command.
+</p>
+<p>
+  {call go_common.supported_language_version /}
+</p>
+{/param}
+
+{param args}
+
+{call buck.arg}
+  {param name: 'name' /}
+  {param desc}
+  The name of the rule.
+  {/param}
+{/call}
+
+{call go_common.srcs_arg /}
+
+{call buck.arg}
+  {param name: 'library' /}
+  {param default: 'None' /}
+  {param desc}
+  Specify the library that this internal test is testing. This will copy the <code>srcs</code>,
+  {sp}<code>package_name</code> and <code>deps</code> from the target specified so you don't have
+  to duplicate them.
+  {/param}
+{/call}
+
+{call buck.arg}
+  {param name : 'package_name' /}
+  {param default : 'go.prefix + path relative to the buck root + "_test"' /}
+  {param desc}
+  Sets the full name of the test package being compiled. This defaults to the path from the buck
+  root with "_test" appended. (e.g. given a ./.buckconfig, a rule in ./a/b/BUCK defaults to package "a/b_test")
+
+  <p>Note: if you want to test packages internally (i.e. same package name), use the <code>library</code>
+  {sp}parameter instead of setting <code>package_name</code> to include the tested source files.</p>
+  {/param}
+{/call}
+
+{call go_common.deps_arg /}
+
+{call go_common.compiler_flags_arg /}
+
+{call go_common.assembler_flags_arg /}
+
+{call go_common.linker_flags_arg /}
+
+{call buck.arg}
+  {param name: 'resources' /}
+  {param default : '[]' /}
+  {param desc}
+  Static files to be symlinked into the working directory of the test. You can access these in your
+  by opening the files as relative paths, e.g. <code>ioutil.ReadFile("testdata/input")</code>.
+  {/param}
+{/call}
+
+{call buck.test_label_arg /}
+
+{call buck.test_rule_timeout_ms /}
+
+{call buck.run_test_separately_arg /}
+
+{/param} // close args
+
+{param examples}
+
+{call go_common.more_examples /}
+
+{literal}<pre class="prettyprint lang-py">
+go_library(
+  name='greeting',
+  srcs=[
+    'greeting.go',
+  ],
+  deps=[
+    ':join',
+  ],
+)
+
+go_test(
+  name='greeting-test',
+  srcs=[
+    'greeting_ext_test.go',
+  ],
+  deps=[
+    ':greeting'
+  ],
+)
+
+go_test(
+  name='greeting-internal-test',
+  package_name='greeting',
+  srcs=[
+    'greeting.go',
+    'greeting_test.go',
+  ],
+  deps=[
+    ':join',
+  ],
+)
+
+# Or
+
+go_test(
+  name='greeting-better-internal-test',
+  srcs=['greeting_test.go'],
+  library=':greeting',
+)
+
+</pre>{/literal}
+{/param}
+
+{/call} // close buck.rule
+
+    {/param}
+  {/call}
+{/template}

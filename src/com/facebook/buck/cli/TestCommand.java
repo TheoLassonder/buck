@@ -17,29 +17,37 @@
 package com.facebook.buck.cli;
 
 import com.facebook.buck.command.Build;
+import com.facebook.buck.event.ConsoleEvent;
 import com.facebook.buck.json.BuildFileParseException;
 import com.facebook.buck.log.Logger;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetException;
-import com.facebook.buck.model.Pair;
 import com.facebook.buck.parser.BuildFileSpec;
-import com.facebook.buck.parser.ParserConfig;
+import com.facebook.buck.parser.Parser;
 import com.facebook.buck.parser.TargetNodePredicateSpec;
-import com.facebook.buck.rules.ActionGraph;
+import com.facebook.buck.rules.ActionGraphAndResolver;
+import com.facebook.buck.rules.BuildEngine;
 import com.facebook.buck.rules.BuildEvent;
 import com.facebook.buck.rules.CachingBuildEngine;
+import com.facebook.buck.rules.ExternalTestRunnerRule;
+import com.facebook.buck.rules.ExternalTestRunnerTestSpec;
 import com.facebook.buck.rules.Label;
-import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.rules.TargetGraph;
-import com.facebook.buck.rules.TargetGraphToActionGraph;
+import com.facebook.buck.rules.TargetGraphAndBuildTargets;
 import com.facebook.buck.rules.TargetNode;
 import com.facebook.buck.rules.TargetNodes;
 import com.facebook.buck.rules.TestRule;
-import com.facebook.buck.rules.keys.InputBasedRuleKeyBuilderFactory;
+import com.facebook.buck.step.AdbOptions;
 import com.facebook.buck.step.DefaultStepRunner;
 import com.facebook.buck.step.TargetDevice;
+import com.facebook.buck.step.TargetDeviceOptions;
 import com.facebook.buck.test.CoverageReportFormat;
+import com.facebook.buck.test.TestRunningOptions;
 import com.facebook.buck.util.Console;
+import com.facebook.buck.util.ForwardingProcessListener;
+import com.facebook.buck.util.ListeningProcessExecutor;
+import com.facebook.buck.util.MoreExceptions;
+import com.facebook.buck.util.ProcessExecutorParams;
 import com.facebook.buck.util.concurrent.ConcurrencyLimit;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.annotations.VisibleForTesting;
@@ -50,15 +58,23 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
 
 import org.kohsuke.args4j.Option;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.channels.Channels;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 import javax.annotation.Nullable;
 
@@ -91,6 +107,11 @@ public class TestCommand extends BuildCommand {
   @Nullable
   private String pathToXmlTestOutput = null;
 
+  @Option(name = "--run-with-java-agent",
+      usage = "Whether the test will start a java profiling agent")
+  @Nullable
+  private String pathToJavaAgent = null;
+
   @Option(name = "--no-results-cache", usage = "Whether to use cached test results.")
   @Nullable
   private Boolean isResultsCacheDisabled = null;
@@ -99,16 +120,16 @@ public class TestCommand extends BuildCommand {
   @Nullable
   private Boolean isBuildFiltered = null;
 
+  // TODO(#9061229): See if we can remove this option entirely. For now, the
+  // underlying code has been removed, and this option is ignored.
   @Option(
       name = "--ignore-when-dependencies-fail",
       aliases = {"-i"},
       usage =
-          "Ignore test failures for libraries if they depend on other libraries " +
-          "that aren't passing their tests.  " +
-          "For example, if java_library A depends on B, " +
-          "and they are tested respectively by T1 and T2 and both of those tests fail, " +
-          "only print the error for T2.")
-  private boolean isIgnoreFailingDependencies = false;
+          "Deprecated option (ignored).",
+      hidden = true)
+  @SuppressWarnings("PMD.UnusedPrivateField")
+  private boolean isIgnoreFailingDependencies;
 
   @Option(
       name = "--dry-run",
@@ -138,6 +159,18 @@ public class TestCommand extends BuildCommand {
           "more tests by following dependencies).")
   private boolean shouldExcludeTransitiveTests;
 
+  @Option(
+      name = "--test-runner-env",
+      usage =
+          "Add or override an environment variable passed to the test runner. Later occurrences " +
+          "override earlier occurrences. Currently this only support Apple(ios/osx) tests.",
+      handler = EnvironmentOverrideOptionHandler.class)
+  private Map<String, String> environmentOverrides = new HashMap<>();
+
+  @AdditionalOptions
+  @SuppressFieldNotInitialized
+  private AdbCommandLineOptions adbOptions;
+
   @AdditionalOptions
   @SuppressFieldNotInitialized
   private TargetDeviceCommandLineOptions targetDeviceOptions;
@@ -149,6 +182,9 @@ public class TestCommand extends BuildCommand {
   @AdditionalOptions
   @SuppressFieldNotInitialized
   private TestLabelOptions testLabelOptions;
+
+  @Option(name = "--", handler = ConsumeAllOptionsHandler.class)
+  private List<String> withDashArguments = Lists.newArrayList();
 
   public boolean isRunAllTests() {
     return all || getArguments().isEmpty();
@@ -177,6 +213,14 @@ public class TestCommand extends BuildCommand {
     return targetDeviceOptions.getTargetDeviceOptional();
   }
 
+  public AdbOptions getAdbOptions(BuckConfig buckConfig) {
+    return adbOptions.getAdbOptions(buckConfig);
+  }
+
+  public TargetDeviceOptions getTargetDeviceOptions() {
+    return targetDeviceOptions.getTargetDeviceOptions();
+  }
+
   public boolean isDryRun() {
     return isDryRun;
   }
@@ -203,151 +247,277 @@ public class TestCommand extends BuildCommand {
     if (isDebugEnabled()) {
       return 1;
     }
-    return getNumThreads(buckConfig);
+    return buckConfig.getNumThreads();
+  }
+
+  private TestRunningOptions getTestRunningOptions(CommandRunnerParams params) {
+    return TestRunningOptions.builder()
+        .setUsingOneTimeOutputDirectories(isUsingOneTimeOutput)
+        .setCodeCoverageEnabled(isCodeCoverageEnabled)
+        .setRunAllTests(isRunAllTests())
+        .setTestSelectorList(testSelectorOptions.getTestSelectorList())
+        .setShouldExplainTestSelectorList(testSelectorOptions.shouldExplain())
+        .setResultsCacheEnabled(isResultsCacheEnabled(params.getBuckConfig()))
+        .setDryRun(isDryRun)
+        .setShufflingTests(isShufflingTests)
+        .setPathToXmlTestOutput(Optional.fromNullable(pathToXmlTestOutput))
+        .setPathToJavaAgent(Optional.fromNullable(pathToJavaAgent))
+        .setCoverageReportFormat(coverageReportFormat)
+        .setCoverageReportTitle(coverageReportTitle)
+        .setEnvironmentOverrides(environmentOverrides)
+        .build();
+  }
+
+  private int runTestsInternal(
+      CommandRunnerParams params,
+      BuildEngine buildEngine,
+      Build build,
+      Iterable<TestRule> testRules)
+      throws InterruptedException, IOException {
+
+    if (!withDashArguments.isEmpty()) {
+      params.getBuckEventBus().post(ConsoleEvent.severe(
+          "Unexpected arguments after \"--\" when using internal runner"));
+      return 1;
+    }
+
+    ConcurrencyLimit concurrencyLimit = new ConcurrencyLimit(
+        getNumTestThreads(params.getBuckConfig()),
+        params.getBuckConfig().getLoadLimit());
+    try (
+        CommandThreadManager testPool = new CommandThreadManager(
+            "Test-Run",
+            params.getBuckConfig().getWorkQueueExecutionOrder(),
+            concurrencyLimit)) {
+      return TestRunning.runTests(
+          params,
+          testRules,
+          build.getExecutionContext(),
+          getTestRunningOptions(params),
+          testPool.getExecutor(),
+          buildEngine,
+          new DefaultStepRunner(build.getExecutionContext()));
+    } catch (ExecutionException e) {
+      params.getBuckEventBus().post(ConsoleEvent.severe(
+          MoreExceptions.getHumanReadableOrLocalizedMessage(e)));
+      return 1;
+    }
+  }
+
+  private int runTestsExternal(
+      final CommandRunnerParams params,
+      Build build,
+      Iterable<String> command,
+      Iterable<TestRule> testRules)
+      throws InterruptedException, IOException {
+    TestRunningOptions options = getTestRunningOptions(params);
+
+    // Walk the test rules, collecting all the specs.
+    List<ExternalTestRunnerTestSpec> specs = Lists.newArrayList();
+    for (TestRule testRule : testRules) {
+      if (!(testRule instanceof ExternalTestRunnerRule)) {
+        params.getBuckEventBus().post(ConsoleEvent.severe(String.format(
+            "Test %s does not support external test running",
+            testRule.getBuildTarget())));
+        return 1;
+      }
+      ExternalTestRunnerRule rule = (ExternalTestRunnerRule) testRule;
+      specs.add(rule.getExternalTestRunnerSpec(build.getExecutionContext(), options));
+    }
+
+    // Serialize the specs to a file to pass into the test runner.
+    Path infoFile =
+        params.getCell().getFilesystem()
+            .resolve(params.getCell().getFilesystem().getBuckPaths().getScratchDir())
+            .resolve("external_runner_specs.json");
+    Files.createDirectories(infoFile.getParent());
+    Files.deleteIfExists(infoFile);
+    params.getObjectMapper().writerWithDefaultPrettyPrinter().writeValue(infoFile.toFile(), specs);
+
+    // Launch and run the external test runner, forwarding it's stdout/stderr to the console.
+    // We wait for it to complete then returns its error code.
+    ListeningProcessExecutor processExecutor = new ListeningProcessExecutor();
+    ProcessExecutorParams processExecutorParams =
+        ProcessExecutorParams.builder()
+            .addAllCommand(command)
+            .addAllCommand(withDashArguments)
+            .setEnvironment(params.getEnvironment())
+            .addCommand("--buck-test-info", infoFile.toString())
+            .addCommand(
+                "--jobs",
+                String.valueOf(getConcurrencyLimit(params.getBuckConfig()).threadLimit))
+            .setDirectory(params.getCell().getFilesystem().getRootPath().toFile())
+            .build();
+    ForwardingProcessListener processListener =
+        new ForwardingProcessListener(
+            Channels.newChannel(params.getConsole().getStdOut()),
+            Channels.newChannel(params.getConsole().getStdErr()));
+    ListeningProcessExecutor.LaunchedProcess process =
+        processExecutor.launchProcess(processExecutorParams, processListener);
+    try {
+      return processExecutor.waitForProcess(process, Long.MAX_VALUE, TimeUnit.DAYS);
+    } finally {
+      processExecutor.destroyProcess(process, /* force */ false);
+      processExecutor.waitForProcess(process, Long.MAX_VALUE, TimeUnit.DAYS);
+    }
   }
 
   @Override
   public int runWithoutHelp(CommandRunnerParams params) throws IOException, InterruptedException {
     LOG.debug("Running with arguments %s", getArguments());
 
-    // Post the build started event, setting it to the Parser recorded start time if appropriate.
-    if (params.getParser().getParseStartTime().isPresent()) {
-      params.getBuckEventBus().post(
-          BuildEvent.started(getArguments()),
-          params.getParser().getParseStartTime().get());
-    } else {
-      params.getBuckEventBus().post(BuildEvent.started(getArguments()));
-    }
-
-    // The first step is to parse all of the build files. This will populate the parser and find all
-    // of the test rules.
-    ParserConfig parserConfig = new ParserConfig(params.getBuckConfig());
-    TargetGraph targetGraph;
-    ImmutableSet<BuildTarget> explicitBuildTargets;
-
-    try {
-
-      // If the user asked to run all of the tests, parse all of the build files looking for any
-      // test rules.
-      if (isRunAllTests()) {
-        targetGraph = params.getParser().buildTargetGraphForTargetNodeSpecs(
-            ImmutableList.of(
-                TargetNodePredicateSpec.of(
-                    new Predicate<TargetNode<?>>() {
-                      @Override
-                      public boolean apply(TargetNode<?> input) {
-                        return input.getType().isTestRule();
-                      }
-                    },
-                    BuildFileSpec.fromRecursivePath(
-                        Paths.get(""),
-                        params.getRepository().getFilesystem().getIgnorePaths()))),
-            parserConfig,
-            params.getBuckEventBus(),
-            params.getConsole(),
-            params.getEnvironment(),
-            getEnableProfiling()).getSecond();
-        explicitBuildTargets = ImmutableSet.of();
-
-        // Otherwise, the user specified specific test targets to build and run, so build a graph
-        // around these.
+    try (CommandThreadManager pool = new CommandThreadManager(
+        "Test",
+        params.getBuckConfig().getWorkQueueExecutionOrder(),
+        getConcurrencyLimit(params.getBuckConfig()))) {
+      // Post the build started event, setting it to the Parser recorded start time if appropriate.
+      BuildEvent.Started started = BuildEvent.started(getArguments());
+      if (params.getParser().getParseStartTime().isPresent()) {
+        params.getBuckEventBus().post(
+            started,
+            params.getParser().getParseStartTime().get());
       } else {
-        LOG.debug("Parsing graph for arguments %s", getArguments());
-        Pair<ImmutableSet<BuildTarget>, TargetGraph> result = params.getParser()
-            .buildTargetGraphForTargetNodeSpecs(
-                parseArgumentsAsTargetNodeSpecs(
-                    params.getBuckConfig(),
-                    params.getRepository().getFilesystem().getIgnorePaths(),
-                    getArguments()),
-                parserConfig,
-                params.getBuckEventBus(),
-                params.getConsole(),
-                params.getEnvironment(),
-                getEnableProfiling());
-        targetGraph = result.getSecond();
-        explicitBuildTargets = result.getFirst();
-
-        LOG.debug("Got explicit build targets %s", explicitBuildTargets);
-        ImmutableSet.Builder<BuildTarget> testTargetsBuilder = ImmutableSet.builder();
-        for (TargetNode<?> node : targetGraph.getAll(explicitBuildTargets)) {
-          ImmutableSortedSet<BuildTarget> nodeTests = TargetNodes.getTestTargetsForNode(node);
-          if (!nodeTests.isEmpty()) {
-            LOG.debug("Got tests for target %s: %s", node.getBuildTarget(), nodeTests);
-            testTargetsBuilder.addAll(nodeTests);
-          }
-        }
-        ImmutableSet<BuildTarget> testTargets = testTargetsBuilder.build();
-        if (!testTargets.isEmpty()) {
-          LOG.debug("Got related test targets %s, building new target graph...", testTargets);
-          targetGraph = params.getParser().buildTargetGraphForBuildTargets(
-              Iterables.concat(
-                  explicitBuildTargets,
-                  testTargets),
-              parserConfig,
-              params.getBuckEventBus(),
-              params.getConsole(),
-              params.getEnvironment(),
-              getEnableProfiling());
-          LOG.debug("Finished building new target graph with tests.");
-        }
+        params.getBuckEventBus().post(started);
       }
 
-    } catch (BuildTargetException | BuildFileParseException e) {
-      params.getConsole().printBuildFailureWithoutStacktrace(e);
-      return 1;
-    }
+      // The first step is to parse all of the build files. This will populate the parser and find
+      // all of the test rules.
+      TargetGraph targetGraph;
+      ImmutableSet<BuildTarget> explicitBuildTargets;
 
-    TargetGraphToActionGraph targetGraphToActionGraph =
-        new TargetGraphToActionGraph(
-            params.getBuckEventBus(),
-            new BuildTargetNodeToBuildRuleTransformer(),
-            params.getFileHashCache());
-    ActionGraph graph = targetGraphToActionGraph.apply(targetGraph);
+      try {
 
-    // Look up all of the test rules in the action graph.
-    Iterable<TestRule> testRules = Iterables.filter(graph.getNodes(), TestRule.class);
+        // If the user asked to run all of the tests, parse all of the build files looking for any
+        // test rules.
+        boolean ignoreBuckAutodepsFiles = false;
+        if (isRunAllTests()) {
+          targetGraph = params.getParser().buildTargetGraphForTargetNodeSpecs(
+              params.getBuckEventBus(),
+              params.getCell(),
+              getEnableParserProfiling(),
+              pool.getExecutor(),
+              ImmutableList.of(
+                  TargetNodePredicateSpec.of(
+                      new Predicate<TargetNode<?>>() {
+                        @Override
+                        public boolean apply(TargetNode<?> input) {
+                          return input.getType().isTestRule();
+                        }
+                      },
+                      BuildFileSpec.fromRecursivePath(Paths.get(""), params.getCell().getRoot()))),
+              ignoreBuckAutodepsFiles,
+              Parser.ApplyDefaultFlavorsMode.ENABLED).getTargetGraph();
+          explicitBuildTargets = ImmutableSet.of();
 
-    // Unless the user requests that we build filtered tests, filter them out here, before
-    // the build.
-    if (!isBuildFiltered(params.getBuckConfig())) {
-      testRules = filterTestRules(params.getBuckConfig(), explicitBuildTargets, testRules);
-    }
+          // Otherwise, the user specified specific test targets to build and run, so build a graph
+          // around these.
+        } else {
+          LOG.debug("Parsing graph for arguments %s", getArguments());
+          TargetGraphAndBuildTargets result = params.getParser()
+              .buildTargetGraphForTargetNodeSpecs(
+                  params.getBuckEventBus(),
+                  params.getCell(),
+                  getEnableParserProfiling(),
+                  pool.getExecutor(),
+                  parseArgumentsAsTargetNodeSpecs(
+                      params.getBuckConfig(),
+                      getArguments()),
+                  ignoreBuckAutodepsFiles,
+                  Parser.ApplyDefaultFlavorsMode.ENABLED);
+          targetGraph = result.getTargetGraph();
+          explicitBuildTargets = result.getBuildTargets();
 
-    if (isDryRun()) {
-      printMatchingTestRules(params.getConsole(), testRules);
-    }
+          LOG.debug("Got explicit build targets %s", explicitBuildTargets);
+          ImmutableSet.Builder<BuildTarget> testTargetsBuilder = ImmutableSet.builder();
+          for (TargetNode<?> node : targetGraph.getAll(explicitBuildTargets)) {
+            ImmutableSortedSet<BuildTarget> nodeTests = TargetNodes.getTestTargetsForNode(node);
+            if (!nodeTests.isEmpty()) {
+              LOG.debug("Got tests for target %s: %s", node.getBuildTarget(), nodeTests);
+              testTargetsBuilder.addAll(nodeTests);
+            }
+          }
+          ImmutableSet<BuildTarget> testTargets = testTargetsBuilder.build();
+          if (!testTargets.isEmpty()) {
+            LOG.debug("Got related test targets %s, building new target graph...", testTargets);
+            targetGraph = params.getParser().buildTargetGraph(
+                params.getBuckEventBus(),
+                params.getCell(),
+                getEnableParserProfiling(),
+                pool.getExecutor(),
+                Iterables.concat(
+                    explicitBuildTargets,
+                    testTargets));
+            LOG.debug("Finished building new target graph with tests.");
+          }
+        }
 
-    try (CommandThreadManager pool =
-             new CommandThreadManager("Test", getConcurrencyLimit(params.getBuckConfig()))) {
+      } catch (BuildTargetException | BuildFileParseException e) {
+        params.getBuckEventBus().post(ConsoleEvent.severe(
+            MoreExceptions.getHumanReadableOrLocalizedMessage(e)));
+        return 1;
+      }
+
+      ActionGraphAndResolver actionGraphAndResolver = Preconditions.checkNotNull(
+          params.getActionGraphCache().getActionGraph(
+              params.getBuckEventBus(),
+              BuildIdSampler.apply(
+                  params.getBuckConfig().getActionGraphCacheCheckSampleRate(),
+                  params.getBuckEventBus().getBuildId()),
+              targetGraph,
+              params.getBuckConfig().getKeySeed()));
+      // Look up all of the test rules in the action graph.
+      Iterable<TestRule> testRules = Iterables.filter(
+          actionGraphAndResolver.getActionGraph().getNodes(),
+          TestRule.class);
+
+      // Unless the user requests that we build filtered tests, filter them out here, before
+      // the build.
+      if (!isBuildFiltered(params.getBuckConfig())) {
+        testRules = filterTestRules(params.getBuckConfig(), explicitBuildTargets, testRules);
+      }
+
+      if (isDryRun()) {
+        printMatchingTestRules(params.getConsole(), testRules);
+      }
+
       CachingBuildEngine cachingBuildEngine =
           new CachingBuildEngine(
               pool.getExecutor(),
+              params.getFileHashCache(),
               getBuildEngineMode().or(params.getBuckConfig().getBuildEngineMode()),
-              new InputBasedRuleKeyBuilderFactory(
-                  params.getFileHashCache(),
-                  new SourcePathResolver(targetGraphToActionGraph.getRuleResolver())));
+              params.getBuckConfig().getDependencySchedulingOrder(),
+              params.getBuckConfig().getBuildDepFiles(),
+              params.getBuckConfig().getBuildMaxDepFileCacheEntries(),
+              params.getBuckConfig().getBuildArtifactCacheSizeLimit(),
+              params.getObjectMapper(),
+              actionGraphAndResolver.getResolver(),
+              params.getBuckConfig().getKeySeed());
       try (Build build = createBuild(
           params.getBuckConfig(),
-          graph,
-          params.getRepository().getFilesystem(),
+          actionGraphAndResolver.getActionGraph(),
+          actionGraphAndResolver.getResolver(),
           params.getAndroidPlatformTargetSupplier(),
           cachingBuildEngine,
-          getArtifactCache(params),
+          params.getArtifactCache(),
           params.getConsole(),
           params.getBuckEventBus(),
           getTargetDeviceOptional(),
           params.getPlatform(),
           params.getEnvironment(),
           params.getObjectMapper(),
-          params.getClock())) {
+          params.getClock(),
+          Optional.of(getAdbOptions(params.getBuckConfig())),
+          Optional.of(getTargetDeviceOptions()),
+          params.getExecutors())) {
 
         // Build all of the test rules.
-        int exitCode = build.executeAndPrintFailuresToConsole(
+        int exitCode = build.executeAndPrintFailuresToEventBus(
             testRules,
             isKeepGoing(),
+            params.getBuckEventBus(),
             params.getConsole(),
             getPathToBuildReport(params.getBuckConfig()));
-        params.getBuckEventBus().post(BuildEvent.finished(getArguments(), exitCode));
+        params.getBuckEventBus().post(BuildEvent.finished(started, exitCode));
         if (exitCode != 0) {
           return exitCode;
         }
@@ -360,38 +530,16 @@ public class TestCommand extends BuildCommand {
         }
 
         // Once all of the rules are built, then run the tests.
-        ConcurrencyLimit concurrencyLimit = new ConcurrencyLimit(
-            getNumTestThreads(params.getBuckConfig()),
-            getLoadLimit(params.getBuckConfig()));
-        try (CommandThreadManager testPool =
-                 new CommandThreadManager("Test-Run", concurrencyLimit)) {
-          TestRunningOptions options = TestRunningOptions.builder()
-              .setUsingOneTimeOutputDirectories(isUsingOneTimeOutput)
-              .setCodeCoverageEnabled(isCodeCoverageEnabled)
-              .setRunAllTests(isRunAllTests())
-              .setTestSelectorList(testSelectorOptions.getTestSelectorList())
-              .setShouldExplainTestSelectorList(testSelectorOptions.shouldExplain())
-              .setIgnoreFailingDependencies(isIgnoreFailingDependencies)
-              .setResultsCacheEnabled(isResultsCacheEnabled(params.getBuckConfig()))
-              .setDryRun(isDryRun)
-              .setShufflingTests(isShufflingTests)
-              .setPathToXmlTestOutput(Optional.fromNullable(pathToXmlTestOutput))
-              .setCoverageReportFormat(coverageReportFormat)
-              .setCoverageReportTitle(coverageReportTitle)
-              .build();
-          return TestRunning.runTests(
+        Optional<ImmutableList<String>> externalTestRunner =
+            params.getBuckConfig().getExternalTestRunner();
+        if (externalTestRunner.isPresent()) {
+          return runTestsExternal(
               params,
-              testRules,
-              Preconditions.checkNotNull(build.getBuildContext()),
-              build.getExecutionContext(),
-              options,
-              testPool.getExecutor(),
-              cachingBuildEngine,
-              new DefaultStepRunner(build.getExecutionContext()));
-        } catch (ExecutionException e) {
-          params.getConsole().printBuildFailureWithoutStacktrace(e);
-          return 1;
+              build,
+              externalTestRunner.get(),
+              testRules);
         }
+        return runTestsInternal(params, cachingBuildEngine, build, testRules);
       }
     }
   }
@@ -462,5 +610,4 @@ public class TestCommand extends BuildCommand {
   public String getShortDescription() {
     return "builds and runs the tests for the specified target";
   }
-
 }

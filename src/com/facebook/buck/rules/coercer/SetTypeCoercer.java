@@ -17,6 +17,7 @@
 package com.facebook.buck.rules.coercer;
 
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.rules.CellPathResolver;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableSet;
 
@@ -40,12 +41,14 @@ public class SetTypeCoercer<T> extends CollectionTypeCoercer<ImmutableSet<T>, T>
 
   @Override
   public ImmutableSet<T> coerce(
+      CellPathResolver cellRoots,
       ProjectFilesystem filesystem,
       Path pathRelativeToProjectRoot,
       Object object)
       throws CoerceFailedException {
     ImmutableSet.Builder<T> builder = ImmutableSet.builder();
     fill(
+        cellRoots,
         filesystem,
         pathRelativeToProjectRoot,
         builder,

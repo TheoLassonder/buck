@@ -16,9 +16,11 @@
 
 package com.facebook.buck.step.fs;
 
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.log.Logger;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
@@ -28,10 +30,6 @@ import org.tukaani.xz.LZMA2Options;
 import org.tukaani.xz.XZ;
 import org.tukaani.xz.XZOutputStream;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -46,9 +44,10 @@ import java.nio.file.Paths;
  * @see <a href="http://tukaani.org/xz/embedded.html">XZ Embedded</a>
  */
 public class XzStep implements Step {
-
+  public static final int DEFAULT_COMPRESSION_LEVEL = 4;
   private static final Logger LOG = Logger.get(XzStep.class);
 
+  private final ProjectFilesystem filesystem;
   private final Path sourceFile;
   private final Path destinationFile;
   private final int compressionLevel;
@@ -68,11 +67,13 @@ public class XzStep implements Step {
    */
   @VisibleForTesting
   XzStep(
+      ProjectFilesystem filesystem,
       Path sourceFile,
       Path destinationFile,
       int compressionLevel,
       boolean keep,
       int check) {
+    this.filesystem = filesystem;
     this.sourceFile = sourceFile;
     this.destinationFile = destinationFile;
     Preconditions.checkArgument(compressionLevel >= LZMA2Options.PRESET_MIN &&
@@ -90,13 +91,37 @@ public class XzStep implements Step {
    *
    * @param sourceFile file to compress
    */
-  public XzStep(Path sourceFile) {
-    this(
-        sourceFile,
-        Paths.get(sourceFile + ".xz"),
-        /* compressionLevel */ 4,
-        /* keep */ false,
-        XZ.CHECK_CRC32);
+  public XzStep(ProjectFilesystem filesystem, Path sourceFile) {
+    this(filesystem, sourceFile, DEFAULT_COMPRESSION_LEVEL);
+  }
+
+  /**
+   * Creates an XzStep to compress a file with XZ compression level 4.
+   *
+   * <p> Decompression will require 5MiB of RAM.
+   *
+   * @param sourceFile file to compress
+   * @param outputPath desired output path
+   */
+  public XzStep(ProjectFilesystem filesystem, Path sourceFile, Path outputPath) {
+    this(filesystem, sourceFile, outputPath, DEFAULT_COMPRESSION_LEVEL);
+  }
+
+  /**
+   * Creates an XzStep to compress a file with the given XZ compression level and output path.
+   *
+   * <p> Decompression will require up to 64MiB of RAM.
+   *
+   * @param sourceFile file to compress
+   * @param outputPath the desired output path.
+   * @param compressionLevel level of compression (from 0-9)
+   */
+  public XzStep(
+      ProjectFilesystem filesystem,
+      Path sourceFile,
+      Path outputPath,
+      int compressionLevel) {
+    this(filesystem, sourceFile, outputPath, compressionLevel, /* keep */ false, XZ.CHECK_CRC32);
   }
 
   /**
@@ -110,8 +135,9 @@ public class XzStep implements Step {
    * compression, but also need more time to compress and will need more RAM
    * to decompress.
    */
-  public XzStep(Path sourceFile, int compressionLevel) {
+  public XzStep(ProjectFilesystem filesystem, Path sourceFile, int compressionLevel) {
     this(
+        filesystem,
         sourceFile,
         Paths.get(sourceFile + ".xz"),
         compressionLevel,
@@ -120,23 +146,22 @@ public class XzStep implements Step {
   }
 
   @Override
-  public int execute(ExecutionContext context) {
+  public StepExecutionResult execute(ExecutionContext context) {
     try (
-        InputStream in = new BufferedInputStream(new FileInputStream(sourceFile.toFile()));
-        OutputStream out =
-            new BufferedOutputStream(new FileOutputStream(getDestinationFile().toFile()));
+        InputStream in = filesystem.newFileInputStream(sourceFile);
+        OutputStream out = filesystem.newFileOutputStream(destinationFile);
         XZOutputStream xzOut = new XZOutputStream(out, new LZMA2Options(compressionLevel), check)
     ) {
       ByteStreams.copy(in, xzOut);
       xzOut.finish();
       if (!keep) {
-        context.getProjectFilesystem().deleteFileAtPath(sourceFile);
+        filesystem.deleteFileAtPath(sourceFile);
       }
     } catch (IOException e) {
       LOG.error(e);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   public Path getDestinationFile() {

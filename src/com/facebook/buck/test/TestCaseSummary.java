@@ -16,6 +16,7 @@
 
 package com.facebook.buck.test;
 
+import com.facebook.buck.event.external.elements.TestCaseSummaryExternalInterface;
 import com.facebook.buck.util.Ansi;
 import com.facebook.buck.util.TimeFormat;
 import com.fasterxml.jackson.annotation.JsonIgnore;
@@ -23,11 +24,12 @@ import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
+import java.util.Locale;
 
 import javax.annotation.concurrent.Immutable;
 
 @Immutable
-public class TestCaseSummary {
+public class TestCaseSummary implements TestCaseSummaryExternalInterface<TestResultSummary> {
 
   /**
    * Transformation to annotate TestCaseSummary marking them as being read from cached results
@@ -108,25 +110,29 @@ public class TestCaseSummary {
     this.isCached = isCached;
   }
 
+  @Override
   public boolean isSuccess() {
     return isSuccess;
   }
 
+  @Override
   public boolean hasAssumptionViolations() {
     return hasAssumptionViolations;
   }
 
+  @Override
   public String getTestCaseName() {
     return testCaseName;
   }
 
   /** @return the total time to run all of the tests in this test case, in milliseconds */
+  @Override
   public long getTotalTime() {
     return totalTime;
   }
 
   /** @return a one-line, printable summary */
-  public String getOneLineSummary(boolean hasPassingDependencies, Ansi ansi) {
+  public String getOneLineSummary(Locale locale, boolean hasPassingDependencies, Ansi ansi) {
     String statusText;
     Ansi.SeverityLevel severityLevel;
     if (isDryRun) {
@@ -162,10 +168,12 @@ public class TestCaseSummary {
       padding += ' ';
     }
 
-    return String.format("%s%s %s %2d Passed  %2d Skipped  %2d Failed   %s",
+    return String.format(
+        locale,
+        "%s%s %s %2d Passed  %2d Skipped  %2d Failed   %s",
         status,
         padding,
-        !isCached ? TimeFormat.formatForConsole(totalTime, ansi)
+        !isCached ? TimeFormat.formatForConsole(locale, totalTime, ansi)
                   : ansi.asHighlightedStatusText(severityLevel, "CACHED"),
         getPassedCount(),
         skippedCount,
@@ -173,6 +181,7 @@ public class TestCaseSummary {
         testCaseName);
   }
 
+  @Override
   public ImmutableList<TestResultSummary> getTestResults() {
     return testResults;
   }
@@ -182,17 +191,21 @@ public class TestCaseSummary {
     return testResults.size() - failureCount - skippedCount;
   }
 
+  @Override
   public int getSkippedCount() {
     return skippedCount;
   }
 
+  @Override
   public int getFailureCount() {
     return failureCount;
   }
 
   @Override
   public String toString() {
-    return String.format("%s %s",
+    return String.format(
+        Locale.US,
+        "%s %s",
         getShortStatusSummaryString(),
         testCaseName);
   }

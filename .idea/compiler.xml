@@ -6,6 +6,7 @@
       <directory url="file://$PROJECT_DIR$/buck-out/android" includeSubdirectories="true" />
       <directory url="file://$PROJECT_DIR$/buck-out/bin" includeSubdirectories="true" />
       <directory url="file://$PROJECT_DIR$/buck-out/gen" includeSubdirectories="true" />
+      <directory url="file://$PROJECT_DIR$/src/com/facebook/buck/intellij/plugin" includeSubdirectories="true" />
     </excludeFromCompile>
     <resourceExtensions />
     <wildcardResourcePatterns>
@@ -20,7 +21,8 @@
       <entry name="?*.tld" />
       <entry name="?*.ftl" />
       <entry name="?*.soy" />
-      <entry name="*.py" />
+      <entry name="?*.py" />
+      <entry name="?*.st" />
     </wildcardResourcePatterns>
     <annotationProcessing>
       <profile default="true" name="Default" enabled="true">
@@ -28,7 +30,7 @@
         <sourceTestOutputDir name="build-ij/immutables-test" />
         <outputRelativeToContentRoot value="true" />
         <processorPath useClasspath="false">
-          <entry name="$PROJECT_DIR$/third-party/java/immutables/value-2.0.11.jar" />
+          <entry name="$PROJECT_DIR$/third-party/java/immutables/value-2.1.18.jar" />
         </processorPath>
       </profile>
     </annotationProcessing>

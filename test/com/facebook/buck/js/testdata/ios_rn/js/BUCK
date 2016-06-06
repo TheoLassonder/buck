@@ -1,9 +1,0 @@
-ios_react_native_library(
-  name = 'DemoAppJS',
-  srcs = glob(['**/*.js', '**/*.png']),
-  entry_path = 'app/sample.ios.js',
-  bundle_name = 'Apps/DemoApp/DemoApp.bundle',
-  visibility = [
-    'PUBLIC'
-  ],
-)

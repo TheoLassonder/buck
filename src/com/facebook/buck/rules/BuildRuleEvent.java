@@ -16,21 +16,23 @@
 
 package com.facebook.buck.rules;
 
+import com.facebook.buck.artifact_cache.CacheResult;
 import com.facebook.buck.event.AbstractBuckEvent;
-import com.facebook.buck.event.BuckEvent;
+import com.facebook.buck.event.BuckEventBus;
+import com.facebook.buck.event.EventKey;
+import com.facebook.buck.event.WorkAdvanceEvent;
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.google.common.base.Objects;
 import com.google.common.base.Optional;
 import com.google.common.hash.HashCode;
 
 /**
  * Base class for events about build rules.
  */
-@SuppressWarnings("PMD.OverrideBothEqualsAndHashcode")
-public abstract class BuildRuleEvent extends AbstractBuckEvent {
+public abstract class BuildRuleEvent extends AbstractBuckEvent implements WorkAdvanceEvent {
   private final BuildRule rule;
 
   protected BuildRuleEvent(BuildRule rule) {
+    super(EventKey.slowValueKey("BuildRuleEvent", rule.getFullyQualifiedName()));
     this.rule = rule;
   }
 
@@ -43,48 +45,38 @@ public abstract class BuildRuleEvent extends AbstractBuckEvent {
     return rule.getFullyQualifiedName();
   }
 
-  @Override
-  public boolean isRelatedTo(BuckEvent event) {
-    if (!(event instanceof BuildRuleEvent)) {
-      return false;
-    }
-
-    return Objects.equal(getBuildRule(), ((BuildRuleEvent) event).getBuildRule());
-  }
-
-  @Override
-  public int hashCode() {
-    return rule.hashCode();
-  }
-
-  /**
-   * @return The string representation of the rulekey or the error text.
-   */
-  public String getRuleKeySafe() {
-    String ruleKey;
-    ruleKey = rule.getRuleKey().toString();
-    return ruleKey;
-  }
-
   public static Started started(BuildRule rule) {
     return new Started(rule);
   }
 
-  public static Finished finished(BuildRule rule,
+  public static Finished finished(
+      BuildRule rule,
+      BuildRuleKeys ruleKeys,
       BuildRuleStatus status,
       CacheResult cacheResult,
       Optional<BuildRuleSuccessType> successType,
       Optional<HashCode> outputHash,
       Optional<Long> outputSize) {
-    return new Finished(rule, status, cacheResult, successType, outputHash, outputSize);
+    return new Finished(
+        rule,
+        ruleKeys,
+        status,
+        cacheResult,
+        successType,
+        outputHash,
+        outputSize);
   }
 
-  public static Suspended suspended(BuildRule rule) {
-    return new Suspended(rule);
+  public static Suspended suspended(
+      BuildRule rule,
+      RuleKeyBuilderFactory<RuleKey> ruleKeyBuilderFactory) {
+    return new Suspended(rule, ruleKeyBuilderFactory);
   }
 
-  public static Resumed resumed(BuildRule rule) {
-    return new Resumed(rule);
+  public static Resumed resumed(
+      BuildRule rule,
+      RuleKeyBuilderFactory<RuleKey> ruleKeyBuilderFactory) {
+    return new Resumed(rule, ruleKeyBuilderFactory);
   }
 
   public static class Started extends BuildRuleEvent {
@@ -103,10 +95,13 @@ public abstract class BuildRuleEvent extends AbstractBuckEvent {
     private final BuildRuleStatus status;
     private final CacheResult cacheResult;
     private final Optional<BuildRuleSuccessType> successType;
+    private final BuildRuleKeys ruleKeys;
     private final Optional<HashCode> outputHash;
     private final Optional<Long> outputSize;
 
-    protected Finished(BuildRule rule,
+    protected Finished(
+        BuildRule rule,
+        BuildRuleKeys ruleKeys,
         BuildRuleStatus status,
         CacheResult cacheResult,
         Optional<BuildRuleSuccessType> successType,
@@ -116,6 +111,7 @@ public abstract class BuildRuleEvent extends AbstractBuckEvent {
       this.status = status;
       this.cacheResult = cacheResult;
       this.successType = successType;
+      this.ruleKeys = ruleKeys;
       this.outputHash = outputHash;
       this.outputSize = outputSize;
     }
@@ -134,6 +130,11 @@ public abstract class BuildRuleEvent extends AbstractBuckEvent {
     }
 
     @JsonIgnore
+    public BuildRuleKeys getRuleKeys() {
+      return ruleKeys;
+    }
+
+    @JsonIgnore
     public Optional<HashCode> getOutputHash() {
       return outputHash;
     }
@@ -145,48 +146,50 @@ public abstract class BuildRuleEvent extends AbstractBuckEvent {
 
     @Override
     public String toString() {
-      RuleKey ruleKey;
-      ruleKey = getBuildRule().getRuleKey();
-
       String success = successType.isPresent() ? successType.get().toString() : "MISSING";
-      return String.format("BuildRuleFinished(%s): %s %s %s %s",
+      return String.format("BuildRuleFinished(%s): %s %s %s %s%s",
           getBuildRule(),
           getStatus(),
           getCacheResult(),
           success,
-          ruleKey);
-    }
-
-    @Override
-    public boolean equals(Object o) {
-      if (!super.equals(o)) {
-        return false;
-      }
-
-      Finished that = (Finished) o;
-      return Objects.equal(getStatus(), that.getStatus()) &&
-          Objects.equal(getCacheResult(), that.getCacheResult()) &&
-          Objects.equal(getSuccessType(), that.getSuccessType());
-    }
-
-    @Override
-    public int hashCode() {
-      return Objects.hashCode(getBuildRule(),
-          getStatus(),
-          getCacheResult(),
-          getSuccessType());
+          getRuleKeys().getRuleKey().toString(),
+          getRuleKeys().getInputRuleKey().isPresent() ?
+              " I" + getRuleKeys().getInputRuleKey().get().toString() :
+              "");
     }
 
     @Override
     public String getEventName() {
       return "BuildRuleFinished";
     }
+
+    @JsonIgnore
+    public String getResultString() {
+      switch (getStatus()) {
+        case SUCCESS:
+          return getSuccessType().get().getShortDescription();
+        case FAIL:
+          return "FAILED";
+        case CANCELED:
+          return "CANCEL";
+        default:
+          return getStatus().toString();
+      }
+    }
   }
 
   public static class Suspended extends BuildRuleEvent {
 
-    protected Suspended(BuildRule rule) {
+    private final String ruleKey;
+
+    protected Suspended(BuildRule rule, RuleKeyBuilderFactory<RuleKey> ruleKeyBuilderFactory) {
       super(rule);
+      this.ruleKey = ruleKeyBuilderFactory.newInstance(rule).build().toString();
+    }
+
+    @JsonIgnore
+    public String getRuleKey() {
+      return ruleKey;
     }
 
     @Override
@@ -198,8 +201,16 @@ public abstract class BuildRuleEvent extends AbstractBuckEvent {
 
   public static class Resumed extends BuildRuleEvent {
 
-    protected Resumed(BuildRule rule) {
+    private final String ruleKey;
+
+    protected Resumed(BuildRule rule, RuleKeyBuilderFactory<RuleKey> ruleKeyBuilderFactory) {
       super(rule);
+      this.ruleKey = ruleKeyBuilderFactory.newInstance(rule).build().toString();
+    }
+
+    @JsonIgnore
+    public String getRuleKey() {
+      return ruleKey;
     }
 
     @Override
@@ -207,6 +218,44 @@ public abstract class BuildRuleEvent extends AbstractBuckEvent {
       return "BuildRuleResumed";
     }
 
+  }
+
+  public static class Scope implements AutoCloseable {
+
+    private final BuckEventBus eventBus;
+    private final BuildRule rule;
+    private final RuleKeyBuilderFactory<RuleKey> ruleKeyBuilderFactory;
+
+    protected Scope(
+        BuckEventBus eventBus,
+        BuildRule rule,
+        RuleKeyBuilderFactory<RuleKey> ruleKeyBuilderFactory) {
+      this.eventBus = eventBus;
+      this.rule = rule;
+      this.ruleKeyBuilderFactory = ruleKeyBuilderFactory;
+    }
+
+    @Override
+    public final void close() {
+      eventBus.post(BuildRuleEvent.suspended(rule, ruleKeyBuilderFactory));
+    }
+
+  }
+
+  public static Scope startSuspendScope(
+      BuckEventBus eventBus,
+      BuildRule rule,
+      RuleKeyBuilderFactory<RuleKey> ruleKeyBuilderFactory) {
+    eventBus.post(BuildRuleEvent.started(rule));
+    return new Scope(eventBus, rule, ruleKeyBuilderFactory);
+  }
+
+  public static Scope resumeSuspendScope(
+      BuckEventBus eventBus,
+      BuildRule rule,
+      RuleKeyBuilderFactory<RuleKey> ruleKeyBuilderFactory) {
+    eventBus.post(BuildRuleEvent.resumed(rule, ruleKeyBuilderFactory));
+    return new Scope(eventBus, rule, ruleKeyBuilderFactory);
   }
 
 }

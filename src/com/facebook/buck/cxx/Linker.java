@@ -16,7 +16,19 @@
 
 package com.facebook.buck.cxx;
 
+import com.facebook.buck.io.FileScrubber;
+import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.rules.BuildRule;
+import com.facebook.buck.rules.BuildRuleParams;
+import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.rules.Tool;
+import com.facebook.buck.rules.args.Arg;
+import com.google.common.collect.ImmutableCollection;
+import com.google.common.collect.ImmutableList;
+
+import java.nio.file.Path;
 
 /**
  * An object wrapping a linker, providing its source path and an interface to decorate
@@ -24,17 +36,83 @@ import com.facebook.buck.rules.Tool;
  */
 public interface Linker extends Tool {
 
+  ImmutableList<FileScrubber> getScrubbers(ImmutableCollection<Path> cellRoots);
+
   /**
    * @return the platform-specific way to specify that the library represented by the
    *     given argument should be linked whole.
    */
-  Iterable<String> linkWhole(String arg);
+  Iterable<Arg> linkWhole(Arg input);
 
   /**
    * @return the platform-specific way to specify that linker should use the given soname
    *     when linking a shared library.
    */
   Iterable<String> soname(String soname);
+
+  /**
+   * Specifies that the linker should link the files listed in file.
+   * This is an alternative to listing the files on the command line.
+   * The file names are listed one per line separated only by newlines.
+   * Spaces and tabs are assumed to be part of the file name.
+   *
+   * @param fileListPath the path to file which contains contents for file list to link
+   *
+   * @return the platform-specific way to support the feature.
+   * Empty list if feature is not supported.
+   */
+  Iterable<Arg> fileList(Path fileListPath);
+
+  /**
+   * @return the placeholder used by the dynamic loader for the directory containing the top-level
+   *     executable.
+   */
+  String origin();
+
+  /**
+   * @return the placeholder used by the dynamic loader for the directory containing the top-level
+   *     library (useful for e.g. plugins).
+   */
+  String libOrigin();
+
+  /**
+   * @return the name of the environment variable for the shared library runtime search path.
+   */
+  String searchPathEnvVar();
+
+  /**
+   * @return the name of the environment variable for the shared library preload search path.
+   */
+  String preloadEnvVar();
+
+  /**
+   * @return arguments to pass to the linker to disable dropping runtime references to shared libs
+   *     which do not resolve symbols as link-time.
+   */
+  Iterable<String> getNoAsNeededSharedLibsFlags();
+
+  /**
+   * @return arguments to pass to the linker so that it ignores undefined symbols when linking.
+   */
+  Iterable<String> getIgnoreUndefinedSymbolsFlags();
+
+  /**
+   * Generate a necessary linker arguments to propagate undefined symbols to a link command.  May
+   * need to create a {@link BuildRule}, in which case, {@code target} will be used as its name.
+   *
+   * @param target the name to give any {@link BuildRule} that needs to be created to facilitate
+   *               generating the arguments,
+   * @param symbolFiles the symbols files, each listing undefined symbols, one per line, to add to
+   *                    the link.
+   * @return the list of linker arguments needed to propagate the list of undefined symbols to the
+   *         link command.
+   */
+  ImmutableList<Arg> createUndefinedSymbolsLinkerArgs(
+      BuildRuleParams baseParams,
+      BuildRuleResolver ruleResolver,
+      SourcePathResolver pathResolver,
+      BuildTarget target,
+      Iterable<? extends SourcePath> symbolFiles);
 
   /**
    * The various ways to link an output file.
@@ -61,6 +139,10 @@ public interface Linker extends Tool {
     // Provide input suitable for statically linking this linkable (e.g. return references to
     // static libraries, libfoo.a).
     STATIC,
+
+    // Provide input suitable for statically linking this linkable using PIC-enabled binaries
+    // (e.g. return references to static libraries, libfoo_pic.a).
+    STATIC_PIC,
 
     // Provide input suitable for dynamically linking this linkable (e.g. return references to
     // shared libraries, libfoo.so).

@@ -15,6 +15,7 @@
  */
 package com.facebook.buck.android;
 
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.rules.SourcePath;
@@ -23,10 +24,12 @@ import com.facebook.buck.shell.DefaultShellStep;
 import com.facebook.buck.step.DefaultStepRunner;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.step.StepFailedException;
 import com.facebook.buck.step.fs.CopyStep;
 import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
 import com.facebook.buck.zip.UnzipStep;
+import com.facebook.buck.zip.ZipCompressionLevel;
 import com.facebook.buck.zip.ZipStep;
 import com.google.common.base.Optional;
 import com.google.common.base.Supplier;
@@ -48,6 +51,7 @@ import java.util.Set;
  */
 public class IntraDexReorderStep implements Step {
 
+  private final ProjectFilesystem filesystem;
   private final Path reorderTool;
   private final Path reorderDataFile;
   private final Path inputPrimaryDexPath;
@@ -58,6 +62,7 @@ public class IntraDexReorderStep implements Step {
   private final String outputSubDir;
 
   IntraDexReorderStep(
+      ProjectFilesystem filesystem,
       Optional<SourcePath> reorderTool,
       Optional<SourcePath> reorderDataFile,
       SourcePathResolver sourcePathResolver,
@@ -67,18 +72,20 @@ public class IntraDexReorderStep implements Step {
       final Optional<Supplier<Multimap<Path, Path>>> secondaryDexMap,
       String inputSubDir,
       String outputSubDir) {
-    this.reorderTool = reorderTool.transform(sourcePathResolver.getPathFunction()).get();
-    this.reorderDataFile = reorderDataFile.transform(sourcePathResolver.getPathFunction()).get();
+    this.filesystem = filesystem;
+    this.reorderTool = reorderTool.transform(sourcePathResolver.deprecatedPathFunction()).get();
+    this.reorderDataFile =
+        reorderDataFile.transform(sourcePathResolver.deprecatedPathFunction()).get();
     this.inputPrimaryDexPath = inputPrimaryDexPath;
     this.outputPrimaryDexPath = outputPrimaryDexPath;
     this.secondaryDexMap = secondaryDexMap;
     this.buildTarget = buildTarget;
     this.inputSubDir = inputSubDir;
     this.outputSubDir = outputSubDir;
-      }
+  }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
     try {
       DefaultStepRunner stepRunner = new DefaultStepRunner(context);
       List<Step> dxSteps = generateReorderCommands();
@@ -87,9 +94,9 @@ public class IntraDexReorderStep implements Step {
       }
     } catch (StepFailedException | IOException | InterruptedException e) {
       context.logError(e, "There was an error in intra dex reorder step.");
-      return 1;
+      return StepExecutionResult.ERROR;
     }
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   private ImmutableList<Step> generateReorderCommands()
@@ -110,34 +117,42 @@ public class IntraDexReorderStep implements Step {
 
     if (!isPrimaryDex) {
       String tmpname = "dex-tmp-" + inputPath.getFileName().toString() + "-%s";
-      Path temp = BuildTargets.getScratchPath(buildTarget, tmpname);
+      Path temp = BuildTargets.getScratchPath(filesystem, buildTarget, tmpname);
       // Create tmp directory if necessary
-      steps.add(new MakeCleanDirectoryStep(temp));
+      steps.add(new MakeCleanDirectoryStep(filesystem, temp));
       // un-zip
-      steps.add(new UnzipStep(inputPath, temp));
+      steps.add(new UnzipStep(filesystem, inputPath, temp));
       // run reorder tool
-      steps.add(new DefaultShellStep(ImmutableList.of(
-              reorderTool.toString(),
-              reorderDataFile.toString(),
-              temp.resolve("classes.dex").toString())));
+      steps.add(
+          new DefaultShellStep(
+              filesystem.getRootPath(),
+              ImmutableList.of(
+                  reorderTool.toString(),
+                  reorderDataFile.toString(),
+                  temp.resolve("classes.dex").toString())));
       Path outputPath = Paths.get(inputPath.toString().replace(inputSubDir, outputSubDir));
       // re-zip
-      steps.add(new ZipStep(
-            outputPath,
-            /* paths */ ImmutableSet.<Path>of(),
-            /* junkPaths */ false,
-            ZipStep.MAX_COMPRESSION_LEVEL,
-            temp
-            )
-          );
+      steps.add(
+          new ZipStep(
+              filesystem,
+              outputPath,
+              /* paths */ ImmutableSet.<Path>of(),
+              /* junkPaths */ false,
+              ZipCompressionLevel.MAX_COMPRESSION_LEVEL,
+              temp
+          )
+      );
     } else {
       // copy dex
       // apply reorder directly on dex
-      steps.add(CopyStep.forFile(inputPrimaryDexPath, outputPrimaryDexPath));
-      steps.add(new DefaultShellStep(ImmutableList.of(
-              reorderTool.toString(),
-              reorderDataFile.toString(),
-              outputPrimaryDexPath.toString())));
+      steps.add(CopyStep.forFile(filesystem, inputPrimaryDexPath, outputPrimaryDexPath));
+      steps.add(
+          new DefaultShellStep(
+              filesystem.getRootPath(),
+              ImmutableList.of(
+                  reorderTool.toString(),
+                  reorderDataFile.toString(),
+                  outputPrimaryDexPath.toString())));
     }
     return 0;
        }

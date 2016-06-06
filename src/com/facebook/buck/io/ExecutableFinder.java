@@ -23,6 +23,7 @@ import com.facebook.buck.util.HumanReadableException;
 import com.facebook.buck.util.environment.EnvironmentFilter;
 import com.facebook.buck.util.environment.Platform;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.base.Splitter;
 import com.google.common.collect.FluentIterable;
@@ -35,8 +36,6 @@ import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-
-import javax.annotation.Nullable;
 
 /**
  * Given the name of an executable, search a set of (possibly platform-specific) known locations for
@@ -58,6 +57,20 @@ public class ExecutableFinder {
           ".vbs",
           ".wsf",
           ".wsh");
+  // Avoid using MorePaths.TO_PATH because of circular deps in this package
+  private static final Function<String, Path> TO_PATH = new Function<String, Path>() {
+    @Override
+    public Path apply(String path) {
+      return Paths.get(path);
+    }
+  };
+
+  private static final Function<Path, Boolean> IS_EXECUTABLE = new Function<Path, Boolean>() {
+    @Override
+    public Boolean apply(Path path) {
+      return ExecutableFinder.isExecutable(path);
+    }
+  };
 
   private final Platform platform;
 
@@ -93,54 +106,58 @@ public class ExecutableFinder {
   public Optional<Path> getOptionalExecutable(
       Path suggestedExecutable,
       Path basePath) {
-    Optional<Path> executable = Optional.fromNullable(
-        findExecutable(
-            suggestedExecutable,
-            ImmutableSet.of(basePath),
-            getExecutableSuffixes(ImmutableMap.<String, String>of())));
-    LOG.debug("Executable '%s' mapped to '%s'", suggestedExecutable, executable);
-
-    return executable;
+    return getOptionalExecutable(
+        suggestedExecutable,
+        ImmutableSet.of(basePath),
+        getExecutableSuffixes(ImmutableMap.<String, String>of()));
   }
 
   public Optional<Path> getOptionalExecutable(
       Path suggestedExecutable,
       ImmutableCollection<Path> path,
       ImmutableCollection<String> fileSuffixes) {
-    Optional<Path> executable = Optional.fromNullable(
-        findExecutable(suggestedExecutable, path, fileSuffixes));
+
+    // Fast path out of here.
+    if (isExecutable(suggestedExecutable)) {
+      return Optional.of(suggestedExecutable);
+    }
+
+    Optional<Path> executable = FileFinder.getOptionalFile(
+        FileFinder.combine(
+            /* prefixes */ null,
+            suggestedExecutable.toString(),
+            ImmutableSet.copyOf(fileSuffixes)),
+        path,
+        IS_EXECUTABLE);
     LOG.debug("Executable '%s' mapped to '%s'", suggestedExecutable, executable);
 
     return executable;
   }
 
-  @Nullable
-  protected Path findExecutable(
-      Path suggestedPath,
-      ImmutableCollection<Path> searchPath,
-      ImmutableCollection<String> fileSuffixes) {
-    // Fast path out of here.
-    if (Files.exists(suggestedPath) && Files.isExecutable(suggestedPath)) {
-      return suggestedPath;
+  private static boolean isExecutable(Path exe) {
+    if (!Files.exists(exe)) {
+      return false;
     }
 
-    // Always search at least the given path without suffixes.
-    if (fileSuffixes.isEmpty()) {
-      fileSuffixes = ImmutableSet.of("");
-    }
-
-    for (Path path : searchPath) {
-      for (String suffix : fileSuffixes) {
-        Path exe = path.resolve(path).resolve(suggestedPath + suffix);
-        if (Files.exists(exe) && !Files.isDirectory(exe)) {
-          if (Files.isExecutable(exe)) {
-            return exe;
-          }
-          LOG.debug("Found potential executable, but not actually executable: %s", exe);
-        }
+    if (Files.isSymbolicLink(exe)) {
+      try {
+        Path target = Files.readSymbolicLink(exe);
+        return isExecutable(exe.resolveSibling(target).normalize());
+      } catch (IOException | SecurityException e) { // NOPMD
       }
     }
-    return null;
+
+    if (Files.isDirectory(exe)) {
+      LOG.debug("Found potential executable, but is a directory: %s", exe);
+      return false;
+    }
+
+    if (!Files.isExecutable(exe) && !Files.isSymbolicLink(exe)) {
+      LOG.debug("Found potential executable, but not actually executable: %s", exe);
+      return false;
+    }
+
+    return true;
   }
 
   private ImmutableSet<Path> getPaths(ImmutableMap<String, String> env) {
@@ -154,7 +171,7 @@ public class ExecutableFinder {
     if (pathEnv != null) {
       paths.addAll(
           FluentIterable.from(Splitter.on(pathSeparator).omitEmptyStrings().split(pathEnv))
-              .transform(MorePaths.TO_PATH));
+              .transform(TO_PATH));
     }
 
     if (platform == Platform.MACOS) {
@@ -163,7 +180,7 @@ public class ExecutableFinder {
         try {
           paths.addAll(
               FluentIterable.from(Files.readAllLines(osXPaths, Charset.defaultCharset()))
-                  .transform(MorePaths.TO_PATH));
+                  .transform(TO_PATH));
         } catch (IOException e) {
           LOG.warn("Unable to read mac-specific paths. Skipping");
         }

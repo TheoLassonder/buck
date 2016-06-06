@@ -18,42 +18,50 @@ package com.facebook.buck.cxx;
 
 import com.facebook.buck.shell.ShellStep;
 import com.facebook.buck.step.ExecutionContext;
-import com.facebook.buck.util.MoreIterables;
-import com.google.common.base.Functions;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
+import com.google.common.collect.ImmutableMap;
 
 import java.nio.file.Path;
 
 public class CxxLinkStep extends ShellStep {
 
+  private final ImmutableMap<String, String> environment;
   private final ImmutableList<String> linker;
-  private final Path output;
-  private final ImmutableList<String> args;
-  private final ImmutableSet<Path> frameworkRoots;
+  private final Path argFilePath;
+
+  /**
+   * Directory to use to store intermediate/temp files used for linking.
+   */
+  private final Path scratchDir;
 
   public CxxLinkStep(
+      Path workingDirectory,
+      ImmutableMap<String, String> environment,
       ImmutableList<String> linker,
-      Path output,
-      ImmutableList<String> args,
-      ImmutableSet<Path> frameworkRoots) {
+      Path argFilePath,
+      Path scratchDir) {
+    super(workingDirectory);
+    this.environment = environment;
     this.linker = linker;
-    this.output = output;
-    this.args = args;
-    this.frameworkRoots = frameworkRoots;
+    this.argFilePath = argFilePath;
+    this.scratchDir = scratchDir;
   }
 
   @Override
   protected ImmutableList<String> getShellCommandInternal(ExecutionContext context) {
     return ImmutableList.<String>builder()
         .addAll(linker)
-        .add("-o", output.toString())
-        .addAll(
-            MoreIterables.zipAndConcat(
-                Iterables.cycle("-F"),
-                Iterables.transform(frameworkRoots, Functions.toStringFunction())))
-        .addAll(args)
+        .add("@" + argFilePath.toString())
+        .build();
+  }
+
+  @Override
+  public ImmutableMap<String, String> getEnvironmentVariables(ExecutionContext context) {
+    return ImmutableMap.<String, String>builder()
+        .putAll(environment)
+        // Set `TMPDIR` to `scratchDir` so that the linker uses it for it's temp and intermediate
+        // files.
+        .put("TMPDIR", scratchDir.toString())
         .build();
   }
 

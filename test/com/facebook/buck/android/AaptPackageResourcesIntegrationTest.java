@@ -18,6 +18,9 @@ package com.facebook.buck.android;
 
 import static org.junit.Assert.assertNotEquals;
 
+import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.rules.BuildInfo;
 import com.facebook.buck.rules.Sha1HashCode;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
@@ -28,6 +31,7 @@ import org.junit.Rule;
 import org.junit.Test;
 
 import java.io.IOException;
+import java.nio.file.Path;
 
 public class AaptPackageResourcesIntegrationTest {
   @Rule
@@ -53,15 +57,18 @@ public class AaptPackageResourcesIntegrationTest {
     // This is too low-level of a test.  Ideally, we'd be able to save the rule graph generated
     // by the build and query it directly, but runBuckCommand doesn't support that, so just
     // test the files directly for now.
-    String firstHash = workspace.getFileContents(
-        "buck-out/bin/apps/sample/.app#aapt_package/metadata/resource_package_hash");
+    Path pathRelativeToProjectRoot = BuildInfo
+        .getPathToMetadataDirectory(
+            BuildTargetFactory.newInstance("//apps/sample:app#aapt_package"),
+            new ProjectFilesystem(workspace.getDestPath()))
+        .resolve(AaptPackageResources.RESOURCE_PACKAGE_HASH_KEY);
+    String firstHash = workspace.getFileContents(pathRelativeToProjectRoot);
 
     workspace.replaceFileContents(PATH_TO_LAYOUT_XML, "white", "black");
 
     workspace.runBuckBuild(MAIN_BUILD_TARGET).assertSuccess();
 
-    String secondHash = workspace.getFileContents(
-        "buck-out/bin/apps/sample/.app#aapt_package/metadata/resource_package_hash");
+    String secondHash = workspace.getFileContents(pathRelativeToProjectRoot);
 
     Sha1HashCode firstHashCode = Sha1HashCode.of(firstHash);
     Sha1HashCode secondHashCode = Sha1HashCode.of(secondHash);
@@ -69,8 +76,8 @@ public class AaptPackageResourcesIntegrationTest {
   }
 
   @Test
-  public void testOrigFileIsIgnoredByAapt() throws IOException {
+  public void testIgnoredFileIsIgnoredByAapt() throws IOException {
     AssumeAndroidPlatform.assumeSdkIsAvailable();
-    workspace.runBuckBuild("//apps/sample:app_deps_resource_with_orig_file").assertSuccess();
+    workspace.runBuckBuild("//apps/sample:app_deps_resource_with_ignored_file").assertSuccess();
   }
 }

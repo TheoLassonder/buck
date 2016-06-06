@@ -16,27 +16,31 @@
 
 package com.facebook.buck.thrift;
 
-import static com.facebook.buck.java.JavaCompilationConstants.DEFAULT_JAVAC_OPTIONS;
+import static com.facebook.buck.jvm.java.JavaCompilationConstants.DEFAULT_JAVAC_OPTIONS;
 import static org.hamcrest.junit.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import com.facebook.buck.cli.BuckConfig;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.cli.FakeBuckConfig;
-import com.facebook.buck.java.DefaultJavaLibrary;
+import com.facebook.buck.jvm.java.DefaultJavaLibrary;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.model.ImmutableFlavor;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
-import com.facebook.buck.rules.BuildRuleParamsFactory;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.CommandTool;
 import com.facebook.buck.rules.FakeBuildRule;
 import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
 import com.facebook.buck.rules.FakeExportDependenciesRule;
+import com.facebook.buck.rules.FakeSourcePath;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.facebook.buck.rules.TestSourcePath;
+import com.facebook.buck.rules.TargetGraph;
+import com.facebook.buck.rules.args.StringArg;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -54,9 +58,11 @@ public class ThriftJavaEnhancerTest {
   private static final BuildTarget TARGET = BuildTargetFactory.newInstance("//:test#java");
   private static final BuildTarget JAVA_LIB_TARGET =
       BuildTargetFactory.newInstance("//java:library");
-  private static final FakeBuckConfig BUCK_CONFIG = new FakeBuckConfig(
-      ImmutableMap.of(
-          "thrift", ImmutableMap.of("java_library", JAVA_LIB_TARGET.toString())));
+  private static final BuckConfig BUCK_CONFIG = FakeBuckConfig.builder()
+      .setSections(
+          ImmutableMap.of(
+              "thrift", ImmutableMap.of("java_library", JAVA_LIB_TARGET.toString())))
+      .build();
   private static final ThriftBuckConfig THRIFT_BUCK_CONFIG = new ThriftBuckConfig(BUCK_CONFIG);
   private static final ThriftJavaEnhancer ENHANCER = new ThriftJavaEnhancer(
       THRIFT_BUCK_CONFIG,
@@ -68,7 +74,7 @@ public class ThriftJavaEnhancerTest {
       BuildRule... deps) {
     return new FakeBuildRule(
         new FakeBuildRuleParamsBuilder(BuildTargetFactory.newInstance(target))
-            .setDeps(ImmutableSortedSet.copyOf(deps))
+            .setDeclaredDeps(ImmutableSortedSet.copyOf(deps))
             .build(), resolver);
   }
 
@@ -76,17 +82,20 @@ public class ThriftJavaEnhancerTest {
       String target,
       SourcePathResolver resolver) {
     return new ThriftCompiler(
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(
-            BuildTargetFactory.newInstance(target)),
+        new FakeBuildRuleParamsBuilder(BuildTargetFactory.newInstance(target)).build(),
         resolver,
-        new TestSourcePath("compiler"),
+        new CommandTool.Builder()
+            .addArg(new StringArg("compiler"))
+            .build(),
         ImmutableList.<String>of(),
         Paths.get("output"),
-        new TestSourcePath("source"),
+        new FakeSourcePath("source"),
         "language",
         ImmutableSet.<String>of(),
         ImmutableList.<Path>of(),
-        ImmutableMap.<Path, SourcePath>of());
+        ImmutableSet.<Path>of(),
+        ImmutableMap.<Path, SourcePath>of(),
+        ImmutableSortedSet.<String>of());
   }
 
   @Test
@@ -142,10 +151,10 @@ public class ThriftJavaEnhancerTest {
 
   @Test
   public void createBuildRule() {
-    BuildRuleResolver resolver = new BuildRuleResolver();
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     SourcePathResolver pathResolver = new SourcePathResolver(resolver);
-    BuildRuleParams flavoredParams =
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(TARGET);
+    BuildRuleParams flavoredParams = new FakeBuildRuleParamsBuilder(TARGET).build();
 
     // Add a dummy dependency to the constructor arg to make sure it gets through.
     ThriftConstructorArg arg = new ThriftConstructorArg();
@@ -166,16 +175,12 @@ public class ThriftJavaEnhancerTest {
         createFakeBuildRule("//:dep", pathResolver));
 
     // Run the enhancer to create the language specific build rule.
-    DefaultJavaLibrary library = ENHANCER.createBuildRule(
-        flavoredParams,
-        resolver,
-        arg,
-        sources,
-        deps);
+    DefaultJavaLibrary library = ENHANCER
+        .createBuildRule(TargetGraph.EMPTY, flavoredParams, resolver, arg, sources, deps);
 
     // Verify that the first thrift source created a source zip rule with correct deps.
     BuildRule srcZip1 = resolver.getRule(
-        ENHANCER.getSourceZipBuildTarget(TARGET, "test1.thrift"));
+        ENHANCER.getSourceZipBuildTarget(TARGET.getUnflavoredBuildTarget(), "test1.thrift"));
     assertNotNull(srcZip1);
     assertTrue(srcZip1 instanceof SrcZip);
     assertEquals(
@@ -184,7 +189,7 @@ public class ThriftJavaEnhancerTest {
 
     // Verify that the second thrift source created a source zip rule with correct deps.
     BuildRule srcZip2 = resolver.getRule(
-        ENHANCER.getSourceZipBuildTarget(TARGET, "test2.thrift"));
+        ENHANCER.getSourceZipBuildTarget(TARGET.getUnflavoredBuildTarget(), "test2.thrift"));
     assertNotNull(srcZip2);
     assertTrue(srcZip2 instanceof SrcZip);
     assertEquals(
@@ -203,10 +208,11 @@ public class ThriftJavaEnhancerTest {
 
   @Test
   public void exportedDeps() {
-    BuildRuleResolver resolver = new BuildRuleResolver();
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     SourcePathResolver pathResolver = new SourcePathResolver(resolver);
     BuildRuleParams flavoredParams =
-        BuildRuleParamsFactory.createTrivialBuildRuleParams(TARGET);
+        new FakeBuildRuleParamsBuilder(TARGET).build();
 
     // Add a dummy dependency to the constructor arg to make sure it gets through.
     ThriftConstructorArg arg = new ThriftConstructorArg();
@@ -226,12 +232,14 @@ public class ThriftJavaEnhancerTest {
             new FakeExportDependenciesRule("//:exporting_rule", pathResolver, exportedRule));
 
     // Run the enhancer to create the language specific build rule.
-    DefaultJavaLibrary library = ENHANCER.createBuildRule(
-        flavoredParams,
-        resolver,
-        arg,
-        sources,
-        ImmutableSortedSet.<BuildRule>of(exportingRule));
+    DefaultJavaLibrary library = ENHANCER
+        .createBuildRule(
+            TargetGraph.EMPTY,
+            flavoredParams,
+            resolver,
+            arg,
+            sources,
+            ImmutableSortedSet.<BuildRule>of(exportingRule));
 
     assertThat(library.getDeps(), Matchers.<BuildRule>hasItem(exportedRule));
   }

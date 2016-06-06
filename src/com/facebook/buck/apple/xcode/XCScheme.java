@@ -113,8 +113,11 @@ public class XCScheme {
   public static class BuildAction {
     private List<BuildActionEntry> buildActionEntries;
 
-    public BuildAction() {
+    private final boolean parallelizeBuild;
+
+    public BuildAction(boolean parallelizeBuild) {
       buildActionEntries = Lists.newArrayList();
+      this.parallelizeBuild = parallelizeBuild;
     }
 
     public void addBuildAction(BuildActionEntry entry) {
@@ -123,6 +126,10 @@ public class XCScheme {
 
     public List<BuildActionEntry> getBuildActionEntries() {
       return buildActionEntries;
+    }
+
+    public boolean getParallelizeBuild() {
+      return parallelizeBuild;
     }
   }
 
@@ -160,20 +167,36 @@ public class XCScheme {
   }
 
   public static class LaunchAction {
+
+    public enum LaunchStyle {
+      /**
+       * Starts the process with attached debugger.
+       */
+      AUTO,
+      /**
+       * Debugger waits for executable to be launched.
+       */
+      WAIT,
+      ;
+    }
+
     BuildableReference buildableReference;
     private final String buildConfiguration;
     private final Optional<String> runnablePath;
     private final Optional<String> remoteRunnablePath;
+    private final LaunchStyle launchStyle;
 
     public LaunchAction(
         BuildableReference buildableReference,
         String buildConfiguration,
         Optional<String> runnablePath,
-        Optional<String> remoteRunnablePath) {
+        Optional<String> remoteRunnablePath,
+        LaunchStyle launchStyle) {
       this.buildableReference = buildableReference;
       this.buildConfiguration = buildConfiguration;
       this.runnablePath = runnablePath;
       this.remoteRunnablePath = remoteRunnablePath;
+      this.launchStyle = launchStyle;
     }
 
     public BuildableReference getBuildableReference() {
@@ -190,6 +213,10 @@ public class XCScheme {
 
     public Optional<String> getRemoteRunnablePath() {
       return remoteRunnablePath;
+    }
+
+    public LaunchStyle getLaunchStyle() {
+      return launchStyle;
     }
   }
 

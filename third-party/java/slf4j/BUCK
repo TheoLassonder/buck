@@ -2,7 +2,13 @@ prebuilt_jar(
   name = 'slf4j-api',
   binary_jar = 'slf4j-api-1.7.5.jar',
   source_jar = 'slf4j-api-1.7.5-sources.jar',
+  licenses = [
+    'LICENSE.txt',
+  ],
   visibility = [
+    '//src/com/facebook/buck/maven:maven',
+    '//src/com/facebook/buck/maven:util',
+    '//src-gen:thrift',
     '//third-party/java/aether:aether-impl',
     '//third-party/java/sisu:sisu-guice',
   ],
@@ -15,8 +21,10 @@ prebuilt_jar(
   deps = [
     ':slf4j-api',
   ],
+  licenses = [
+    'LICENSE.txt',
+  ],
   visibility = [
     '//third-party/java/aether:aether-transport-http',
   ],
 )
-

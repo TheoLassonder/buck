@@ -16,27 +16,35 @@
 
 package com.facebook.buck.cli;
 
+import static com.facebook.buck.util.MoreStringsForTests.normalizeNewlines;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
+import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
 import com.facebook.buck.testutil.integration.ProjectWorkspace.ProcessResult;
 import com.facebook.buck.testutil.integration.TestDataHelper;
 import com.facebook.buck.util.HumanReadableException;
+import com.facebook.buck.util.ObjectMappers;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.CharMatcher;
-import com.google.common.base.Charsets;
 import com.google.common.base.Splitter;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.io.Files;
 
+import org.hamcrest.MatcherAssert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.List;
 
 public class TargetsCommandIntegrationTest {
@@ -62,9 +70,31 @@ public class TargetsCommandIntegrationTest {
     ProcessResult result = workspace.runBuckCommand(
         "targets",
         "--show-output",
+        "//:test",
+        "//:another-test");
+    result.assertSuccess();
+    assertEquals(
+        "//:another-test " +
+            MorePaths.pathWithPlatformSeparators("buck-out/gen/another-test/test-output") +
+            "\n" +
+            "//:test " +
+            MorePaths.pathWithPlatformSeparators("buck-out/gen/test/test-output") +
+            "\n",
+        result.getStdout());
+  }
+
+  @Test
+  public void testRuleKeyWithOneTarget() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "output_path", tmp);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand(
+        "targets",
+        "--show-rulekey",
         "//:test");
     result.assertSuccess();
-    assertEquals("//:test buck-out/gen/test-output\n", result.getStdout());
+    assertEquals("//:test 54bd34938b1827baea88dc5137c6385fdf280d60\n", result.getStdout());
   }
 
   @Test
@@ -76,9 +106,13 @@ public class TargetsCommandIntegrationTest {
     ProcessResult result = workspace.runBuckCommand(
         "targets",
         "--show-rulekey",
-        "//:test");
+        "//:test",
+        "//:another-test");
     result.assertSuccess();
-    assertEquals("//:test 8df358d272c27e9671f35759b8be58abc8a68ff8\n", result.getStdout());
+    parseAndVerifyTargetsAndHashes(
+        result.getStdout(),
+        "//:another-test",
+        "//:test");
   }
 
   @Test
@@ -94,7 +128,9 @@ public class TargetsCommandIntegrationTest {
         "//:test");
     result.assertSuccess();
     assertEquals(
-        "//:test 8df358d272c27e9671f35759b8be58abc8a68ff8 buck-out/gen/test-output\n",
+        "//:test 54bd34938b1827baea88dc5137c6385fdf280d60 " +
+            MorePaths.pathWithPlatformSeparators("buck-out/gen/test/test-output") +
+            "\n",
         result.getStdout());
   }
 
@@ -107,8 +143,15 @@ public class TargetsCommandIntegrationTest {
     ProcessResult result = workspace.runBuckCommand(
         "targets",
         "--show-output");
-    result.assertFailure();
-    assertEquals("BUILD FAILED: Must specify at least one build target.\n", result.getStderr());
+    result.assertSuccess();
+    assertEquals(
+        "//:another-test " +
+            MorePaths.pathWithPlatformSeparators("buck-out/gen/another-test/test-output") +
+            "\n" +
+            "//:test " +
+            MorePaths.pathWithPlatformSeparators("buck-out/gen/test/test-output") +
+            "\n",
+        result.getStdout());
   }
 
   @Test
@@ -120,18 +163,86 @@ public class TargetsCommandIntegrationTest {
     ProcessResult result = workspace.runBuckCommand(
         "targets",
         "--show-rulekey");
-    result.assertFailure();
-    assertEquals("BUILD FAILED: Must specify at least one build target.\n", result.getStderr());
+    result.assertSuccess();
+    assertEquals(
+        "//:another-test 163589ad581be53e82f0a18e68ac3ae9111f1307\n" +
+            "//:test 54bd34938b1827baea88dc5137c6385fdf280d60\n",
+        result.getStdout());
   }
 
-  private String parseAndVerifyTargetAndHash(String target, String outputLine) {
+  private ImmutableList<String> parseAndVerifyTargetsAndHashes(
+      String outputLine,
+      String... targets) {
+    List<String> lines = Splitter.on('\n').splitToList(
+        CharMatcher.whitespace().trimFrom(outputLine));
+    assertEquals(targets.length, lines.size());
+    ImmutableList.Builder<String> hashes = ImmutableList.builder();
+    for (int i = 0; i < targets.length; ++i) {
+      String line = lines.get(i);
+      String target = targets[i];
+      hashes.add(parseAndVerifyTargetAndHash(line, target));
+    }
+    return hashes.build();
+  }
+
+  private String parseAndVerifyTargetAndHash(String outputLine, String target) {
     List<String> targetAndHash = Splitter.on(' ').splitToList(
-        CharMatcher.WHITESPACE.trimFrom(outputLine));
+        CharMatcher.whitespace().trimFrom(outputLine));
     assertEquals(2, targetAndHash.size());
     assertEquals(target, targetAndHash.get(0));
     assertFalse(targetAndHash.get(1).isEmpty());
     assertTrue(LOWER_CASE_HEX_DIGITS.matchesAllOf(targetAndHash.get(1)));
     return targetAndHash.get(1);
+  }
+
+  @Test
+  public void testTargetHashWithoutTarget() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "output_path", tmp);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand(
+        "targets",
+        "--show-target-hash");
+    result.assertSuccess();
+    parseAndVerifyTargetsAndHashes(
+        result.getStdout(),
+        "//:another-test",
+        "//:test");
+  }
+
+  @Test
+  public void testRuleKeyWithReferencedFiles() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "java_library_with_tests", tmp);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand(
+        "targets",
+        "--show-rulekey",
+        "--referenced-file",
+        "Test.java");
+    result.assertSuccess();
+    parseAndVerifyTargetAndHash(result.getStdout(), "//:test");
+  }
+
+  @Test
+  public void testRuleKeyWithReferencedFilesAndDetectTestChanges() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "java_library_with_tests", tmp);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand(
+        "targets",
+        "--show-rulekey",
+        "--detect-test-changes",
+        "--referenced-file",
+        "Test.java");
+    result.assertSuccess();
+    parseAndVerifyTargetsAndHashes(
+        result.getStdout(),
+        "//:lib",
+        "//:test");
   }
 
   @Test
@@ -143,11 +254,13 @@ public class TargetsCommandIntegrationTest {
     ProcessResult result = workspace.runBuckCommand(
         "targets",
         "--show-target-hash",
-        "//:test");
-    result.assertSuccess();
-    parseAndVerifyTargetAndHash(
         "//:test",
-        result.getStdout());
+        "//:another-test");
+    result.assertSuccess();
+    parseAndVerifyTargetsAndHashes(
+        result.getStdout(),
+        "//:another-test",
+        "//:test");
   }
 
   @Test
@@ -193,7 +306,42 @@ public class TargetsCommandIntegrationTest {
         "--detect-test-changes",
         "//workspace:workspace");
     result.assertSuccess();
-    parseAndVerifyTargetAndHash("//workspace:workspace", result.getStdout());
+    parseAndVerifyTargetAndHash(result.getStdout(), "//workspace:workspace");
+  }
+
+  @Test
+  public void testTargetHashXcodeWorkspaceWithTestsForAllTargets() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "xcode_workspace_with_tests", tmp);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand(
+        "targets",
+        "--show-target-hash",
+        "--detect-test-changes");
+    result.assertSuccess();
+    parseAndVerifyTargetsAndHashes(
+        result.getStdout(),
+        "//bin:bin",
+        "//bin:genrule",
+        "//lib:lib",
+        "//test:test",
+        "//workspace:workspace");
+  }
+
+  @Test
+  public void testTargetHashWithBrokenTargets() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "detect_test_changes_with_broken_targets", tmp);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand(
+        "targets",
+        "--show-target-hash",
+        "--detect-test-changes",
+        "//:test");
+    result.assertSuccess();
+    parseAndVerifyTargetAndHash(result.getStdout(), "//:test");
   }
 
   @Test
@@ -208,14 +356,14 @@ public class TargetsCommandIntegrationTest {
         "--detect-test-changes",
         "//workspace:workspace");
     result.assertSuccess();
-    String hash = parseAndVerifyTargetAndHash("//workspace:workspace", result.getStdout());
+    String hash = parseAndVerifyTargetAndHash(result.getStdout(), "//workspace:workspace");
 
     ProcessResult result2 = workspace.runBuckCommand(
         "targets",
         "--show-target-hash",
         "//workspace:workspace");
     result2.assertSuccess();
-    String hash2 = parseAndVerifyTargetAndHash("//workspace:workspace", result2.getStdout());
+    String hash2 = parseAndVerifyTargetAndHash(result2.getStdout(), "//workspace:workspace");
     assertNotEquals(hash, hash2);
   }
 
@@ -232,11 +380,11 @@ public class TargetsCommandIntegrationTest {
         "//workspace:workspace");
     result.assertSuccess();
     String hash = parseAndVerifyTargetAndHash(
-        "//workspace:workspace",
-        result.getStdout());
+        result.getStdout(),
+        "//workspace:workspace");
 
     String fileName = "test/Test.m";
-    Files.write("// This is not a test\n".getBytes(Charsets.UTF_8), workspace.getFile(fileName));
+    Files.write(workspace.getPath(fileName), "// This is not a test\n".getBytes(UTF_8));
     ProcessResult result2 = workspace.runBuckCommand(
         "targets",
         "--show-target-hash",
@@ -244,10 +392,52 @@ public class TargetsCommandIntegrationTest {
         "//workspace:workspace");
     result2.assertSuccess();
     String hash2 = parseAndVerifyTargetAndHash(
-        "//workspace:workspace",
-        result2.getStdout());
+        result2.getStdout(),
+        "//workspace:workspace");
 
     assertNotEquals(hash, hash2);
+  }
+
+  @Test
+  public void testTargetHashChangesAfterModifyingSourceFileForAllTargets() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "xcode_workspace_with_tests", tmp);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand(
+        "targets",
+        "--show-target-hash",
+        "--detect-test-changes");
+    result.assertSuccess();
+    List<String> hashes = parseAndVerifyTargetsAndHashes(
+        result.getStdout(),
+        "//bin:bin",
+        "//bin:genrule",
+        "//lib:lib",
+        "//test:test",
+        "//workspace:workspace");
+
+    String fileName = "test/Test.m";
+    Files.write(workspace.getPath(fileName), "// This is not a test\n".getBytes(UTF_8));
+    ProcessResult result2 = workspace.runBuckCommand(
+        "targets",
+        "--show-target-hash",
+        "--detect-test-changes");
+    result2.assertSuccess();
+    List<String> hashesAfterModification = parseAndVerifyTargetsAndHashes(
+        result2.getStdout(),
+        "//bin:bin",
+        "//bin:genrule",
+        "//lib:lib",
+        "//test:test",
+        "//workspace:workspace");
+
+    assertNotEquals(hashes.get(0), hashesAfterModification.get(0));
+    // bin:genrule wasn't changed
+    assertEquals(hashes.get(1), hashesAfterModification.get(1));
+    assertNotEquals(hashes.get(2), hashesAfterModification.get(2));
+    assertNotEquals(hashes.get(3), hashesAfterModification.get(3));
+    assertNotEquals(hashes.get(4), hashesAfterModification.get(4));
   }
 
   @Test
@@ -263,11 +453,11 @@ public class TargetsCommandIntegrationTest {
         "//workspace:workspace");
     result.assertSuccess();
     String hash = parseAndVerifyTargetAndHash(
-        "//workspace:workspace",
-        result.getStdout());
+        result.getStdout(),
+        "//workspace:workspace");
 
     String fileName = "test/Test.m";
-    workspace.getFile(fileName).delete();
+    Files.delete(workspace.getPath(fileName));
     ProcessResult result2 = workspace.runBuckCommand(
         "targets",
         "--show-target-hash",
@@ -276,8 +466,8 @@ public class TargetsCommandIntegrationTest {
     result2.assertSuccess();
 
     String hash2 = parseAndVerifyTargetAndHash(
-        "//workspace:workspace",
-        result2.getStdout());
+        result2.getStdout(),
+        "//workspace:workspace");
     assertNotEquals(hash, hash2);
   }
 
@@ -330,7 +520,7 @@ public class TargetsCommandIntegrationTest {
     workspace.setUp();
 
     String pathToNonExistentFile = "modules/dep1/dep2/hello.txt";
-    assertFalse(workspace.getFile(pathToNonExistentFile).exists());
+    assertFalse(Files.exists(workspace.getPath(pathToNonExistentFile)));
     ProcessResult result = workspace.runBuckCommand(
         "targets",
         "--referenced-file",
@@ -366,5 +556,78 @@ public class TargetsCommandIntegrationTest {
     } catch (HumanReadableException e) {
       assertEquals("//blah/foo must contain exactly one colon (found 0)", e.getMessage());
     }
+  }
+
+  @Test
+  public void testJsonOutputWithShowOptions() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "output_path", tmp);
+    workspace.setUp();
+    ProcessResult result = workspace.runBuckCommand(
+        "targets", "--json", "--show-output", "//:test");
+    ObjectMapper objectMapper = ObjectMappers.newDefaultInstance();
+
+    // Parse the observed JSON.
+    JsonNode observed = objectMapper.readTree(
+        objectMapper.getFactory().createParser(result.getStdout())
+    );
+
+    System.out.println(observed.toString());
+
+    String expectedJson = workspace.getFileContents("output_path_json.js");
+    JsonNode expected = objectMapper.readTree(
+        objectMapper.getFactory().createParser(normalizeNewlines(expectedJson))
+    );
+
+    MatcherAssert.assertThat(
+        "Output from targets command should match expected JSON.",
+        observed,
+        equalTo(expected));
+  }
+
+  @Test
+  public void testShowAllTargets() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "xcode_workspace_with_tests", tmp);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand(
+        "targets");
+    result.assertSuccess();
+    assertEquals(
+        ImmutableSet.of(
+            "//bin:bin",
+            "//bin:genrule",
+            "//lib:lib",
+            "//test:test",
+            "//workspace:workspace"),
+        ImmutableSet.copyOf(Splitter.on('\n').omitEmptyStrings().split(result.getStdout())));
+  }
+
+  @Test
+  public void testShowAllTargetsWithJson() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "output_path", tmp);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand(
+        "targets", "--json", "--show-output");
+    result.assertSuccess();
+    ObjectMapper objectMapper = ObjectMappers.newDefaultInstance();
+
+    // Parse the observed JSON.
+    JsonNode observed = objectMapper.readTree(
+        objectMapper.getFactory().createParser(result.getStdout())
+    );
+
+    String expectedJson = workspace.getFileContents("output_path_json_all.js");
+    JsonNode expected = objectMapper.readTree(
+        objectMapper.getFactory().createParser(normalizeNewlines(expectedJson))
+    );
+
+    assertEquals(
+        "Output from targets command should match expected JSON.",
+        observed,
+        expected);
   }
 }

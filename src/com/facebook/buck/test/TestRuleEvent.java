@@ -17,19 +17,18 @@
 package com.facebook.buck.test;
 
 import com.facebook.buck.event.AbstractBuckEvent;
-import com.facebook.buck.event.BuckEvent;
+import com.facebook.buck.event.EventKey;
+import com.facebook.buck.event.WorkAdvanceEvent;
 import com.facebook.buck.model.BuildTarget;
-
-import java.util.Objects;
 
 /**
  * Base class for events about test rules.
  */
-@SuppressWarnings("PMD.OverrideBothEqualsAndHashcode")
-public abstract class TestRuleEvent extends AbstractBuckEvent {
+public abstract class TestRuleEvent extends AbstractBuckEvent implements WorkAdvanceEvent {
   private final BuildTarget buildTarget;
 
   protected TestRuleEvent(BuildTarget buildTarget) {
+    super(EventKey.slowValueKey("TestRuleEvent", buildTarget.getFullyQualifiedName()));
     this.buildTarget = buildTarget;
   }
 
@@ -40,20 +39,6 @@ public abstract class TestRuleEvent extends AbstractBuckEvent {
   @Override
   public String getValueString() {
     return buildTarget.toString();
-  }
-
-  @Override
-  public boolean isRelatedTo(BuckEvent event) {
-    if (!(event instanceof TestRuleEvent)) {
-      return false;
-    }
-
-    return Objects.equals(getBuildTarget(), ((TestRuleEvent) event).getBuildTarget());
-  }
-
-  @Override
-  public int hashCode() {
-    return Objects.hash(buildTarget);
   }
 
   public static Started started(BuildTarget buildTarget) {

@@ -23,7 +23,11 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
+import com.facebook.buck.artifact_cache.ArtifactCache;
+import com.facebook.buck.artifact_cache.ArtifactInfo;
+import com.facebook.buck.artifact_cache.NoopArtifactCache;
 import com.facebook.buck.event.BuckEventBus;
+import com.facebook.buck.io.BorrowablePath;
 import com.facebook.buck.io.MorePathsForTests;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildId;
@@ -32,21 +36,26 @@ import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.facebook.buck.testutil.MoreAsserts;
 import com.facebook.buck.testutil.Zip;
+import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.timing.DefaultClock;
 import com.facebook.buck.timing.FakeClock;
+import com.facebook.buck.util.cache.DefaultFileHashCache;
+import com.facebook.buck.util.cache.FileHashCache;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.hash.HashCode;
-import com.google.common.hash.Hashing;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 
 import org.hamcrest.Matchers;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
+import org.junit.rules.TemporaryFolder;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -56,6 +65,9 @@ public class BuildInfoRecorderTest {
 
   @Rule
   public ExpectedException thrown = ExpectedException.none();
+
+  @Rule
+  public TemporaryFolder tmp = new DebuggableTemporaryFolder();
 
   private static final BuildTarget BUILD_TARGET = BuildTargetFactory.newInstance("//foo:bar");
 
@@ -76,7 +88,8 @@ public class BuildInfoRecorderTest {
 
     buildInfoRecorder.writeMetadataToDisk(/* clearExistingMetadata */ true);
 
-    OnDiskBuildInfo onDiskBuildInfo = new DefaultOnDiskBuildInfo(BUILD_TARGET, filesystem);
+    OnDiskBuildInfo onDiskBuildInfo =
+        new DefaultOnDiskBuildInfo(BUILD_TARGET, filesystem, new ObjectMapper());
     assertOnDiskBuildInfoHasMetadata(onDiskBuildInfo, "key1", "value1");
 
     buildInfoRecorder = createBuildInfoRecorder(filesystem);
@@ -84,7 +97,7 @@ public class BuildInfoRecorderTest {
 
     buildInfoRecorder.writeMetadataToDisk(/* clearExistingMetadata */ false);
 
-    onDiskBuildInfo = new DefaultOnDiskBuildInfo(BUILD_TARGET, filesystem);
+    onDiskBuildInfo = new DefaultOnDiskBuildInfo(BUILD_TARGET, filesystem, new ObjectMapper());
     assertOnDiskBuildInfoHasMetadata(onDiskBuildInfo, "key1", "value1");
     assertOnDiskBuildInfoHasMetadata(onDiskBuildInfo, "key2", "value2");
 
@@ -93,7 +106,7 @@ public class BuildInfoRecorderTest {
 
     buildInfoRecorder.writeMetadataToDisk(/* clearExistingMetadata */ true);
 
-    onDiskBuildInfo = new DefaultOnDiskBuildInfo(BUILD_TARGET, filesystem);
+    onDiskBuildInfo = new DefaultOnDiskBuildInfo(BUILD_TARGET, filesystem, new ObjectMapper());
     assertOnDiskBuildInfoHasMetadata(onDiskBuildInfo, "key3", "value3");
     assertOnDiskBuildInfoDoesNotHaveMetadata(onDiskBuildInfo, "key1");
     assertOnDiskBuildInfoDoesNotHaveMetadata(onDiskBuildInfo, "key2");
@@ -102,13 +115,13 @@ public class BuildInfoRecorderTest {
     buildInfoRecorder = createBuildInfoRecorder(filesystem);
     buildInfoRecorder.addBuildMetadata("build", "metadata");
     buildInfoRecorder.writeMetadataToDisk(/* clearExistingMetadata */ true);
-    onDiskBuildInfo = new DefaultOnDiskBuildInfo(BUILD_TARGET, filesystem);
+    onDiskBuildInfo = new DefaultOnDiskBuildInfo(BUILD_TARGET, filesystem, new ObjectMapper());
     assertOnDiskBuildInfoHasMetadata(onDiskBuildInfo, "build", "metadata");
 
     // Verify additional info build metadata always gets written.
     buildInfoRecorder = createBuildInfoRecorder(filesystem);
     buildInfoRecorder.writeMetadataToDisk(/* clearExistingMetadata */ true);
-    onDiskBuildInfo = new DefaultOnDiskBuildInfo(BUILD_TARGET, filesystem);
+    onDiskBuildInfo = new DefaultOnDiskBuildInfo(BUILD_TARGET, filesystem, new ObjectMapper());
     assertTrue(onDiskBuildInfo.getValue(BuildInfo.METADATA_KEY_FOR_ADDITIONAL_INFO).isPresent());
   }
 
@@ -163,19 +176,18 @@ public class BuildInfoRecorderTest {
             return true;
           }
           @Override
-          public void store(
-              ImmutableSet<RuleKey> ruleKeys,
-              ImmutableMap<String, String> metadata,
-              File output) {
+          public ListenableFuture<Void> store(
+              ArtifactInfo info,
+              BorrowablePath output) {
             stored.set(true);
 
             // Verify the build metadata.
             assertThat(
-                metadata.get("build-metadata"),
+                info.getMetadata().get("build-metadata"),
                 Matchers.equalTo("build-metadata"));
 
             // Verify zip contents
-            try (Zip zip = new Zip(output, /* forWriting */ false)) {
+            try (Zip zip = new Zip(output.getPath(), /* forWriting */ false)) {
               assertEquals(
                   ImmutableSet.of(
                       "",
@@ -197,6 +209,7 @@ public class BuildInfoRecorderTest {
             } catch (IOException e) {
               throw Throwables.propagate(e);
             }
+            return Futures.immediateFuture(null);
           }
         };
 
@@ -223,12 +236,13 @@ public class BuildInfoRecorderTest {
 
     assertEquals(
         3 * contents.length,
-        (long) buildInfoRecorder.getOutputSizeAndHash(Hashing.md5()).getFirst());
+        buildInfoRecorder.getOutputSize());
   }
 
   @Test
   public void testGetOutputHash() throws IOException {
     FakeProjectFilesystem filesystem = new FakeProjectFilesystem();
+    FileHashCache fileHashCache = new DefaultFileHashCache(filesystem);
     BuildInfoRecorder buildInfoRecorder = createBuildInfoRecorder(filesystem);
 
     byte[] contents = "contents".getBytes();
@@ -243,20 +257,24 @@ public class BuildInfoRecorderTest {
     filesystem.writeBytesToPath(contents, dir.resolve("file2"));
     buildInfoRecorder.recordArtifact(dir);
 
-    HashCode current = buildInfoRecorder.getOutputSizeAndHash(Hashing.sha512()).getSecond();
+    fileHashCache.invalidateAll();
+    HashCode current = buildInfoRecorder.getOutputHash(fileHashCache);
 
     // Test that getting the hash again results in the same hashcode.
-    assertEquals(current, buildInfoRecorder.getOutputSizeAndHash(Hashing.sha512()).getSecond());
+    fileHashCache.invalidateAll();
+    assertEquals(current, buildInfoRecorder.getOutputHash(fileHashCache));
 
     // Verify that changing a file changes the hash.
     filesystem.writeContentsToPath("something else", file);
-    HashCode updated = buildInfoRecorder.getOutputSizeAndHash(Hashing.sha512()).getSecond();
+    fileHashCache.invalidateAll();
+    HashCode updated = buildInfoRecorder.getOutputHash(fileHashCache);
     assertNotEquals(current, updated);
 
     // Verify that changing a file under a directory changes the hash.
     filesystem.writeContentsToPath("something else", dir.resolve("file1"));
     current = updated;
-    updated = buildInfoRecorder.getOutputSizeAndHash(Hashing.sha512()).getSecond();
+    fileHashCache.invalidateAll();
+    updated = buildInfoRecorder.getOutputHash(fileHashCache);
     assertNotEquals(current, updated);
 
     // Test that adding a file updates the hash.
@@ -264,14 +282,16 @@ public class BuildInfoRecorderTest {
     filesystem.writeBytesToPath(contents, added);
     buildInfoRecorder.recordArtifact(added);
     current = updated;
-    updated = buildInfoRecorder.getOutputSizeAndHash(Hashing.sha512()).getSecond();
+    fileHashCache.invalidateAll();
+    updated = buildInfoRecorder.getOutputHash(fileHashCache);
     assertNotEquals(current, updated);
 
     // Test that adding a file under a recorded directory updates the hash.
     Path addedUnderDir = dir.resolve("added");
     filesystem.writeBytesToPath(contents, addedUnderDir);
     current = updated;
-    updated = buildInfoRecorder.getOutputSizeAndHash(Hashing.sha512()).getSecond();
+    fileHashCache.invalidateAll();
+    updated = buildInfoRecorder.getOutputHash(fileHashCache);
     assertNotEquals(current, updated);
   }
 
@@ -299,6 +319,7 @@ public class BuildInfoRecorderTest {
         filesystem,
         new DefaultClock(),
         new BuildId(),
+        new ObjectMapper(),
         ImmutableMap.<String, String>of());
   }
 }

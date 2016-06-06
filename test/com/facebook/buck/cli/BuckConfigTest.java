@@ -20,29 +20,30 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.io.MorePathsForTests;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.parser.NoSuchBuildTargetException;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
-import com.facebook.buck.testutil.IdentityPathAbsolutifier;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
 import com.facebook.buck.testutil.integration.ProjectWorkspace.ProcessResult;
 import com.facebook.buck.testutil.integration.TestDataHelper;
-import com.facebook.buck.util.BuckConstant;
 import com.facebook.buck.util.HumanReadableException;
+import com.facebook.buck.util.environment.Architecture;
 import com.facebook.buck.util.environment.Platform;
+import com.google.common.base.Functions;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
+import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 
 import org.easymock.EasyMock;
+import org.hamcrest.Matchers;
 import org.junit.Rule;
 import org.junit.Test;
 
@@ -141,25 +142,50 @@ public class BuckConfigTest {
         temporaryFolder,
         reader);
 
-    assertEquals("//java/com/example:foo", config.getBuildTargetForAlias("foo"));
-    assertEquals("//java/com/example:bar", config.getBuildTargetForAlias("bar"));
+    assertEquals("//java/com/example:foo", config.getBuildTargetForAliasAsString("foo"));
+    assertEquals("//java/com/example:bar", config.getBuildTargetForAliasAsString("bar"));
     // Flavors on alias.
-    assertEquals("//java/com/example:foo#src_jar", config.getBuildTargetForAlias("foo#src_jar"));
-    assertEquals("//java/com/example:bar#fl1,fl2", config.getBuildTargetForAlias("bar#fl1,fl2"));
+    assertEquals("//java/com/example:foo#src_jar", config.getBuildTargetForAliasAsString(
+        "foo#src_jar"));
+    assertEquals("//java/com/example:bar#fl1,fl2", config.getBuildTargetForAliasAsString(
+        "bar#fl1,fl2"));
 
     assertNull(
         "Invalid alias names, such as build targets, should be tolerated by this method.",
-        config.getBuildTargetForAlias("//java/com/example:foo"));
-    assertNull(config.getBuildTargetForAlias("baz"));
-    assertNull(config.getBuildTargetForAlias("baz#src_jar"));
+        config.getBuildTargetForAliasAsString("//java/com/example:foo"));
+    assertNull(config.getBuildTargetForAliasAsString("baz"));
+    assertNull(config.getBuildTargetForAliasAsString("baz#src_jar"));
 
     Reader noAliasesReader = new StringReader("");
     BuckConfig noAliasesConfig = BuckConfigTestUtils.createWithDefaultFilesystem(
         temporaryFolder,
         noAliasesReader);
-    assertNull(noAliasesConfig.getBuildTargetForAlias("foo"));
-    assertNull(noAliasesConfig.getBuildTargetForAlias("bar"));
-    assertNull(noAliasesConfig.getBuildTargetForAlias("baz"));
+    assertNull(noAliasesConfig.getBuildTargetForAliasAsString("foo"));
+    assertNull(noAliasesConfig.getBuildTargetForAliasAsString("bar"));
+    assertNull(noAliasesConfig.getBuildTargetForAliasAsString("baz"));
+  }
+
+  @Test
+  public void testGetBuildTargetListResolvesAliases()
+      throws IOException, NoSuchBuildTargetException {
+    Reader reader = new StringReader(Joiner.on('\n').join(
+        "[alias]",
+        "foo = //java/com/example:foo",
+        "[section]",
+        "some_list = \\",
+        "foo, \\",
+        "//java/com/example:bar"));
+    BuckConfig config = BuckConfigTestUtils.createWithDefaultFilesystem(
+        temporaryFolder,
+        reader);
+
+    ImmutableList<String> expected = ImmutableList.<String>of(
+        "//java/com/example:foo",
+        "//java/com/example:bar");
+    ImmutableList<String> result = ImmutableList.copyOf(FluentIterable
+            .from(config.getBuildTargetList("section", "some_list"))
+            .transform(Functions.toStringFunction()));
+    assertThat(result, Matchers.equalTo(expected));
   }
 
   /**
@@ -167,9 +193,9 @@ public class BuckConfigTest {
    */
   @Test
   public void testEmptyConfig() {
-    BuckConfig emptyConfig = new FakeBuckConfig();
+    BuckConfig emptyConfig = FakeBuckConfig.builder().build();
     assertEquals(ImmutableMap.<String, String>of(), emptyConfig.getEntriesForSection("alias"));
-    assertNull(emptyConfig.getBuildTargetForAlias("fb4a"));
+    assertNull(emptyConfig.getBuildTargetForAliasAsString("fb4a"));
     assertEquals(ImmutableMap.<Path, String>of(), emptyConfig.getBasePathToAliasMap());
   }
 
@@ -211,12 +237,12 @@ public class BuckConfigTest {
     BuckConfig config = BuckConfigTestUtils.createWithDefaultFilesystem(
         temporaryFolder,
         reader);
-    assertEquals("//java/com/example:foo", config.getBuildTargetForAlias("foo"));
-    assertEquals("//java/com/example:bar", config.getBuildTargetForAlias("bar"));
-    assertEquals("//java/com/example:foo", config.getBuildTargetForAlias("foo_codename"));
-    assertEquals("//java/com/example:foo", config.getBuildTargetForAlias("automation_foo"));
-    assertEquals("//java/com/example:bar", config.getBuildTargetForAlias("automation_bar"));
-    assertNull(config.getBuildTargetForAlias("baz"));
+    assertEquals("//java/com/example:foo", config.getBuildTargetForAliasAsString("foo"));
+    assertEquals("//java/com/example:bar", config.getBuildTargetForAliasAsString("bar"));
+    assertEquals("//java/com/example:foo", config.getBuildTargetForAliasAsString("foo_codename"));
+    assertEquals("//java/com/example:foo", config.getBuildTargetForAliasAsString("automation_foo"));
+    assertEquals("//java/com/example:bar", config.getBuildTargetForAliasAsString("automation_bar"));
+    assertNull(config.getBuildTargetForAliasAsString("baz"));
   }
 
   @Test
@@ -267,89 +293,6 @@ public class BuckConfigTest {
   }
 
   @Test
-  public void testIgnorePaths() throws IOException {
-    ProjectFilesystem filesystem = EasyMock.createMock(ProjectFilesystem.class);
-    EasyMock.expect(filesystem.getAbsolutifier())
-        .andReturn(IdentityPathAbsolutifier.getIdentityAbsolutifier())
-        .times(2);
-    EasyMock.replay(filesystem);
-
-    Reader reader = new StringReader(Joiner.on('\n').join(
-        "[project]",
-        "ignore = .git, foo, bar/, baz//, a/b/c"));
-    BuckConfig config = BuckConfigTestUtils.createFromReader(
-        reader,
-        filesystem,
-        Platform.detect(),
-        ImmutableMap.copyOf(System.getenv()));
-
-    ImmutableSet<Path> ignorePaths = config.getIgnorePaths();
-    assertEquals("Should ignore paths, sans trailing slashes", ignorePaths,
-        MorePaths.asPaths(ImmutableSet.of(
-          BuckConstant.BUCK_OUTPUT_DIRECTORY,
-          ".idea",
-          System.getProperty(BuckConfig.BUCK_BUCKD_DIR_KEY, ".buckd"),
-          config.getCacheDir().toString(),
-          ".git",
-          "foo",
-          "bar",
-          "baz",
-          "a/b/c")));
-
-    EasyMock.verify(filesystem);
-  }
-
-  @Test
-  public void testIgnorePathsWithRelativeCacheDir() throws IOException {
-    ProjectFilesystem filesystem = EasyMock.createMock(ProjectFilesystem.class);
-    EasyMock.expect(filesystem.getAbsolutifier())
-        .andReturn(IdentityPathAbsolutifier.getIdentityAbsolutifier());
-    EasyMock.replay(filesystem);
-
-    Reader reader = new StringReader(Joiner.on('\n').join(
-        "[cache]",
-        "dir = cache_dir"));
-    BuckConfig config = BuckConfigTestUtils.createFromReader(
-        reader,
-        filesystem,
-        Platform.detect(),
-        ImmutableMap.copyOf(System.getenv()));
-
-    ImmutableSet<Path> ignorePaths = config.getIgnorePaths();
-    assertTrue("Relative cache directory should be in set of ignored paths",
-        ignorePaths.contains(Paths.get("cache_dir")));
-
-    EasyMock.verify(filesystem);
-  }
-
-  @Test
-  public void testWifiBlacklist() throws IOException {
-    BuckConfig config = createFromText(
-        "[cache]",
-        "dir = http",
-        "blacklisted_wifi_ssids = yolocoaster");
-    assertFalse(config.isWifiUsableForDistributedCache(Optional.of("yolocoaster")));
-    assertTrue(config.isWifiUsableForDistributedCache(Optional.of("swagtastic")));
-
-    config = createFromText(
-        "[cache]",
-        "dir = http");
-
-    assertTrue(config.isWifiUsableForDistributedCache(Optional.of("yolocoaster")));
-  }
-
-  @Test
-  public void testExpandUserHomeCacheDir() throws IOException {
-    BuckConfig config = createFromText(
-        "[cache]",
-        "dir = ~/cache_dir");
-    assertEquals(
-        "User home cache directory must be expanded.",
-        MorePaths.expandHomeDir(Paths.get("~/cache_dir")),
-        config.getCacheDir());
-  }
-
-  @Test
   public void testResolveNullPathThatMayBeOutsideTheProjectFilesystem() throws IOException {
     BuckConfig config = createFromText("");
     assertNull(config.resolvePathThatMayBeOutsideTheProjectFilesystem(null));
@@ -384,7 +327,7 @@ public class BuckConfigTest {
 
   @Test
   public void testGetDefaultTestTimeoutMillis() throws IOException {
-    assertEquals(0L, new FakeBuckConfig().getDefaultTestTimeoutMillis());
+    assertEquals(0L, FakeBuckConfig.builder().build().getDefaultTestTimeoutMillis());
 
     Reader reader = new StringReader(Joiner.on('\n').join(
         "[test]",
@@ -397,7 +340,7 @@ public class BuckConfigTest {
 
   @Test
   public void testGetMaxTraces() throws IOException {
-    assertEquals(25, new FakeBuckConfig().getMaxTraces());
+    assertEquals(25, FakeBuckConfig.builder().build().getMaxTraces());
 
     Reader reader = new StringReader(Joiner.on('\n').join(
         "[log]",
@@ -420,14 +363,20 @@ public class BuckConfigTest {
 
   @Test
   public void testCreateAnsi() {
-    FakeBuckConfig windowsConfig = new FakeBuckConfig(Platform.WINDOWS);
+    BuckConfig windowsConfig = FakeBuckConfig.builder()
+        .setArchitecture(Architecture.X86_64)
+        .setPlatform(Platform.WINDOWS)
+        .build();
     // "auto" on Windows is equivalent to "never".
     assertFalse(windowsConfig.createAnsi(Optional.<String>absent()).isAnsiTerminal());
     assertFalse(windowsConfig.createAnsi(Optional.of("auto")).isAnsiTerminal());
     assertTrue(windowsConfig.createAnsi(Optional.of("always")).isAnsiTerminal());
     assertFalse(windowsConfig.createAnsi(Optional.of("never")).isAnsiTerminal());
 
-    FakeBuckConfig linuxConfig = new FakeBuckConfig(Platform.LINUX);
+    BuckConfig linuxConfig = FakeBuckConfig.builder()
+        .setArchitecture(Architecture.I386)
+        .setPlatform(Platform.LINUX)
+        .build();
     // We don't test "auto" on Linux, because the behavior would depend on how the test was run.
     assertTrue(linuxConfig.createAnsi(Optional.of("always")).isAnsiTerminal());
     assertFalse(linuxConfig.createAnsi(Optional.of("never")).isAnsiTerminal());
@@ -437,9 +386,9 @@ public class BuckConfigTest {
   public void getEnvUsesSuppliedEnvironment() {
     String name = "SOME_ENVIRONMENT_VARIABLE";
     String value = "SOME_VALUE";
-    FakeBuckConfig config = new FakeBuckConfig(
-        ImmutableMap.<String, ImmutableMap<String, String>>of(),
-        ImmutableMap.of(name, value));
+    BuckConfig config = FakeBuckConfig.builder()
+        .setEnvironment(ImmutableMap.of(name, value))
+        .build();
     String[] expected = {value};
     assertArrayEquals("Should match value in environment.", expected, config.getEnv(name, ":"));
   }
@@ -455,8 +404,197 @@ public class BuckConfigTest {
     return BuckConfigTestUtils.createFromReader(
         reader,
         projectFilesystem,
+        Architecture.detect(),
         Platform.detect(),
         ImmutableMap.copyOf(System.getenv()));
   }
 
+  @Test
+  public void testShouldSetNumberOfThreadsFromBuckConfig() {
+    BuckConfig buckConfig = FakeBuckConfig.builder().setSections(ImmutableMap.of(
+        "build",
+        ImmutableMap.of("threads", "3"))).build();
+    assertThat(buckConfig.getNumThreads(), Matchers.equalTo(3));
+  }
+
+  @Test
+  public void testDefaultsNumberOfBuildThreadsToOneAndAQuarterTheNumberOfAvailableProcessors() {
+    BuckConfig buckConfig = FakeBuckConfig.builder().build();
+    assertThat(
+        buckConfig.getNumThreads(),
+        Matchers.equalTo(Runtime.getRuntime().availableProcessors()));
+  }
+
+  @Test
+  public void testDefaultsNumberOfBuildThreadsSpecified() {
+    BuckConfig buckConfig = FakeBuckConfig.builder().build();
+    assertThat(buckConfig.getNumThreads(42), Matchers.equalTo(42));
+  }
+
+  @Test
+  public void testBuildThreadsRatioSanityCheck() {
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "build", ImmutableMap.of("thread_core_ratio", "1")))
+        .build();
+    assertThat(buckConfig.getDefaultMaximumNumberOfThreads(10), Matchers.equalTo(10));
+  }
+
+  @Test
+  public void testBuildThreadsRatioGreaterThanZero() {
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "build", ImmutableMap.of("thread_core_ratio", "0.00001")))
+        .build();
+    assertThat(buckConfig.getDefaultMaximumNumberOfThreads(1), Matchers.equalTo(1));
+  }
+
+  @Test
+  public void testBuildThreadsRatioRoundsUp() {
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "build", ImmutableMap.of("thread_core_ratio", "0.3")))
+        .build();
+    assertThat(buckConfig.getDefaultMaximumNumberOfThreads(4), Matchers.equalTo(2));
+  }
+
+  @Test
+  public void testNonZeroBuildThreadsRatio() {
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "build", ImmutableMap.of("thread_core_ratio", "0.1")))
+        .build();
+    assertThat(buckConfig.getDefaultMaximumNumberOfThreads(1), Matchers.equalTo(1));
+  }
+
+  @Test
+  public void testZeroBuildThreadsRatio() {
+    try {
+      BuckConfig buckConfig = FakeBuckConfig.builder()
+          .setSections(
+              ImmutableMap.of(
+                  "build", ImmutableMap.of("thread_core_ratio", "0")))
+          .build();
+      buckConfig.getDefaultMaximumNumberOfThreads(1);
+    } catch (HumanReadableException e) {
+      assertThat(
+          e.getHumanReadableErrorMessage(),
+          Matchers.startsWith("thread_core_ratio must be greater than zero"));
+    }
+  }
+
+  @Test
+  public void testLessThanZeroBuildThreadsRatio() {
+    try {
+      BuckConfig buckConfig = FakeBuckConfig.builder()
+          .setSections(
+              ImmutableMap.of(
+                  "build", ImmutableMap.of("thread_core_ratio", "-0.1")))
+          .build();
+      buckConfig.getDefaultMaximumNumberOfThreads(1);
+    } catch (HumanReadableException e) {
+      assertThat(
+          e.getHumanReadableErrorMessage(),
+          Matchers.startsWith("thread_core_ratio must be greater than zero"));
+    }
+  }
+
+  @Test
+  public void testBuildThreadsRatioWithReservedCores() {
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "build",
+                ImmutableMap.of(
+                    "thread_core_ratio", "1",
+                    "thread_core_ratio_reserved_cores", "2"
+                )
+            )
+        )
+        .build();
+    assertThat(buckConfig.getDefaultMaximumNumberOfThreads(10), Matchers.equalTo(8));
+  }
+
+  @Test
+  public void testCappedBuildThreadsRatio() {
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "build",
+                ImmutableMap.of(
+                    "thread_core_ratio", "0.5",
+                    "thread_core_ratio_max_threads", "4"
+                )
+            )
+        )
+        .build();
+    assertThat(buckConfig.getDefaultMaximumNumberOfThreads(10), Matchers.equalTo(4));
+  }
+
+  @Test
+  public void testFloorLimitedBuildThreadsRatio() {
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "build",
+                ImmutableMap.of(
+                    "thread_core_ratio", "0.25",
+                    "thread_core_ratio_min_threads", "6"
+                )
+            )
+        )
+        .build();
+    assertThat(buckConfig.getDefaultMaximumNumberOfThreads(10), Matchers.equalTo(6));
+  }
+
+  @Test
+  public void testEqualsForDaemonRestart() {
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "build", ImmutableMap.of("threads", "3"),
+                "cxx", ImmutableMap.of("cc", "/some_location/gcc")))
+        .build();
+    BuckConfig buckConfigMoreThreads = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "build", ImmutableMap.of("threads", "4"),
+                "cxx", ImmutableMap.of("cc", "/some_location/gcc")))
+        .build();
+    BuckConfig buckConfigDifferentCompiler = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "build", ImmutableMap.of("threads", "3"),
+                "cxx", ImmutableMap.of("cc", "/some_location/clang")))
+        .build();
+
+    assertFalse(buckConfig.equals(buckConfigMoreThreads));
+    assertFalse(buckConfig.equals(buckConfigDifferentCompiler));
+
+    assertTrue(buckConfig.equalsForDaemonRestart(buckConfigMoreThreads));
+    assertFalse(buckConfig.equalsForDaemonRestart(buckConfigDifferentCompiler));
+    assertFalse(buckConfigMoreThreads.equalsForDaemonRestart(buckConfigDifferentCompiler));
+  }
+
+  @Test
+  public void hasUserDefinedValueReturnsTrueForEmptySetting() {
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(
+            ImmutableMap.of(
+                "cache", ImmutableMap.of("mode", "")))
+        .build();
+    assertTrue(buckConfig.hasUserDefinedValue("cache", "mode"));
+  }
+
+  @Test
+  public void hasUserDefinedValueReturnsFalseForNoSetting() {
+    BuckConfig buckConfig = FakeBuckConfig.builder()
+        .setSections(ImmutableMap.<String, ImmutableMap<String, String>>of())
+        .build();
+    assertFalse(buckConfig.hasUserDefinedValue("cache", "mode"));
+  }
 }

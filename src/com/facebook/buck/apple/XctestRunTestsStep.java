@@ -17,19 +17,28 @@
 package com.facebook.buck.apple;
 
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.io.TeeInputStream;
 import com.facebook.buck.log.Logger;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
+import com.facebook.buck.util.MoreThrowables;
 import com.facebook.buck.util.ProcessExecutor;
 import com.facebook.buck.util.ProcessExecutorParams;
-import com.google.common.base.Function;
+import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
+import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
+import com.google.common.io.ByteStreams;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * Runs {@code xctest} on logic or application tests paired with a host.
@@ -37,24 +46,40 @@ import java.nio.file.Path;
  * The output is written as standard XCTest output to {@code outputPath}
  * and can be parsed by {@link XctestOutputParsing}.
  */
-public class XctestRunTestsStep implements Step {
+class XctestRunTestsStep implements Step {
 
   private static final Logger LOG = Logger.get(XctestRunTestsStep.class);
 
+  public interface OutputReadingCallback {
+    void readOutput(InputStream output) throws IOException;
+  }
+
+  private final ProjectFilesystem filesystem;
+  private final ImmutableMap<String, String> environment;
   private final ImmutableList<String> xctest;
   private final String testArgument; // -XCTest or -SenTest
   private final Path logicTestBundlePath;
   private final Path outputPath;
+  private final Optional<? extends OutputReadingCallback> outputReadingCallback;
+  private final Supplier<Optional<Path>> xcodeDeveloperDirSupplier;
 
   public XctestRunTestsStep(
+      ProjectFilesystem filesystem,
+      ImmutableMap<String, String> environment,
       ImmutableList<String> xctest,
       String testArgument,
       Path logicTestBundlePath,
-      Path outputPath) {
+      Path outputPath,
+      Optional<? extends OutputReadingCallback> outputReadingCallback,
+      Supplier<Optional<Path>> xcodeDeveloperDirSupplier) {
+    this.filesystem = filesystem;
+    this.environment = environment;
     this.xctest = xctest;
     this.testArgument = testArgument;
     this.logicTestBundlePath = logicTestBundlePath;
     this.outputPath = outputPath;
+    this.outputReadingCallback = outputReadingCallback;
+    this.xcodeDeveloperDirSupplier = xcodeDeveloperDirSupplier;
   }
 
   @Override
@@ -62,50 +87,88 @@ public class XctestRunTestsStep implements Step {
     return "xctest-run-tests";
   }
 
-  @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
-
+  public ImmutableList<String> getCommand() {
     ImmutableList.Builder<String> args = ImmutableList.builder();
     args.addAll(xctest);
     args.add(testArgument);
     args.add("All");
     args.add(logicTestBundlePath.toString());
+    return args.build();
+  }
 
-    ImmutableMap.Builder<String, String> environment = ImmutableMap.builder();
+  public ImmutableMap<String, String> getEnv(ExecutionContext context) {
+    Map<String, String> environment = new HashMap<>();
     environment.putAll(context.getEnvironment());
+    Optional<Path> xcodeDeveloperDir = xcodeDeveloperDirSupplier.get();
+    if (xcodeDeveloperDir.isPresent()) {
+      environment.put("DEVELOPER_DIR", xcodeDeveloperDir.get().toString());
+    } else {
+      throw new RuntimeException("Cannot determine xcode developer dir");
+    }
+    environment.putAll(this.environment);
     // if (appTestHostAppPath.isPresent()) {
     //   TODO(grp): Pass XCBundleInjection environment.
     // }
+    return ImmutableMap.copyOf(environment);
+  }
 
-    ProcessExecutorParams.Builder builder = ProcessExecutorParams.builder();
-    builder.setCommand(args.build());
-    builder.setEnvironment(environment.build());
-    builder.setRedirectError(
-        ProcessBuilder.Redirect.to(
-            filesystem.resolve(outputPath).toFile()));
+  @Override
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
+    ProcessExecutorParams.Builder builder = ProcessExecutorParams.builder()
+        .addAllCommand(getCommand())
+        .setDirectory(filesystem.getRootPath().toAbsolutePath().toFile())
+        .setRedirectErrorStream(true)
+        .setEnvironment(getEnv(context));
 
-    int exitCode;
+    ProcessExecutorParams params = builder.build();
+    LOG.debug("xctest command: %s", Joiner.on(" ").join(params.getCommand()));
+
     try {
       ProcessExecutor executor = context.getProcessExecutor();
-      ProcessExecutor.Result result = executor.launchAndExecute(
-          builder.build(),
-          /* options */ ImmutableSet.<ProcessExecutor.Option>of(),
-          /* stdin */ Optional.<String>absent(),
-          /* timeOutMs */ Optional.<Long>absent(),
-          /* timeOutHandler */ Optional.<Function<Process, Void>>absent());
-      LOG.debug("xctest exit code: %d", result.getExitCode());
+      ProcessExecutor.LaunchedProcess launchedProcess =
+          executor.launchProcess(params);
 
-      // NOTE(grp): xctest always seems to have an exit code of 1.
-      // Failure will be detected through the output, not from here.
-      exitCode = 0;
+      int exitCode;
+      try (OutputStream outputStream = filesystem.newFileOutputStream(outputPath);
+           TeeInputStream outputWrapperStream = new TeeInputStream(
+               launchedProcess.getInputStream(), outputStream)) {
+        if (outputReadingCallback.isPresent()) {
+          // The caller is responsible for reading all the data, which TeeInputStream will
+          // copy to outputStream.
+          outputReadingCallback.get().readOutput(outputWrapperStream);
+        } else {
+          // Nobody's going to read from outputWrapperStream, so close it and copy
+          // the process's stdout and stderr to outputPath directly.
+          outputWrapperStream.close();
+          ByteStreams.copy(launchedProcess.getInputStream(), outputStream);
+        }
+        exitCode = executor.waitForLaunchedProcess(launchedProcess);
+
+        // There's no way to distinguish a test failure from an xctest issue. We don't
+        // want to fail the step on a test failure, so return 0 for any xctest exit code.
+        exitCode = 0;
+
+        LOG.debug("Finished running command, exit code %d", exitCode);
+      } finally {
+        context.getProcessExecutor().destroyLaunchedProcess(launchedProcess);
+        context.getProcessExecutor().waitForLaunchedProcess(launchedProcess);
+      }
+
+      if (exitCode != 0) {
+        context.getConsole().printErrorText(
+            String.format(
+                Locale.US,
+                "xctest failed with exit code %d",
+                exitCode));
+      }
+
+      return StepExecutionResult.of(exitCode);
     } catch (IOException e) {
-      LOG.error(e, "Error while running %s", args.build());
-      e.printStackTrace(context.getStdErr());
-      exitCode = 1;
+      LOG.error(e, "Exception while running %s", params.getCommand());
+      MoreThrowables.propagateIfInterrupt(e);
+      context.getConsole().printBuildFailureWithStacktrace(e);
+      return StepExecutionResult.ERROR;
     }
-
-    return exitCode;
   }
 
   @Override

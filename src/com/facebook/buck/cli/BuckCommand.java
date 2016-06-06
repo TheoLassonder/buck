@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -30,18 +30,28 @@ import javax.annotation.Nullable;
 
 public class BuckCommand extends AbstractContainerCommand {
 
-  @Argument(handler = AdditionalOptionsSubCommandHandler.class)
+  @Argument(
+      handler = AdditionalOptionsSubCommandHandler.class,
+      metaVar = "subcommand")
   @SubCommands({
       @SubCommand(name = "audit", impl = AuditCommand.class),
+      @SubCommand(name = "autodeps", impl = AutodepsCommand.class),
       @SubCommand(name = "build", impl = BuildCommand.class),
       @SubCommand(name = "cache", impl = CacheCommand.class),
       @SubCommand(name = "clean", impl = CleanCommand.class),
       @SubCommand(name = "fetch", impl = FetchCommand.class),
       @SubCommand(name = "install", impl = InstallCommand.class),
+      @SubCommand(name = "machoutils", impl = MachOUtilsCommand.class),
       @SubCommand(name = "project", impl = ProjectCommand.class),
+      @SubCommand(name = "publish", impl = PublishCommand.class),
+      @SubCommand(name = "query", impl = QueryCommand.class),
       @SubCommand(name = "quickstart", impl = QuickstartCommand.class),
+      @SubCommand(name = "rage", impl = RageCommand.class),
+      @SubCommand(name = "repl", impl = ReplCommand.class),
+      @SubCommand(name = "root", impl = RootCommand.class),
       @SubCommand(name = "run", impl = RunCommand.class),
       @SubCommand(name = "server", impl = ServerCommand.class),
+      @SubCommand(name = "simulate", impl = SimulateCommand.class),
       @SubCommand(name = "targets", impl = TargetsCommand.class),
       @SubCommand(name = "test", impl = TestCommand.class),
       @SubCommand(name = "uninstall", impl = UninstallCommand.class),
@@ -57,6 +67,7 @@ public class BuckCommand extends AbstractContainerCommand {
 
   @Option(
       name = "--help",
+      aliases = {"-h"},
       usage = "Shows this screen and exits.")
   @SuppressWarnings("PMD.UnusedPrivateField")
   private boolean helpScreen;

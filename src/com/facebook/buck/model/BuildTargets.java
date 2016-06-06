@@ -16,15 +16,15 @@
 
 package com.facebook.buck.model;
 
-import com.facebook.buck.util.BuckConstant;
+import com.facebook.buck.io.BuckPaths;
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.util.HumanReadableException;
-import com.google.common.base.Optional;
+import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Sets;
 
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Set;
 
 /**
@@ -37,8 +37,8 @@ public class BuildTargets {
 
   /**
    * Return a path to a file in the buck-out/bin/ directory. {@code format} will be prepended with
-   * the {@link com.facebook.buck.util.BuckConstant#SCRATCH_DIR} and the target base path, then
-   * formatted with the target short name.
+   * the {@link BuckPaths#getScratchDir()} and the target base path, then formatted with the target
+   * short name.
    *
    * @param target The {@link BuildTarget} to scope this path to.
    * @param format {@link String#format} string for the path name.  It should contain one "%s",
@@ -46,40 +46,45 @@ public class BuildTargets {
    * @return A {@link java.nio.file.Path} under buck-out/bin, scoped to the base path of
    * {@code target}.
    */
-
-  public static Path getScratchPath(BuildTarget target, String format) {
-    return Paths.get(
+  public static Path getScratchPath(
+      ProjectFilesystem filesystem,
+      BuildTarget target,
+      String format) {
+    return filesystem.getRootPath().getFileSystem().getPath(
         String.format(
             "%s/%s" + format,
-            BuckConstant.SCRATCH_DIR,
+            filesystem.getBuckPaths().getScratchDir(),
             target.getBasePathWithSlash(),
             target.getShortNameAndFlavorPostfix()));
   }
 
   /**
-   * Return a path to a file in the buck-out/bin/ directory. {@code format} will be prepended with
-   * the {@link com.facebook.buck.util.BuckConstant#SCRATCH_DIR} and the target base path, then
-   * formatted with the target short name.
+   * Return a path to a file in the buck-out/annotation/ directory. {@code format} will be prepended
+   * with the {@link BuckPaths#getAnnotationDir()} and the target base path, then formatted with the
+   * target short name.
    *
-   * @param target The {@link UnflavoredBuildTarget} to scope this path to.
+   * @param target The {@link BuildTarget} to scope this path to.
    * @param format {@link String#format} string for the path name.  It should contain one "%s",
    *     which will be filled in with the rule's short name.  It should not start with a slash.
-   * @return A {@link java.nio.file.Path} under buck-out/bin, scoped to the base path of
+   * @return A {@link java.nio.file.Path} under buck-out/annotation, scoped to the base path of
    * {@code target}.
    */
-  public static Path getScratchPath(UnflavoredBuildTarget target, String format) {
-    return Paths.get(
+  public static Path getAnnotationPath(
+      ProjectFilesystem filesystem,
+      BuildTarget target,
+      String format) {
+    return filesystem.getRootPath().getFileSystem().getPath(
         String.format(
             "%s/%s" + format,
-            BuckConstant.SCRATCH_DIR,
+            filesystem.getBuckPaths().getAnnotationDir(),
             target.getBasePathWithSlash(),
-            target.getShortName()));
+            target.getShortNameAndFlavorPostfix()));
   }
 
   /**
    * Return a path to a file in the buck-out/gen/ directory. {@code format} will be prepended with
-   * the {@link com.facebook.buck.util.BuckConstant#GEN_DIR} and the target base path, then
-   * formatted with the target short name.
+   * the {@link BuckPaths#getGenDir()} and the target base path, then formatted with the target
+   * short name.
    *
    * @param target The {@link BuildTarget} to scope this path to.
    * @param format {@link String#format} string for the path name.  It should contain one "%s",
@@ -87,29 +92,13 @@ public class BuildTargets {
    * @return A {@link java.nio.file.Path} under buck-out/gen, scoped to the base path of
    * {@code target}.
    */
-  public static Path getGenPath(BuildTarget target, String format) {
-    return Paths.get(String.format("%s/%s" + format,
-        BuckConstant.GEN_DIR,
-        target.getBasePathWithSlash(),
-        target.getShortNameAndFlavorPostfix()));
-  }
-
-  /**
-   * Return a path to a file in the buck-out/gen/ directory. {@code format} will be prepended with
-   * the {@link com.facebook.buck.util.BuckConstant#GEN_DIR} and the target base path, then
-   * formatted with the target short name.
-   *
-   * @param target The {@link UnflavoredBuildTarget} to scope this path to.
-   * @param format {@link String#format} string for the path name.  It should contain one "%s",
-   *     which will be filled in with the rule's short name.  It should not start with a slash.
-   * @return A {@link java.nio.file.Path} under buck-out/gen, scoped to the base path of
-   * {@code target}.
-   */
-  public static Path getGenPath(UnflavoredBuildTarget target, String format) {
-    return Paths.get(String.format("%s/%s" + format,
-            BuckConstant.GEN_DIR,
+  public static Path getGenPath(ProjectFilesystem filesystem, BuildTarget target, String format) {
+    return filesystem.getRootPath().getFileSystem().getPath(
+        String.format(
+            "%s/%s" + format,
+            filesystem.getBuckPaths().getGenDir(),
             target.getBasePathWithSlash(),
-            target.getShortName()));
+            target.getShortNameAndFlavorPostfix()));
   }
 
   /**
@@ -125,32 +114,30 @@ public class BuildTargets {
         .build();
   }
 
-  /**
-   * Returns whether the {@link BuildTarget} `target` is visible to the {@link BuildTarget} `other`
-   * using the given visibility patterns.
-   */
-  public static boolean isVisibleTo(
-      BuildTarget target,
-      ImmutableSet<BuildTargetPattern> visibilityPatterns,
-      BuildTarget other) {
-
-    // Targets in the same build file are always visible to each other.
-    if (target.getBaseName().equals(other.getBaseName())) {
-      return true;
-    }
-
-    for (BuildTargetPattern pattern : visibilityPatterns) {
-      if (pattern.apply(other)) {
-        return true;
+  public static Predicate<BuildTarget> containsFlavors(final FlavorDomain<?> domain) {
+    return new Predicate<BuildTarget>() {
+      @Override
+      public boolean apply(BuildTarget input) {
+        ImmutableSet<Flavor> flavorSet =
+            Sets.intersection(domain.getFlavors(), input.getFlavors()).immutableCopy();
+        return !flavorSet.isEmpty();
       }
-    }
-
-    return false;
+    };
   }
+
+  public static Predicate<BuildTarget> containsFlavor(final Flavor flavor) {
+    return new Predicate<BuildTarget>() {
+      @Override
+      public boolean apply(BuildTarget input) {
+        return input.getFlavors().contains(flavor);
+      }
+    };
+  }
+
 
   /**
    * Propagate flavors represented by the given {@link FlavorDomain} objects from a parent
-   * target to it's dependencies.
+   * target to its dependencies.
    */
   public static ImmutableSortedSet<BuildTarget> propagateFlavorDomains(
       BuildTarget target,
@@ -164,35 +151,26 @@ public class BuildTargets {
     for (FlavorDomain<?> domain : domains) {
 
       // Now extract all relevant domain flavors from our parent target.
-      Optional<Flavor> flavor;
-      try {
-        flavor = domain.getFlavor(ImmutableSet.copyOf(target.getFlavors()));
-      } catch (FlavorDomainException e) {
-        throw new HumanReadableException("%s: %s", target, e.getMessage());
-      }
-      if (!flavor.isPresent()) {
+      ImmutableSet<Flavor> flavorSet =
+          Sets.intersection(domain.getFlavors(), target.getFlavors()).immutableCopy();
+
+      if (flavorSet.isEmpty()) {
         throw new HumanReadableException(
             "%s: no flavor for \"%s\"",
             target,
             domain.getName());
       }
-      flavors.add(flavor.get());
+      flavors.addAll(flavorSet);
 
       // First verify that our deps are not already flavored for our given domains.
       for (BuildTarget dep : deps) {
-        Optional<Flavor> depFlavor;
-        try {
-          depFlavor = domain.getFlavor(ImmutableSet.copyOf(dep.getFlavors()));
-        } catch (FlavorDomainException e) {
-          throw new HumanReadableException("%s: dep %s: %s", target, dep, e.getMessage());
-        }
-        if (depFlavor.isPresent()) {
+        if (domain.getFlavor(dep).isPresent()) {
           throw new HumanReadableException(
               "%s: dep %s already has flavor for \"%s\" : %s",
               target,
               dep,
               domain.getName(),
-              flavor.get());
+              flavorSet.toString());
         }
       }
     }
@@ -206,5 +184,4 @@ public class BuildTargets {
 
     return flavoredDeps.build();
   }
-
 }

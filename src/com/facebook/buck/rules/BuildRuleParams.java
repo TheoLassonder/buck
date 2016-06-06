@@ -18,13 +18,14 @@ package com.facebook.buck.rules;
 
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.Flavor;
 import com.google.common.annotations.Beta;
-import com.google.common.base.Function;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.Sets;
 
-import java.nio.file.Path;
+import java.util.Set;
 
 /**
  * Standard set of parameters that is passed to all build rules.
@@ -37,22 +38,19 @@ public class BuildRuleParams {
   private final Supplier<ImmutableSortedSet<BuildRule>> extraDeps;
   private final Supplier<ImmutableSortedSet<BuildRule>> totalDeps;
   private final ProjectFilesystem projectFilesystem;
-  private final RuleKeyBuilderFactory ruleKeyBuilderFactory;
-  private final TargetGraph targetGraph;
+  private final CellPathResolver cellRoots;
 
   public BuildRuleParams(
       BuildTarget buildTarget,
       final Supplier<ImmutableSortedSet<BuildRule>> declaredDeps,
       final Supplier<ImmutableSortedSet<BuildRule>> extraDeps,
       ProjectFilesystem projectFilesystem,
-      RuleKeyBuilderFactory ruleKeyBuilderFactory,
-      TargetGraph targetGraph) {
+      CellPathResolver cellRoots) {
     this.buildTarget = buildTarget;
     this.declaredDeps = Suppliers.memoize(declaredDeps);
     this.extraDeps = Suppliers.memoize(extraDeps);
     this.projectFilesystem = projectFilesystem;
-    this.ruleKeyBuilderFactory = ruleKeyBuilderFactory;
-    this.targetGraph = targetGraph;
+    this.cellRoots = cellRoots;
 
     this.totalDeps = Suppliers.memoize(
         new Supplier<ImmutableSortedSet<BuildRule>>() {
@@ -110,40 +108,63 @@ public class BuildRuleParams {
         declaredDeps,
         extraDeps,
         projectFilesystem,
-        ruleKeyBuilderFactory,
-        targetGraph);
+        cellRoots);
+  }
+
+  public BuildRuleParams withoutFlavor(Flavor flavor) {
+    Set<Flavor> flavors = Sets.newHashSet(getBuildTarget().getFlavors());
+    flavors.remove(flavor);
+    BuildTarget target = BuildTarget
+        .builder(getBuildTarget().getUnflavoredBuildTarget())
+        .addAllFlavors(flavors)
+        .build();
+
+    return copyWithChanges(
+        target,
+        declaredDeps,
+        extraDeps);
+  }
+
+  public BuildRuleParams withFlavor(Flavor flavor) {
+    Set<Flavor> flavors = Sets.newHashSet(getBuildTarget().getFlavors());
+    flavors.add(flavor);
+    BuildTarget target = BuildTarget
+        .builder(getBuildTarget().getUnflavoredBuildTarget())
+        .addAllFlavors(flavors)
+        .build();
+
+    return copyWithChanges(
+        target,
+        declaredDeps,
+        extraDeps);
   }
 
   public BuildTarget getBuildTarget() {
     return buildTarget;
   }
 
+  public CellPathResolver getCellRoots() {
+    return cellRoots;
+  }
+
   public ImmutableSortedSet<BuildRule> getDeps() {
     return totalDeps.get();
   }
 
-  public ImmutableSortedSet<BuildRule> getDeclaredDeps() {
-    return declaredDeps.get();
+  public Supplier<ImmutableSortedSet<BuildRule>> getTotalDeps() {
+    return totalDeps;
   }
 
-  public ImmutableSortedSet<BuildRule> getExtraDeps() {
-    return extraDeps.get();
+  public Supplier<ImmutableSortedSet<BuildRule>> getDeclaredDeps() {
+    return declaredDeps;
   }
 
-  public Function<Path, Path> getPathAbsolutifier() {
-    return projectFilesystem.getAbsolutifier();
+  public Supplier<ImmutableSortedSet<BuildRule>> getExtraDeps() {
+    return extraDeps;
   }
 
   public ProjectFilesystem getProjectFilesystem() {
     return projectFilesystem;
-  }
-
-  public RuleKeyBuilderFactory getRuleKeyBuilderFactory() {
-    return ruleKeyBuilderFactory;
-  }
-
-  public TargetGraph getTargetGraph() {
-    return targetGraph;
   }
 
 }

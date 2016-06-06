@@ -21,13 +21,14 @@ import static java.nio.file.StandardOpenOption.WRITE;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import com.facebook.buck.io.MorePaths;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.FileVisitResult;
@@ -60,11 +61,13 @@ public class Zip implements AutoCloseable {
    * @param forWriting Whether the zip file should be opened for writing or not.
    * @throws IOException Should something terrible occur.
    */
-  public Zip(File zip, boolean forWriting) throws IOException {
-    assertTrue("zip name must end with .zip for file type detection to work",
-        zip.getName().endsWith(".zip") || zip.getName().endsWith(".jar"));
+  public Zip(Path zip, boolean forWriting) throws IOException {
+    String extension = MorePaths.getFileExtension(zip);
+    assertTrue(
+        "zip name must end with .zip for file type detection to work",
+        "zip".equals(extension) || "jar".equals(extension));
 
-    URI uri = URI.create("jar:" + zip.toURI());
+    URI uri = URI.create("jar:" + zip.toUri());
     fs = FileSystems.newFileSystem(
         uri, ImmutableMap.of("create", String.valueOf(forWriting)));
 
@@ -75,19 +78,19 @@ public class Zip implements AutoCloseable {
   public void add(String fileName, byte[] contents) throws IOException {
     Path zipPath = fs.getPath(root.toString(), fileName);
     if (Files.notExists(zipPath.getParent())) {
-      Files.createDirectory(zipPath.getParent());
+      Files.createDirectories(zipPath.getParent());
     }
     Files.write(zipPath, contents, CREATE, WRITE);
   }
 
   public void add(String fileName, String contents) throws IOException {
-    add(fileName, contents.getBytes());
+    add(fileName, contents.getBytes(StandardCharsets.UTF_8));
   }
 
   public void addDir(String dirName) throws IOException {
     Path zipPath = fs.getPath(root.toString(), dirName);
     if (Files.notExists(zipPath)) {
-      Files.createDirectory(zipPath);
+      Files.createDirectories(zipPath);
     }
   }
 

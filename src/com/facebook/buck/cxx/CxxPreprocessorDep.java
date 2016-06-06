@@ -17,6 +17,9 @@
 package com.facebook.buck.cxx;
 
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.HasBuildTarget;
+import com.facebook.buck.parser.NoSuchBuildTargetException;
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableMap;
 
 /**
@@ -24,14 +27,18 @@ import com.google.common.collect.ImmutableMap;
  * components (e.g. header files, preprocessor macros) to the preprocessing of some top-level
  * file (e.g. a C++ source from a C++ library rule).
  */
-public interface CxxPreprocessorDep {
+public interface CxxPreprocessorDep extends HasBuildTarget {
+
+  Iterable<? extends CxxPreprocessorDep> getCxxPreprocessorDeps(CxxPlatform cxxPlatform);
+
+  Optional<HeaderSymlinkTree> getExportedHeaderSymlinkTree(CxxPlatform cxxPlatform);
 
   CxxPreprocessorInput getCxxPreprocessorInput(
       CxxPlatform cxxPlatform,
-      HeaderVisibility headerVisibility);
+      HeaderVisibility headerVisibility) throws NoSuchBuildTargetException;
 
   ImmutableMap<BuildTarget, CxxPreprocessorInput> getTransitiveCxxPreprocessorInput(
       CxxPlatform cxxPlatform,
-      HeaderVisibility headerVisibility);
+      HeaderVisibility headerVisibility) throws NoSuchBuildTargetException;
 
 }

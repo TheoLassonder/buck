@@ -20,8 +20,8 @@ import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.shell.ShellStep;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.zip.Unzip;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Optional;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -33,10 +33,15 @@ import java.nio.file.Path;
 public class PexStep extends ShellStep {
   private static final String SRC_ZIP = ".src.zip";
 
-  // Path to the tool to generate the pex file.
-  private final Path pathToPex;
+  private final ProjectFilesystem filesystem;
 
-  // The path to the executable to create.
+  // The PEX builder environment variables.
+  private final ImmutableMap<String, String> environment;
+
+  // The PEX builder command prefix.
+  private final ImmutableList<String> commandPrefix;
+
+  // The path to the executable/directory to create.
   private final Path destination;
 
   // The main module that begins execution in the PEX.
@@ -47,6 +52,7 @@ public class PexStep extends ShellStep {
 
   // The map of resources to include in the PEX.
   private final ImmutableMap<Path, Path> resources;
+  private final PythonVersion pythonVersion;
   private final Path pythonPath;
   private final Path tempDir;
 
@@ -56,11 +62,17 @@ public class PexStep extends ShellStep {
   // The list of prebuilt python libraries to add to the PEX.
   private final ImmutableSet<Path> prebuiltLibraries;
 
+  // The list of native libraries to preload into the interpreter.
+  private final ImmutableSet<String> preloadLibraries;
+
   private final boolean zipSafe;
 
   public PexStep(
-      Path pathToPex,
+      ProjectFilesystem filesystem,
+      ImmutableMap<String, String> environment,
+      ImmutableList<String> commandPrefix,
       Path pythonPath,
+      PythonVersion pythonVersion,
       Path tempDir,
       Path destination,
       String entry,
@@ -68,9 +80,15 @@ public class PexStep extends ShellStep {
       ImmutableMap<Path, Path> resources,
       ImmutableMap<Path, Path> nativeLibraries,
       ImmutableSet<Path> prebuiltLibraries,
+      ImmutableSet<String> preloadLibraries,
       boolean zipSafe) {
-    this.pathToPex = pathToPex;
+    super(filesystem.getRootPath());
+
+    this.filesystem = filesystem;
+    this.environment = environment;
+    this.commandPrefix = commandPrefix;
     this.pythonPath = pythonPath;
+    this.pythonVersion = pythonVersion;
     this.tempDir = tempDir;
     this.destination = destination;
     this.entry = entry;
@@ -78,6 +96,7 @@ public class PexStep extends ShellStep {
     this.resources = resources;
     this.nativeLibraries = nativeLibraries;
     this.prebuiltLibraries = prebuiltLibraries;
+    this.preloadLibraries = preloadLibraries;
     this.zipSafe = zipSafe;
   }
 
@@ -97,7 +116,7 @@ public class PexStep extends ShellStep {
     // Convert the map of paths to a map of strings before converting to JSON.
     ImmutableMap<Path, Path> resolvedModules;
     try {
-      resolvedModules = getExpandedSourcePaths(context, modules);
+      resolvedModules = getExpandedSourcePaths(modules);
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
@@ -126,17 +145,18 @@ public class PexStep extends ShellStep {
                   "nativeLibraries", nativeLibrariesBuilder.build(),
                   "prebuiltLibraries", prebuiltLibrariesBuilder.build())));
     } catch (IOException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
     }
   }
 
   @Override
   protected ImmutableList<String> getShellCommandInternal(ExecutionContext context) {
     ImmutableList.Builder<String> builder = ImmutableList.builder();
-    builder.add(pythonPath.toString());
-    builder.add(pathToPex.toString());
+    builder.addAll(commandPrefix);
     builder.add("--python");
     builder.add(pythonPath.toString());
+    builder.add("--python-version");
+    builder.add(pythonVersion.toString());
     builder.add("--entry-point");
     builder.add(entry);
 
@@ -144,24 +164,31 @@ public class PexStep extends ShellStep {
       builder.add("--no-zip-safe");
     }
 
+    for (String lib : preloadLibraries) {
+      builder.add("--preload", lib);
+    }
+
     builder.add(destination.toString());
     return builder.build();
   }
 
-  private ImmutableMap<Path, Path> getExpandedSourcePaths(
-      ExecutionContext context,
-      ImmutableMap<Path, Path> paths) throws IOException {
-    ProjectFilesystem projectFilesystem = context.getProjectFilesystem();
+  @Override
+  public ImmutableMap<String, String> getEnvironmentVariables(ExecutionContext context) {
+    return environment;
+  }
+
+  private ImmutableMap<Path, Path> getExpandedSourcePaths(ImmutableMap<Path, Path> paths)
+      throws IOException {
     ImmutableMap.Builder<Path, Path> sources = ImmutableMap.builder();
 
     for (ImmutableMap.Entry<Path, Path> ent : paths.entrySet()) {
       if (ent.getValue().toString().endsWith(SRC_ZIP)) {
-        Path destinationDirectory = projectFilesystem.resolve(
+        Path destinationDirectory = filesystem.resolve(
             tempDir.resolve(ent.getKey()));
         Files.createDirectories(destinationDirectory);
 
         ImmutableList<Path> zipPaths = Unzip.extractZipFile(
-            projectFilesystem.resolve(ent.getValue()),
+            filesystem.resolve(ent.getValue()),
             destinationDirectory,
             Unzip.ExistingFileMode.OVERWRITE);
         for (Path path : zipPaths) {
@@ -174,6 +201,11 @@ public class PexStep extends ShellStep {
     }
 
     return sources.build();
+  }
+
+  @VisibleForTesting
+  protected ImmutableList<String> getCommandPrefix() {
+    return commandPrefix;
   }
 
 }

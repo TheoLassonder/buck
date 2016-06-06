@@ -1,8 +1,1 @@
-java_library(
-  name = 'immutables',
-  srcs = glob(['*.java']),
-  deps = [
-    '//third-party/java/immutables:processor',
-  ],
-  visibility = ['PUBLIC'],
-)
+standard_java_library()

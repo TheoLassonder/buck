@@ -5,33 +5,79 @@
   {call buck.page}
     {param title: 'buck install' /}
     {param description}
-      A command that builds and installs an APK for an android_library.
+      A command that builds and installs an APK or .app bundle for an android_binary or apple_bundle.
     {/param}
     {param content}
 
 
 {call buck.command}
 {param overview}
-Builds and installs the APK for an <code>android_binary</code>
-{sp}target.
 
 <p>
-Takes an <a
-href="{ROOT}rule/android_binary.html"><code>android_binary</code></a>,
-builds it, and install it by running <code>adb install -r
-&lt;path_to_the_APK></code>.
+  This command builds and installs an <code>.apk</code> or <code>.app</code> bundle on a
+  emulator/simulator or device, and optionally launches it.
+</p>
 
-{/param}
+<h2>Common Parameters</h2>
 
-{param params}
+<p>All the parameters for <a href="build.html"><code>buck build</code></a> also
+apply to <code>buck install</code>.</p>
+
+<ul class="{css arglist}">
+
 {call buck.param}
   {param name: 'run' /}
   {param alias: 'r'/}
   {param desc}
-  Launch the <code>.apk</code> with the default activity after
-  installation.
+  Launch the <code>.apk</code> with the default activity (Android) or the <code>.app</code> bundle
+  (iOS) after installation.
  {/param}
 {/call}
+
+{call buck.param}
+  {param name: 'emulator' /}
+  {param alias: 'e' /}
+  {param desc}
+  Use this option to use emulators/simulators only.
+  {/param}
+{/call}
+
+{call buck.param}
+  {param name: 'device' /}
+  {param alias: 'd' /}
+  {param desc}
+  Use this option to use real devices only.
+  {/param}
+{/call}
+
+{call buck.param}
+  {param name: 'serial' /}
+  {param alias: 's'/}
+  {param alias: '-udid'/}
+  {param desc}
+  Use device or emulator/simulator with specific serial or UDID number.
+ {/param}
+{/call}
+
+</ul>
+
+<h2 id="android">Android</h2>
+
+<p>
+Builds and installs the APK for an <code>android_binary</code> or target.
+</p>
+<p>
+  Takes an <a
+  href="{ROOT}rule/android_binary.html"><code>android_binary</code></a>,
+  an <a href="{ROOT}rule/apk_genrule.html"><code>apk_genrule</code></a> or
+  an <a href="{ROOT}rule/android_instrumentation_apk.html"><code>
+  android_instrumentation_apk</code></a>, builds it, and installs it by running
+  {sp}<code>adb install &lt;path_to_the_APK></code>.
+</p>
+
+<h3>Parameters</h3>
+
+<ul class="{css arglist}">
 
 {call buck.param}
   {param name: 'activity <fully qualified class name>' /}
@@ -41,6 +87,57 @@ builds it, and install it by running <code>adb install -r
   installation.
   {/param}
 {/call}
+
+{call buck.param}
+  {param name: '-all' /}
+  {param alias: 'x' /}
+  {param nodash: true /}
+  {param desc}
+  Install APK on all connected devices and/or emulators
+  (multi-install mode).
+  {/param}
+{/call}
+
+{call buck.param}
+  {param name: 'adb-threads' /}
+  {param alias: 'T' /}
+  {param desc}
+  Number of threads to use for adb operations.  Defaults to
+  number of connected devices.
+  {/param}
+{/call}
+
+</ul>
+
+<h2 id="ios">iOS</h2>
+
+<p>
+  Builds and installs an .app for an <code>apple_bundle</code> {sp}target.
+</p>
+<p>
+  Takes an {call buck.apple_bundle /}, builds it, and installs it by copying it to a simulator or
+  device as appropriate.
+</p>
+
+<p>
+  For device support, you need to first install the <code>iOSConsole</code> utility
+  from the <a href="https://github.com/samdmarshall/SDMMobileDevice">SDMMobileDevice
+  library</a> and set {call buckconfig.apple_device_helper_path /} to its location.
+</p>
+
+<h3>Parameters</h3>
+
+<ul class="{css arglist}">
+
+{call buck.param}
+  {param name: 'simulator-name' /}
+  {param alias: 'n'/}
+  {param desc}
+  Use simulator with specific name (defaults to <code>iPhone 5s</code>)
+ {/param}
+{/call}
+
+</ul>
 
 {/param}
 

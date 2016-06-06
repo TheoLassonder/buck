@@ -69,7 +69,16 @@ public class LoggingBuildListener implements BuckEventListener {
 
   @Subscribe
   public void handleConsoleEvent(ConsoleEvent logEvent) {
-    LogRecord record = new LogRecord(logEvent.getLevel(), logEvent.getMessage());
+    LogRecord record =
+        new LogRecord(
+            // Since SEVERE events interrupt the super console, we reserve them
+            // only for exceptional events, and so cap log messages at WARNING here.
+            // Long-term, we likely should have a separate leveling mechanism for
+            // Buck's `ConsoleEvent`.
+            logEvent.getLevel().intValue() <= Level.WARNING.intValue() ?
+                logEvent.getLevel() :
+                Level.WARNING,
+            logEvent.getMessage());
     record.setLoggerName(getClass().getName());
     LOG.log(record);
   }
@@ -99,8 +108,7 @@ public class LoggingBuildListener implements BuckEventListener {
     if (EXPLICITLY_HANDLED_EVENT_TYPES.contains(event.getClass())) {
       return;
     }
-    // Use a format so we avoid paying the cost of event.toString() unless we have to.
-    LOG.log(Level.FINE, "{0}", event);
+    LOG.log(Level.FINER, "{0}", event);
   }
 
   @Override

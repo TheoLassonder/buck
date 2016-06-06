@@ -16,6 +16,9 @@
 
 package com.facebook.buck.apple;
 
+import com.facebook.buck.model.Flavor;
+import com.facebook.buck.model.Flavored;
+import com.facebook.buck.rules.AbstractDescriptionArg;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
@@ -24,16 +27,18 @@ import com.facebook.buck.rules.Description;
 import com.facebook.buck.rules.NoopBuildRule;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.base.Optional;
+import com.google.common.collect.ImmutableSet;
 
 import java.util.Set;
 
 /**
  * Description for an apple_resource rule which copies resource files to the built bundle.
  */
-public class AppleResourceDescription implements Description<AppleResourceDescription.Arg> {
-
+public class AppleResourceDescription implements Description<AppleResourceDescription.Arg>,
+    Flavored {
   public static final BuildRuleType TYPE = BuildRuleType.of("apple_resource");
 
   @Override
@@ -48,14 +53,20 @@ public class AppleResourceDescription implements Description<AppleResourceDescri
 
   @Override
   public <A extends Arg> BuildRule createBuildRule(
+      TargetGraph targetGraph,
       BuildRuleParams params,
       BuildRuleResolver resolver,
       A args) {
     return new NoopBuildRule(params, new SourcePathResolver(resolver));
   }
 
+  @Override
+  public boolean hasFlavors(ImmutableSet<Flavor> flavors) {
+    return true;
+  }
+
   @SuppressFieldNotInitialized
-  public static class Arg {
+  public static class Arg extends AbstractDescriptionArg {
     public Set<SourcePath> dirs;
     public Set<SourcePath> files;
     public Optional<Set<SourcePath>> variants;

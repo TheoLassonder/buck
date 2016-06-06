@@ -19,26 +19,27 @@ package com.facebook.buck.cli;
 import static org.junit.Assert.assertEquals;
 
 import com.facebook.buck.android.FakeAndroidDirectoryResolver;
+import com.facebook.buck.artifact_cache.ArtifactCache;
+import com.facebook.buck.artifact_cache.NoopArtifactCache;
 import com.facebook.buck.event.BuckEventBus;
 import com.facebook.buck.event.BuckEventBusFactory;
 import com.facebook.buck.httpserver.WebServer;
-import com.facebook.buck.java.FakeJavaPackageFinder;
-import com.facebook.buck.java.JavaLibraryBuilder;
+import com.facebook.buck.io.MorePaths;
+import com.facebook.buck.jvm.java.FakeJavaPackageFinder;
+import com.facebook.buck.jvm.java.JavaLibraryBuilder;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
-import com.facebook.buck.rules.ArtifactCache;
-import com.facebook.buck.rules.NoopArtifactCache;
-import com.facebook.buck.rules.Repository;
+import com.facebook.buck.rules.Cell;
 import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.rules.TargetNode;
-import com.facebook.buck.rules.TestRepositoryBuilder;
+import com.facebook.buck.rules.TestCellBuilder;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.facebook.buck.testutil.TargetGraphFactory;
 import com.facebook.buck.testutil.TestConsole;
 import com.facebook.buck.util.HumanReadableException;
+import com.facebook.buck.util.ObjectMappers;
 import com.facebook.buck.util.environment.Platform;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jdk7.Jdk7Module;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableMap;
@@ -68,20 +69,19 @@ public class AuditInputCommandTest {
     projectFilesystem.touch(Paths.get("src/com/facebook/AndroidLibraryTwo.java"));
     projectFilesystem.touch(Paths.get("src/com/facebook/TestAndroidLibrary.java"));
     projectFilesystem.touch(Paths.get("src/com/facebook/TestJavaLibrary.java"));
-    Repository repository = new TestRepositoryBuilder().setFilesystem(projectFilesystem).build();
+    Cell cell = new TestCellBuilder().setFilesystem(projectFilesystem).build();
     ArtifactCache artifactCache = new NoopArtifactCache();
     BuckEventBus eventBus = BuckEventBusFactory.newInstance();
-    ObjectMapper objectMapper = new ObjectMapper();
-    objectMapper.registerModule(new Jdk7Module());
+    ObjectMapper objectMapper = ObjectMappers.newDefaultInstance();
 
     auditInputCommand = new AuditInputCommand();
     params = CommandRunnerParamsForTesting.createCommandRunnerParamsForTesting(
         console,
-        repository,
+        cell,
         new FakeAndroidDirectoryResolver(),
-        new InstanceArtifactCacheFactory(artifactCache),
+        artifactCache,
         eventBus,
-        new FakeBuckConfig(),
+        FakeBuckConfig.builder().build(),
         Platform.detect(),
         ImmutableMap.copyOf(System.getenv()),
         new FakeJavaPackageFinder(),
@@ -91,16 +91,21 @@ public class AuditInputCommandTest {
 
   @Test
   public void testJsonClassPathOutput() throws IOException {
+    ObjectMapper mapper = ObjectMappers.newDefaultInstance();
     final String expectedJson = Joiner.on("").join(
         "{",
         "\"//:test-android-library\":",
         "[",
-        "\"src/com/facebook/AndroidLibraryTwo.java\",",
-        "\"src/com/facebook/TestAndroidLibrary.java\"",
+        mapper.valueToTree(
+            MorePaths.pathWithPlatformSeparators("src/com/facebook/AndroidLibraryTwo.java")),
+        ",",
+        mapper.valueToTree(
+            MorePaths.pathWithPlatformSeparators("src/com/facebook/TestAndroidLibrary.java")),
         "],",
         "\"//:test-java-library\":",
         "[",
-        "\"src/com/facebook/TestJavaLibrary.java\"",
+        mapper.valueToTree(
+            MorePaths.pathWithPlatformSeparators("src/com/facebook/TestJavaLibrary.java")),
         "]",
         "}");
 
@@ -131,7 +136,7 @@ public class AuditInputCommandTest {
     thrown.expect(HumanReadableException.class);
     thrown.expectMessage(
       "Target //:test-java-library refers to non-existent input file: " +
-      "src/com/facebook/NonExistentFile.java");
+          MorePaths.pathWithPlatformSeparators("src/com/facebook/NonExistentFile.java"));
 
     BuildTarget rootTarget = BuildTargetFactory.newInstance("//:test-java-library");
     TargetNode<?> rootNode = JavaLibraryBuilder
@@ -146,6 +151,7 @@ public class AuditInputCommandTest {
 
   @Test
   public void testJsonContainsRulesWithNoFiles() throws IOException {
+    ObjectMapper mapper = ObjectMappers.newDefaultInstance();
     final String expectedJson = Joiner.on("").join(
         "{",
         "\"//:test-exported-dep\":",
@@ -153,7 +159,9 @@ public class AuditInputCommandTest {
         "],",
         "\"//:test-java-library\":",
         "[",
-        "\"src/com/facebook/TestJavaLibrary.java\"",
+        mapper.valueToTree(
+            MorePaths.pathWithPlatformSeparators("src/com/facebook/TestJavaLibrary.java")
+        ),
         "]",
         "}");
 

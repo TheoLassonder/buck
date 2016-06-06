@@ -14,7 +14,7 @@
 {call buck.rule}
 {param status: 'UNFROZEN' /}
 {param overview}
-A <code>python_test()</code> rule is used to define a set of <code>.py</code>
+A <code>python_test()</code> rule is used to define a set of <code>.py</code>{sp}
 files that contain tests to run via the <a href="https://docs.python.org/2/library/unittest.html">Python unit testing framework</a>.
 {/param}
 
@@ -27,30 +27,46 @@ files that contain tests to run via the <a href="https://docs.python.org/2/libra
   {/param}
 {/call}
 
-{call buck.arg}
-  {param name: 'srcs' /}
-  {param default : '[]' /}
-  {param desc}
-  The set of <code>.py</code> files that contain tests.
-  {/param}
-{/call}
+{call python_common.srcs_arg /}
+
+{call python_common.platform_srcs_arg /}
+
+{call python_common.resources_arg /}
+
+{call python_common.platform_resources_arg /}
+
+{call python_common.base_module_arg /}
 
 {call buck.arg}
-  {param name: 'resources' /}
-  {param default : '[]' /}
-  {param desc}
-  Static files to be packaged along with the python sources. These resources can be
-  accessed at runtime using the <a href="https://pythonhosted.org/setuptools/pkg_resources.html">pkg_resources</a> API.
-  {/param}
-{/call}
-
-{call buck.arg}
-  {param name: 'base_module' /}
+  {param name: 'main_module' /}
   {param default : 'None' /}
   {param desc}
-  The package for which the given specified sources and resources should reside in their final
-  location in the top-level binary. If unset, the project relative directory that houses the
-  BUCK file is used.
+  The main module used to run the tests.
+  This parameter is normally not needed, as Buck will provide a default main
+  module that runs all tests.  However, you can override this with your own
+  module to perform custom initialization or command line processing.  Your
+  custom module can import the standard Buck test main
+  as <code>__test_main__</code>, and can invoke it's normal main function
+  as <code>__test_main__.main(sys.argv)</code>.
+  {/param}
+{/call}
+
+{call python_common.platform_arg /}
+
+{call buck.arg}
+  {param name: 'env' /}
+  {{param default : '{}' /}}
+  {param desc}
+  A map of environment names and values to set when running the test.
+  <br><br>
+  It is also possible to expand references to other rules within the <b>values</b> of
+  these environment variables, using builtin {call buck.string_parameter_macros /}:
+  <dl>
+    <dt><code>$(location /&#x2F;path/to:target)</code></dt>
+    <dd>Expands to the location of the output of the build rule. This
+    means that you can refer to these without needing to be aware of how
+    Buck is storing data on the disk mid-build.</dd>
+  </dl>
   {/param}
 {/call}
 
@@ -86,7 +102,13 @@ files that contain tests to run via the <a href="https://docs.python.org/2/libra
   {/param}
 {/call}
 
-{call buck.visibility_arg /}
+{call buck.test_rule_timeout_ms /}
+
+{call python_common.package_style_arg /}
+
+{call python_common.preload_deps_arg /}
+
+{call python_common.linker_flags_arg /}
 
 {/param} // close args
 
@@ -113,6 +135,47 @@ python_library(
   srcs = glob(['fileutil/**/*.py'],
   resources = [
     'testdata.dat',
+  ],
+)
+</pre>{/literal}
+<p>
+Here is an example of using the `platform_srcs` and `platform_resources`
+parameters to pull in sources/resources only when building for a specific
+Python platform:
+</p>
+{literal}<pre class="prettyprint lang-ini">
+; .buckconfig
+[python#py2]
+  interpreter = /usr/bin/python2.7
+[python#py3]
+  interpreter = /usr/bin/python3.4
+</pre>{/literal}
+
+{literal}<pre class="prettyprint lang-py">
+# BUCK
+python_test(
+  name = 'test',
+  platform_srcs = [
+    ('py2', ['foo.py']),
+    ('py3', ['bar.py']),
+  ],
+  platform_resources = [
+    ('py2', ['foo.dat']),
+    ('py3', ['bar.dat']),
+  ],
+)
+</pre>{/literal}
+<p>
+Here is an example of using the `platform` parameter to select the "py2"
+Python platform as defined in `.buckconfig` above:
+</p>
+{literal}<pre class="prettyprint lang-py">
+# BUCK
+python_test(
+  name = 'bin',
+  platform = 'py2',
+  srcs = [
+    'foo.py',
   ],
 )
 </pre>{/literal}

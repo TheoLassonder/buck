@@ -22,8 +22,11 @@ import com.facebook.buck.android.aapt.RDotTxtEntry.RType;
 import com.facebook.buck.event.BuckEventBus;
 import com.facebook.buck.event.ConsoleEvent;
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.util.MoreStrings;
 import com.facebook.buck.util.XmlDomParser;
 import com.google.common.annotations.VisibleForTesting;
@@ -69,6 +72,7 @@ public class MiniAapt implements Step {
 
   private static final String ID_DEFINITION_PREFIX = "@+id/";
   private static final String ITEM_TAG = "item";
+  private static final String CUSTOM_DRAWABLE_PREFIX = "app-";
 
   private static final XPathExpression ANDROID_ID_USAGE =
       createExpression("//@*[starts-with(., '@') and " +
@@ -92,19 +96,43 @@ public class MiniAapt implements Step {
     }
   };
 
-  private final Path resDirectory;
+  private final SourcePathResolver resolver;
+  private final ProjectFilesystem filesystem;
+  private final SourcePath resDirectory;
   private final Path pathToTextSymbolsFile;
   private final ImmutableSet<Path> pathsToSymblolsOfDeps;
   private final AaptResourceCollector resourceCollector;
+  private final boolean resourceUnion;
 
   public MiniAapt(
-      Path resDirectory,
+      SourcePathResolver resolver,
+      ProjectFilesystem filesystem,
+      SourcePath resDirectory,
       Path pathToTextSymbolsFile,
       ImmutableSet<Path> pathsToSymblolsOfDeps) {
+    this(
+        resolver,
+        filesystem,
+        resDirectory,
+        pathToTextSymbolsFile,
+        pathsToSymblolsOfDeps,
+        false);
+  }
+
+  public MiniAapt(
+      SourcePathResolver resolver,
+      ProjectFilesystem filesystem,
+      SourcePath resDirectory,
+      Path pathToTextSymbolsFile,
+      ImmutableSet<Path> pathsToSymblolsOfDeps,
+      boolean resourceUnion) {
+    this.resolver = resolver;
+    this.filesystem = filesystem;
     this.resDirectory = resDirectory;
     this.pathToTextSymbolsFile = pathToTextSymbolsFile;
     this.pathsToSymblolsOfDeps = pathsToSymblolsOfDeps;
     this.resourceCollector = new AaptResourceCollector();
+    this.resourceUnion = resourceUnion;
   }
 
   private static XPathExpression createExpression(String expressionStr) {
@@ -132,8 +160,7 @@ public class MiniAapt implements Step {
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
     ImmutableSet.Builder<RDotTxtEntry> references = ImmutableSet.builder();
 
     try {
@@ -141,22 +168,30 @@ public class MiniAapt implements Step {
       processXmlFilesForIds(filesystem, references);
     } catch (IOException | XPathExpressionException | ResourceParseException e) {
       context.logError(e, "Error parsing resources to generate resource IDs for %s.", resDirectory);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
     try {
       Set<RDotTxtEntry> missing = verifyReferences(filesystem, references.build());
       if (!missing.isEmpty()) {
-        context.logError(
-            new RuntimeException(),
+        context.getBuckEventBus().post(ConsoleEvent.severe(
             "The following resources were not found when processing %s: \n%s\n",
             resDirectory,
-            Joiner.on('\n').join(missing));
-        return 1;
+            Joiner.on('\n').join(missing)));
+        return StepExecutionResult.ERROR;
       }
     } catch (IOException e) {
       context.logError(e, "Error verifying resources for %s.", resDirectory);
-      return 1;
+      return StepExecutionResult.ERROR;
+    }
+
+    if (resourceUnion) {
+      try {
+        resourceUnion();
+      } catch (IOException e) {
+        context.logError(e, "Error performing resource union for %s.", resDirectory);
+        return StepExecutionResult.ERROR;
+      }
     }
 
     try (PrintWriter writer =
@@ -168,10 +203,27 @@ public class MiniAapt implements Step {
       }
     } catch (IOException e) {
       context.logError(e, "Error writing file: %s", pathToTextSymbolsFile);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
-    return 0;
+    return StepExecutionResult.SUCCESS;
+  }
+
+  /**
+   * Collect resource information from R.txt for each dep and perform a resource union.
+   * @throws IOException
+   */
+  public void resourceUnion() throws IOException {
+    for (Path depRTxt : pathsToSymblolsOfDeps) {
+      Iterable<String> lines = FluentIterable.from(filesystem.readLines(depRTxt))
+          .filter(MoreStrings.NON_EMPTY)
+          .toList();
+      for (String line : lines) {
+        Optional<RDotTxtEntry> entry = RDotTxtEntry.parse(line);
+        Preconditions.checkState(entry.isPresent());
+        resourceCollector.addResourceIfNotPresent(entry.get());
+      }
+    }
   }
 
   /**
@@ -202,7 +254,8 @@ public class MiniAapt implements Step {
    */
   private void collectResources(ProjectFilesystem filesystem, BuckEventBus eventBus)
       throws IOException, ResourceParseException {
-    Collection<Path> contents = filesystem.getDirectoryContents(resDirectory);
+    Collection<Path> contents = filesystem.getDirectoryContents(
+        resolver.getAbsolutePath(resDirectory));
     for (Path dir : contents) {
       if (!filesystem.isDirectory(dir) && !filesystem.isIgnored(dir)) {
         if (!shouldIgnoreFile(dir, filesystem)) {
@@ -245,8 +298,40 @@ public class MiniAapt implements Step {
       int dotIndex = filename.indexOf('.');
       String resourceName = dotIndex != -1 ? filename.substring(0, dotIndex) : filename;
 
+      RType rType = Preconditions.checkNotNull(RESOURCE_TYPES.get(dirname));
+      if (rType == RType.DRAWABLE) {
+        processDrawables(filesystem, resourceFile);
+      } else {
+        resourceCollector.addIntResourceIfNotPresent(
+            rType,
+            resourceName);
+      }
+    }
+  }
+
+  void processDrawables(ProjectFilesystem filesystem, Path resourceFile)
+      throws IOException, ResourceParseException {
+    String filename = resourceFile.getFileName().toString();
+    int dotIndex = filename.indexOf('.');
+    String resourceName = dotIndex != -1 ? filename.substring(0, dotIndex) : filename;
+
+    // Look into the XML file.
+    boolean isCustomDrawable = false;
+    if (filename.endsWith(".xml")) {
+      try (InputStream stream = filesystem.newFileInputStream(resourceFile)) {
+        Document dom = parseXml(resourceFile, stream);
+        Element root = dom.getDocumentElement();
+        isCustomDrawable = root.getNodeName().startsWith(CUSTOM_DRAWABLE_PREFIX);
+      }
+    }
+
+    if (isCustomDrawable) {
+      resourceCollector.addCustomDrawableResourceIfNotPresent(
+          RType.DRAWABLE,
+          resourceName);
+    } else {
       resourceCollector.addIntResourceIfNotPresent(
-          Preconditions.checkNotNull(RESOURCE_TYPES.get(dirname)),
+          RType.DRAWABLE,
           resourceName);
     }
   }
@@ -294,6 +379,14 @@ public class MiniAapt implements Step {
     try (InputStream stream = filesystem.newFileInputStream(valuesFile)) {
       Document dom = parseXml(valuesFile, stream);
       Element root = dom.getDocumentElement();
+
+      // Exclude resources annotated with the attribute {@code exclude-from-resource-map}.
+      // This is useful to exclude using generated strings to build the
+      // resource map, which ensures a build break will show up at build time
+      // rather than being hidden until generated resources are updated.
+      if (root.getAttribute("exclude-from-buck-resource-map").equals("true")) {
+        return;
+      }
 
       for (Node node = root.getFirstChild(); node != null; node = node.getNextSibling()) {
         if (node.getNodeType() != Node.ELEMENT_NODE) {
@@ -368,8 +461,10 @@ public class MiniAapt implements Step {
       ProjectFilesystem filesystem,
       ImmutableSet.Builder<RDotTxtEntry> references)
       throws IOException, XPathExpressionException, ResourceParseException {
-    for (Path path : filesystem.getFilesUnderPath(resDirectory, ENDS_WITH_XML)) {
-      String dirname = resDirectory.relativize(path).getName(0).toString();
+    Path absoluteResDir = resolver.getAbsolutePath(resDirectory);
+    Path relativeResDir = resolver.getRelativePath(resDirectory);
+    for (Path path : filesystem.getFilesUnderPath(absoluteResDir, ENDS_WITH_XML)) {
+      String dirname = relativeResDir.relativize(path).getName(0).toString();
       if (isAValuesDir(dirname)) {
         // Ignore files under values* directories.
         continue;
@@ -404,9 +499,10 @@ public class MiniAapt implements Step {
           (NodeList) ANDROID_ID_USAGE.evaluate(dom, XPathConstants.NODESET);
       for (int i = 0; i < nodesUsingIds.getLength(); i++) {
         String resourceName = nodesUsingIds.item(i).getNodeValue();
-        Preconditions.checkState(resourceName.charAt(0) == '@');
         int slashPosition = resourceName.indexOf('/');
-        Preconditions.checkState(slashPosition != -1);
+        if (resourceName.charAt(0) != '@' || slashPosition == -1) {
+          throw new ResourceParseException("Invalid definition of a resource: '%s'", resourceName);
+        }
 
         String rawRType = resourceName.substring(1, slashPosition);
         String name = resourceName.substring(slashPosition + 1);

@@ -32,7 +32,7 @@ public class PrebuiltCxxLibraryBuilder
   public PrebuiltCxxLibraryBuilder(
       BuildTarget target,
       FlavorDomain<CxxPlatform> cxxPlatforms) {
-    super(new PrebuiltCxxLibraryDescription(cxxPlatforms), target);
+    super(new PrebuiltCxxLibraryDescription(CxxPlatformUtils.DEFAULT_CONFIG, cxxPlatforms), target);
   }
 
   public PrebuiltCxxLibraryBuilder(BuildTarget target) {
@@ -54,18 +54,29 @@ public class PrebuiltCxxLibraryBuilder
     return this;
   }
 
+  public PrebuiltCxxLibraryBuilder setLinkWithoutSoname(boolean linkWithoutSoname) {
+    arg.linkWithoutSoname = Optional.of(linkWithoutSoname);
+    return this;
+  }
+
   public PrebuiltCxxLibraryBuilder setExportedHeaders(SourceList exportedHeaders) {
     arg.exportedHeaders = Optional.of(exportedHeaders);
     return this;
   }
 
   public PrebuiltCxxLibraryBuilder setExportedPlatformHeaders(
-      CxxPlatform cxxPlatform,
-      SourceList exportedHeaders) {
-    arg.exportedPlatformHeaders = Optional.of(PatternMatchedCollection.<SourceList>builder()
-            .add(Pattern.compile(cxxPlatform.getFlavor().toString()), exportedHeaders)
-            .build());
+      PatternMatchedCollection<SourceList> collection) {
+    arg.exportedPlatformHeaders = Optional.of(collection);
     return this;
+  }
+
+  public PrebuiltCxxLibraryBuilder setExportedPlatformHeaders(
+      String cxxPlatform,
+      SourceList exportedHeaders) {
+    return setExportedPlatformHeaders(
+        PatternMatchedCollection.<SourceList>builder()
+            .add(Pattern.compile(cxxPlatform), exportedHeaders)
+            .build());
   }
 
   public PrebuiltCxxLibraryBuilder setHeaderNamespace(String headerNamespace) {
@@ -83,7 +94,7 @@ public class PrebuiltCxxLibraryBuilder
     return this;
   }
 
-  public PrebuiltCxxLibraryBuilder setLinkerFlags(ImmutableList<String> linkerFlags) {
+  public PrebuiltCxxLibraryBuilder setExportedLinkerFlags(ImmutableList<String> linkerFlags) {
     arg.exportedLinkerFlags = Optional.of(linkerFlags);
     return this;
   }
@@ -100,6 +111,21 @@ public class PrebuiltCxxLibraryBuilder
 
   public PrebuiltCxxLibraryBuilder setDeps(ImmutableSortedSet<BuildTarget> deps) {
     arg.deps = Optional.of(deps);
+    return this;
+  }
+
+  public PrebuiltCxxLibraryBuilder setForceStatic(boolean forceStatic) {
+    arg.forceStatic = Optional.of(forceStatic);
+    return this;
+  }
+
+  public PrebuiltCxxLibraryBuilder setExportedDeps(ImmutableSortedSet<BuildTarget> exportedDeps) {
+    arg.exportedDeps = Optional.of(exportedDeps);
+    return this;
+  }
+
+  public PrebuiltCxxLibraryBuilder setSupportedPlatformsRegex(Pattern supportedPlatformsRegex) {
+    arg.supportedPlatformsRegex = Optional.of(supportedPlatformsRegex);
     return this;
   }
 

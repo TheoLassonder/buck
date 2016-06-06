@@ -20,12 +20,12 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.eclipse.aether.util.artifact.JavaScopes.TEST;
 
 import com.facebook.buck.graph.MutableDirectedGraph;
+import com.facebook.buck.io.MorePaths;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicates;
-import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -194,7 +194,7 @@ public class Resolver {
 
     Path relativePath = resolveArtifact(jar, repoSys, session, project);
 
-    Prebuilt library = new Prebuilt(jar.getArtifactId(), relativePath);
+    Prebuilt library = new Prebuilt(jar.getArtifactId(), jar.toString(), relativePath);
 
     downloadSources(jar, repoSys, session, project, library);
     return library;
@@ -232,7 +232,7 @@ public class Resolver {
     try {
       artifactToDownloadVersion = versionScheme.parseVersion(artifactToDownload.getVersion());
     } catch (InvalidVersionSpecificationException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
     }
 
     final Pattern versionExtractor = Pattern.compile(
@@ -252,7 +252,7 @@ public class Resolver {
               try {
                 return versionScheme.parseVersion(matcher.group(1));
               } catch (InvalidVersionSpecificationException e) {
-                throw Throwables.propagate(e);
+                throw new RuntimeException(e);
               }
             } else {
               return null;
@@ -360,7 +360,7 @@ public class Resolver {
           continue;
         }
 
-        // TODO(simons): Do we always want optional dependencies?
+        // TODO(shs96c): Do we always want optional dependencies?
 //        if (dependency.isOptional()) {
 //          continue;
 //        }
@@ -405,28 +405,6 @@ public class Resolver {
     for (String coord : mavenCoords) {
       DefaultArtifact artifact = new DefaultArtifact(coord);
       collectRequest.addDependency(new Dependency(artifact, JavaScopes.RUNTIME));
-
-      ArtifactDescriptorRequest descriptorRequest = new ArtifactDescriptorRequest();
-      descriptorRequest.setArtifact(artifact);
-      // Setting this appears to have exactly zero effect on the returned values. *sigh*
-//      descriptorRequest.setRequestContext(JavaScopes.RUNTIME);
-      descriptorRequest.setRepositories(repos);
-      ArtifactDescriptorResult descriptorResult = repoSys.readArtifactDescriptor(
-          session,
-          descriptorRequest);
-
-      for (Dependency dependency : descriptorResult.getDependencies()) {
-        if (isTestTime(dependency)) {
-          continue;
-        }
-        collectRequest.addDependency(dependency);
-      }
-      for (Dependency dependency : descriptorResult.getManagedDependencies()) {
-        if (isTestTime(dependency)) {
-          continue;
-        }
-        collectRequest.addManagedDependency(dependency);
-      }
     }
 
     DependencyFilter filter = DependencyFilterUtils.classpathFilter(JavaScopes.RUNTIME);
@@ -488,19 +466,26 @@ public class Resolver {
   private static class Prebuilt implements Comparable<Prebuilt> {
 
     private final String name;
+    private final String mavenCoords;
     private final Path binaryJar;
-    private Path sourceJar;
+    @Nullable private Path sourceJar;
     private final SortedSet<String> deps = new TreeSet<>(new BuckDepComparator());
     private final SortedSet<String> visibilities = new TreeSet<>(new BuckDepComparator());
 
-    public Prebuilt(String name, Path binaryJar) {
+    public Prebuilt(String name, String mavenCoords, Path binaryJar) {
       this.name = name;
+      this.mavenCoords = mavenCoords;
       this.binaryJar = binaryJar;
     }
 
     @SuppressWarnings("unused") // This method is read reflectively.
     public String getName() {
       return name;
+    }
+
+    @SuppressWarnings("unused") // This method is read reflectively.
+    public String getMavenCoords() {
+      return mavenCoords;
     }
 
     @SuppressWarnings("unused") // This method is read reflectively.
@@ -512,7 +497,7 @@ public class Resolver {
       this.sourceJar = sourceJar;
     }
 
-    @SuppressWarnings("unused") // This method is read reflectively.
+    @Nullable
     public Path getSourceJar() {
       return sourceJar;
     }
@@ -540,7 +525,7 @@ public class Resolver {
     private String formatDep(Path buckThirdPartyRelativePath, Artifact artifact) {
       return String.format(
           "//%s/%s:%s",
-          buckThirdPartyRelativePath,
+          MorePaths.pathWithUnixSeparators(buckThirdPartyRelativePath),
           getProjectName(artifact),
           artifact.getArtifactId());
     }
@@ -552,6 +537,10 @@ public class Resolver {
 
     @Override
     public int compareTo(Prebuilt that) {
+      if (this == that) {
+        return 0;
+      }
+
       return this.name.compareTo(that.name);
     }
   }

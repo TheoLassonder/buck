@@ -16,11 +16,14 @@
 
 package com.facebook.buck.rules;
 
+import static com.facebook.buck.rules.TestCellBuilder.createCellRoots;
 import static org.junit.Assert.assertEquals;
 
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.rules.coercer.DefaultTypeCoercerFactory;
 import com.facebook.buck.rules.coercer.TypeCoercerFactory;
 import com.facebook.buck.testutil.FakeProjectFilesystem;
+import com.facebook.buck.util.ObjectMappers;
 import com.google.common.base.Optional;
 
 import org.junit.Test;
@@ -32,7 +35,8 @@ import java.nio.file.Paths;
 public class ParamInfoTest {
 
   private Path testPath = Paths.get("path");
-  private TypeCoercerFactory typeCoercerFactory = new TypeCoercerFactory();
+  private TypeCoercerFactory typeCoercerFactory = new DefaultTypeCoercerFactory(
+      ObjectMappers.newDefaultInstance());
 
   @Test
   public void shouldReportWildcardsWithUpperBoundsAsUpperBound() throws NoSuchFieldException {
@@ -42,7 +46,7 @@ public class ParamInfoTest {
     }
 
     Field field = Example.class.getField("path");
-    ParamInfo<?> info = new ParamInfo<Object>(typeCoercerFactory, field);
+    ParamInfo info = new ParamInfo(typeCoercerFactory, field);
 
     Class<?> type = info.getResultClass();
     assertEquals(SourcePath.class, type);
@@ -56,7 +60,7 @@ public class ParamInfoTest {
     }
 
     Field field = Example.class.getField("path");
-    ParamInfo<?> info = new ParamInfo<Object>(typeCoercerFactory, field);
+    ParamInfo info = new ParamInfo(typeCoercerFactory, field);
 
     Class<?> type = info.getResultClass();
     assertEquals(SourcePath.class, type);
@@ -70,7 +74,7 @@ public class ParamInfoTest {
     }
 
     Field field = Example.class.getField("bad");
-    new ParamInfo<Object>(typeCoercerFactory, field);
+    new ParamInfo(typeCoercerFactory, field);
   }
 
   @Test(expected = IllegalArgumentException.class)
@@ -81,7 +85,7 @@ public class ParamInfoTest {
     }
 
     Field field = Example.class.getField("bad");
-    new ParamInfo<Object>(typeCoercerFactory, field);
+    new ParamInfo(typeCoercerFactory, field);
   }
 
   @Test
@@ -94,12 +98,12 @@ public class ParamInfoTest {
       public String notDefaultName;
     }
 
-    ParamInfo<?> info;
+    ParamInfo info;
 
-    info = new ParamInfo<Object>(typeCoercerFactory, Example.class.getField("isDefaultName"));
+    info = new ParamInfo(typeCoercerFactory, Example.class.getField("isDefaultName"));
     assertEquals("is_default_name", info.getPythonName());
 
-    info = new ParamInfo<Object>(typeCoercerFactory, Example.class.getField("notDefaultName"));
+    info = new ParamInfo(typeCoercerFactory, Example.class.getField("notDefaultName"));
     assertEquals("not_the_default_name_123", info.getPythonName());
   }
 
@@ -112,15 +116,15 @@ public class ParamInfoTest {
 
     ProjectFilesystem filesystem = new FakeProjectFilesystem();
 
-    ParamInfo<?> info = new ParamInfo<Object>(typeCoercerFactory, Example.class.getField("field"));
+    ParamInfo info = new ParamInfo(typeCoercerFactory, Example.class.getField("field"));
 
-    info.set(filesystem, testPath, example, null);
+    info.set(createCellRoots(filesystem), filesystem, testPath, example, null);
     assertEquals(Optional.<String>absent(), example.field);
 
-    info.set(filesystem, testPath, example, "");
+    info.set(createCellRoots(filesystem), filesystem, testPath, example, "");
     assertEquals(Optional.of(""), example.field);
 
-    info.set(filesystem, testPath, example, "foo");
+    info.set(createCellRoots(filesystem), filesystem, testPath, example, "foo");
     assertEquals(Optional.of("foo"), example.field);
   }
 }

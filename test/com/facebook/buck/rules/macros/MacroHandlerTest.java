@@ -16,21 +16,25 @@
 
 package com.facebook.buck.rules.macros;
 
+import static com.facebook.buck.rules.TestCellBuilder.createCellRoots;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import com.facebook.buck.model.MacroException;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.jvm.java.JavaLibraryBuilder;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.testutil.TargetGraphFactory;
 import com.google.common.collect.ImmutableMap;
 
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
-
-import java.io.IOException;
 
 public class MacroHandlerTest {
 
@@ -42,22 +46,31 @@ public class MacroHandlerTest {
   private BuildRuleResolver resolver;
 
   @Before
-  public void before() throws IOException {
+  public void before() throws Exception {
     filesystem = new ProjectFilesystem(tmp.newFolder().toPath());
     target = BuildTargetFactory.newInstance("//:test");
-    resolver = new BuildRuleResolver();
+    JavaLibraryBuilder builder = JavaLibraryBuilder.createBuilder(target);
+    resolver =
+        new BuildRuleResolver(
+            TargetGraphFactory.newInstance(builder.build()),
+            new DefaultTargetNodeToBuildRuleTransformer());
+    builder.build(resolver, filesystem);
   }
 
   @Test
   public void noSuchMacro() {
     MacroHandler handler = new MacroHandler(ImmutableMap.<String, MacroExpander>of());
     try {
-      handler.expand(target, resolver, filesystem, "$(badmacro hello)");
+      handler.expand(
+          target,
+          createCellRoots(filesystem),
+          resolver,
+          "$(badmacro hello)");
     } catch (MacroException e) {
       assertTrue(e.getMessage().contains("no such macro \"badmacro\""));
     }
     try {
-      handler.extractParseTimeDeps(target, "$(badmacro hello)");
+      handler.extractParseTimeDeps(target, createCellRoots(filesystem), "$(badmacro hello)");
     } catch (MacroException e) {
       assertTrue(e.getMessage().contains("no such macro \"badmacro\""));
     }
@@ -67,7 +80,11 @@ public class MacroHandlerTest {
   public void escapeMacro() throws MacroException {
     MacroHandler handler = new MacroHandler(ImmutableMap.<String, MacroExpander>of());
     String raw = "hello \\$(notamacro hello)";
-    String expanded = handler.expand(target, resolver, filesystem, raw);
+    String expanded = handler.expand(
+        target,
+        createCellRoots(filesystem),
+        resolver,
+        raw);
     assertEquals("hello $(notamacro hello)", expanded);
   }
 
@@ -75,9 +92,28 @@ public class MacroHandlerTest {
   public void automaticallyAddsOutputToFileVariant() throws MacroException {
     MacroHandler handler =
         new MacroHandler(ImmutableMap.<String, MacroExpander>of("foo", new StringExpander("cake")));
-    String expanded = handler.expand(target, resolver, filesystem, "Hello $(@foo //:test)");
+    String expanded = handler.expand(
+        target,
+        createCellRoots(filesystem),
+        resolver,
+        "Hello $(@foo //:test)");
 
     assertTrue(expanded, expanded.startsWith("Hello @"));
   }
 
+  @Test
+  public void testContainsWorkerMacroReturnsTrue() throws MacroException {
+    MacroHandler handler = new MacroHandler(
+        ImmutableMap.<String, MacroExpander>of("worker", new WorkerMacroExpander()));
+    assertTrue(handler.containsWorkerMacro("$(worker :rule)"));
+  }
+
+  @Test
+  public void testContainsWorkerMacroReturnsFalse() throws MacroException {
+    MacroHandler handler =
+        new MacroHandler(ImmutableMap.<String, MacroExpander>of(
+            "worker", new WorkerMacroExpander(),
+            "exe", new ExecutableMacroExpander()));
+    assertFalse(handler.containsWorkerMacro("$(exe :rule) not a worker macro in sight"));
+  }
 }

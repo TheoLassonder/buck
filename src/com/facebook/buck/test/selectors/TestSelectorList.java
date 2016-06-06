@@ -31,7 +31,7 @@ import java.util.List;
  */
 public class TestSelectorList {
 
-  private static final TestSelectorList EMPTY = TestSelectorList.builder().build();
+  public static final TestSelectorList EMPTY = TestSelectorList.builder().build();
 
   /**
    * Test selector strings are parsed in two places: (i) by "buck test" when it is first run, to
@@ -134,7 +134,7 @@ public class TestSelectorList {
           }
           File file = new File(pathString);
           loadFromFile(file);
-        } catch (TestSelectorParseException|IOException e) {
+        } catch (TestSelectorParseException | IOException e) {
           String message = String.format("Error with test-selector '%s': %s",
               rawSelector, e.getMessage());
           throw new RuntimeException(message, e);

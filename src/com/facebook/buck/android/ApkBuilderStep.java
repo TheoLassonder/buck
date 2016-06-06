@@ -21,8 +21,10 @@ import com.android.sdklib.build.ApkCreationException;
 import com.android.sdklib.build.DuplicateFileException;
 import com.android.sdklib.build.SealedApkException;
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.jvm.java.JavaRuntimeLauncher;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.util.HumanReadableException;
 import com.facebook.buck.util.KeystoreProperties;
 import com.google.common.base.Joiner;
@@ -32,7 +34,6 @@ import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
@@ -61,6 +62,7 @@ public class ApkBuilderStep implements Step {
    */
   private static final String JARSIGNER_KEY_STORE_TYPE = "jks";
 
+  private final ProjectFilesystem filesystem;
   private final Path resourceApk;
   private final Path dexFile;
   private final Path pathToOutputApkFile;
@@ -71,6 +73,7 @@ public class ApkBuilderStep implements Step {
   private final Path pathToKeystore;
   private final Path pathToKeystorePropertiesFile;
   private final boolean debugMode;
+  private final JavaRuntimeLauncher javaRuntimeLauncher;
 
   /**
    *
@@ -86,6 +89,7 @@ public class ApkBuilderStep implements Step {
    *     information about the keystore used to sign the APK.
    */
   public ApkBuilderStep(
+      ProjectFilesystem filesystem,
       Path resourceApk,
       Path pathToOutputApkFile,
       Path dexFile,
@@ -95,7 +99,9 @@ public class ApkBuilderStep implements Step {
       ImmutableSet<Path> jarFilesThatMayContainResources,
       Path pathToKeystore,
       Path pathToKeystorePropertiesFile,
-      boolean debugMode) {
+      boolean debugMode,
+      JavaRuntimeLauncher javaRuntimeLauncher) {
+    this.filesystem = filesystem;
     this.resourceApk = resourceApk;
     this.pathToOutputApkFile = pathToOutputApkFile;
     this.dexFile = dexFile;
@@ -106,77 +112,76 @@ public class ApkBuilderStep implements Step {
     this.pathToKeystore = pathToKeystore;
     this.pathToKeystorePropertiesFile = pathToKeystorePropertiesFile;
     this.debugMode = debugMode;
+    this.javaRuntimeLauncher = javaRuntimeLauncher;
   }
 
   @Override
-  public int execute(ExecutionContext context) throws IOException {
+  public StepExecutionResult execute(ExecutionContext context) throws IOException {
     PrintStream output = null;
     if (context.getVerbosity().shouldUseVerbosityFlagIfAvailable()) {
       output = context.getStdOut();
     }
 
-    ProjectFilesystem projectFilesystem = context.getProjectFilesystem();
     try {
-      PrivateKeyAndCertificate privateKeyAndCertificate = createKeystoreProperties(context);
+      PrivateKeyAndCertificate privateKeyAndCertificate = createKeystoreProperties();
       ApkBuilder builder = new ApkBuilder(
-          projectFilesystem.getFileForRelativePath(pathToOutputApkFile),
-          projectFilesystem.getFileForRelativePath(resourceApk),
-          projectFilesystem.getFileForRelativePath(dexFile),
+          filesystem.getPathForRelativePath(pathToOutputApkFile).toFile(),
+          filesystem.getPathForRelativePath(resourceApk).toFile(),
+          filesystem.getPathForRelativePath(dexFile).toFile(),
           privateKeyAndCertificate.privateKey,
           privateKeyAndCertificate.certificate,
           output);
       builder.setDebugMode(debugMode);
       for (Path nativeLibraryDirectory : nativeLibraryDirectories) {
         builder.addNativeLibraries(
-            projectFilesystem.getFileForRelativePath(nativeLibraryDirectory));
+            filesystem.getPathForRelativePath(nativeLibraryDirectory).toFile());
       }
       for (Path assetDirectory : assetDirectories) {
-        builder.addSourceFolder(projectFilesystem.getFileForRelativePath(assetDirectory));
+        builder.addSourceFolder(filesystem.getPathForRelativePath(assetDirectory).toFile());
       }
       for (Path zipFile : zipFiles) {
         // TODO(natthu): Skipping silently is bad. These should really be assertions.
-        if (projectFilesystem.exists(zipFile) && projectFilesystem.isFile(zipFile)) {
-          builder.addZipFile(projectFilesystem.getFileForRelativePath(zipFile));
+        if (filesystem.exists(zipFile) && filesystem.isFile(zipFile)) {
+          builder.addZipFile(filesystem.getPathForRelativePath(zipFile).toFile());
         }
       }
       for (Path jarFileThatMayContainResources : jarFilesThatMayContainResources) {
-        File jarFile  = projectFilesystem.getFileForRelativePath(jarFileThatMayContainResources);
-        builder.addResourcesFromJar(jarFile);
+        Path jarFile  = filesystem.getPathForRelativePath(jarFileThatMayContainResources);
+        builder.addResourcesFromJar(jarFile.toFile());
       }
 
       // Build the APK
       builder.sealApk();
-    } catch (ApkCreationException
-        | CertificateException
-        | IOException
-        | KeyStoreException
-        | NoSuchAlgorithmException
-        | SealedApkException
-        | UnrecoverableKeyException e) {
+    } catch (ApkCreationException |
+            CertificateException |
+            IOException |
+            KeyStoreException |
+            NoSuchAlgorithmException |
+            SealedApkException |
+            UnrecoverableKeyException e) {
       context.logError(e, "Error when creating APK at: %s.", pathToOutputApkFile);
       Throwables.propagateIfInstanceOf(e, IOException.class);
-      return 1;
+      return StepExecutionResult.ERROR;
     } catch (DuplicateFileException e) {
       throw new HumanReadableException(
           String.format("Found duplicate file for APK: %1$s\nOrigin 1: %2$s\nOrigin 2: %3$s",
               e.getArchivePath(), e.getFile1(), e.getFile2()));
     }
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
-  private PrivateKeyAndCertificate createKeystoreProperties(ExecutionContext context)
+  private PrivateKeyAndCertificate createKeystoreProperties()
       throws CertificateException,
           IOException,
           KeyStoreException,
           NoSuchAlgorithmException,
           UnrecoverableKeyException {
-    ProjectFilesystem projectFilesystem = context.getProjectFilesystem();
     KeystoreProperties keystoreProperties = KeystoreProperties.createFromPropertiesFile(
         pathToKeystore,
         pathToKeystorePropertiesFile,
-        projectFilesystem);
+        filesystem);
     KeyStore keystore = KeyStore.getInstance(JARSIGNER_KEY_STORE_TYPE);
-    InputStream inputStream = projectFilesystem.getInputStreamForRelativePath(pathToKeystore);
+    InputStream inputStream = filesystem.getInputStreamForRelativePath(pathToKeystore);
     char[] keystorePassword = keystoreProperties.getStorepass().toCharArray();
     try {
       keystore.load(inputStream, keystorePassword);
@@ -187,6 +192,15 @@ public class ApkBuilderStep implements Step {
     String alias = keystoreProperties.getAlias();
     char[] keyPassword = keystoreProperties.getKeypass().toCharArray();
     Key key = keystore.getKey(alias, keyPassword);
+    // key can be null if alias/password is incorrect.
+    if (key == null) {
+      throw new HumanReadableException(
+          "The keystore [%s] key.alias [%s] does not exist or does not identify a key-related " +
+              "entry",
+          pathToKeystore,
+          alias);
+    }
+
     Certificate certificate = keystore.getCertificate(alias);
 
     return new PrivateKeyAndCertificate((PrivateKey) key, (X509Certificate) certificate);
@@ -201,9 +215,9 @@ public class ApkBuilderStep implements Step {
   public String getDescription(ExecutionContext context) {
     ImmutableList.Builder<String> args = ImmutableList.builder();
     args.add(
-        "java",
+        javaRuntimeLauncher.getCommand(),
         "-classpath",
-        // TODO(mbolin): Make the directory that corresponds to $ANDROID_HOME a field that is
+        // TODO(bolinfest): Make the directory that corresponds to $ANDROID_HOME a field that is
         // accessible via an AndroidPlatformTarget and insert that here in place of "$ANDROID_HOME".
         "$ANDROID_HOME/tools/lib/sdklib.jar",
         "com.android.sdklib.build.ApkBuilderMain");

@@ -16,15 +16,18 @@
 
 package com.facebook.buck.d;
 
-import com.facebook.buck.rules.Tool;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTargets;
+import com.facebook.buck.rules.AbstractBuildRule;
+import com.facebook.buck.rules.BuildableContext;
 import com.facebook.buck.rules.BuildContext;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildableProperties;
+import com.facebook.buck.rules.ExternalTestRunnerRule;
+import com.facebook.buck.rules.ExternalTestRunnerTestSpec;
+import com.facebook.buck.rules.HasRuntimeDeps;
 import com.facebook.buck.rules.Label;
-import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.rules.TestRule;
 import com.facebook.buck.step.ExecutionContext;
@@ -33,9 +36,11 @@ import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
 import com.facebook.buck.test.TestCaseSummary;
 import com.facebook.buck.test.TestResultSummary;
 import com.facebook.buck.test.TestResults;
+import com.facebook.buck.test.TestRunningOptions;
 import com.facebook.buck.test.result.type.ResultType;
-import com.facebook.buck.test.selectors.TestSelectorList;
 import com.google.common.base.Functions;
+import com.google.common.base.Optional;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -49,30 +54,37 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @SuppressWarnings("PMD.TestClassWithoutTestCases")
-public class DTest extends DLinkable implements TestRule {
+public class DTest extends AbstractBuildRule implements
+    ExternalTestRunnerRule,
+    HasRuntimeDeps,
+    TestRule {
   private ImmutableSortedSet<String> contacts;
   private ImmutableSortedSet<Label> labels;
   private ImmutableSet<BuildRule> sourceUnderTest;
+  private final BuildRule testBinaryBuildRule;
+  private final Optional<Long> testRuleTimeoutMs;
 
   public DTest(
       BuildRuleParams params,
       SourcePathResolver resolver,
-      ImmutableList<SourcePath> inputs,
+      BuildRule testBinaryBuildRule,
       ImmutableSortedSet<String> contacts,
       ImmutableSortedSet<Label> labels,
-      ImmutableSet<BuildRule> sourceUnderTest,
-      Tool compiler) {
-    super(
-        params,
-        resolver,
-        inputs,
-        ImmutableList.of("-unittest"),
-        BuildTargets.getGenPath(
-            params.getBuildTarget(), "%s/" + params.getBuildTarget().getShortName()),
-        compiler);
+      Optional<Long> testRuleTimeoutMs,
+      ImmutableSet<BuildRule> sourceUnderTest) {
+    super(params, resolver);
     this.contacts = contacts;
     this.labels = labels;
     this.sourceUnderTest = sourceUnderTest;
+    this.testRuleTimeoutMs = testRuleTimeoutMs;
+    this.testBinaryBuildRule = testBinaryBuildRule;
+  }
+
+  @Override
+  public ImmutableList<Step> getBuildSteps(
+      BuildContext context,
+      BuildableContext buildableContext) {
+    return ImmutableList.of();
   }
 
   @Override
@@ -81,7 +93,8 @@ public class DTest extends DLinkable implements TestRule {
   }
 
   public ImmutableList<String> getExecutableCommand(ProjectFilesystem projectFilesystem) {
-    return ImmutableList.of(projectFilesystem.resolve(getPathToOutput()).toString());
+    return ImmutableList.of(
+        projectFilesystem.resolve(getPathToOutput()).toString());
   }
 
   @Override
@@ -106,6 +119,7 @@ public class DTest extends DLinkable implements TestRule {
   @Override
   public Path getPathToTestOutputDirectory() {
     return BuildTargets.getGenPath(
+        getProjectFilesystem(),
         getBuildTarget(),
         "__test_%s_output__");
   }
@@ -115,9 +129,8 @@ public class DTest extends DLinkable implements TestRule {
     return new BuildableProperties(BuildableProperties.Kind.TEST);
   }
 
-  private ImmutableList<String> getShellCommand(
-      ExecutionContext context) {
-    return getExecutableCommand(context.getProjectFilesystem());
+  private ImmutableList<String> getShellCommand() {
+    return getExecutableCommand(getProjectFilesystem());
   }
 
   @Override
@@ -126,9 +139,8 @@ public class DTest extends DLinkable implements TestRule {
   }
 
   @Override
-  public boolean hasTestResultFiles(ExecutionContext executionContext) {
-    ProjectFilesystem filesystem = executionContext.getProjectFilesystem();
-    return filesystem.isFile(getPathToTestOutput());
+  public boolean hasTestResultFiles() {
+    return getProjectFilesystem().isFile(getPathToTestOutput());
   }
 
   @Override
@@ -145,7 +157,7 @@ public class DTest extends DLinkable implements TestRule {
         try {
           int exitCode = Integer.parseInt(
               new String(Files.readAllBytes(
-                  executionContext.getProjectFilesystem().resolve(
+                  getProjectFilesystem().resolve(
                       getPathToTestExitCode()))));
           if (exitCode == 0) {
             resultType = ResultType.SUCCESS;
@@ -155,7 +167,7 @@ public class DTest extends DLinkable implements TestRule {
           resultType = ResultType.FAILURE;
         }
 
-        String testOutput = executionContext.getProjectFilesystem().readFileIfItExists(
+        String testOutput = getProjectFilesystem().readFileIfItExists(
             getPathToTestOutput()).or("");
         String message = "";
         String stackTrace = "";
@@ -189,9 +201,9 @@ public class DTest extends DLinkable implements TestRule {
             testOutput,
             /* stderr */ "");
 
-        return new TestResults(
+        return TestResults.of(
             getBuildTarget(),
-            ImmutableList.<TestCaseSummary>of(
+            ImmutableList.of(
                 new TestCaseSummary(
                     "main",
                     ImmutableList.of(summary))
@@ -204,20 +216,19 @@ public class DTest extends DLinkable implements TestRule {
 
   @Override
   public ImmutableList<Step> runTests(
-      BuildContext buildContext,
       ExecutionContext executionContext,
-      boolean isDryRun,
-      boolean isShufflingTests,
-      TestSelectorList testSelectorList,
-      TestRule.TestReportingCallback testReportingCallback) {
-    if (isDryRun) {
+      TestRunningOptions options,
+      TestReportingCallback testReportingCallback) {
+    if (options.isDryRun()) {
       return ImmutableList.of();
     } else {
       return ImmutableList.of(
-          new MakeCleanDirectoryStep(getPathToTestOutputDirectory()),
+          new MakeCleanDirectoryStep(getProjectFilesystem(), getPathToTestOutputDirectory()),
           new DTestStep(
-              getShellCommand(executionContext),
+              getProjectFilesystem(),
+              getShellCommand(),
               getPathToTestExitCode(),
+              testRuleTimeoutMs,
               getPathToTestOutput()));
     }
   }
@@ -231,4 +242,30 @@ public class DTest extends DLinkable implements TestRule {
   public boolean supportsStreamingTests() {
     return false;
   }
+
+  @Override
+  public ExternalTestRunnerTestSpec getExternalTestRunnerSpec(
+      ExecutionContext executionContext,
+      TestRunningOptions testRunningOptions) {
+    return ExternalTestRunnerTestSpec.builder()
+        .setTarget(getBuildTarget())
+        .setType("dunit")
+        .setCommand(getShellCommand())
+        .setLabels(getLabels())
+        .setContacts(getContacts())
+        .build();
+  }
+
+  @Override
+  public Path getPathToOutput() {
+    return Preconditions.checkNotNull(testBinaryBuildRule.getPathToOutput());
+  }
+
+  @Override
+  public ImmutableSortedSet<BuildRule> getRuntimeDeps() {
+    // Return the actual executable as a runtime dependency.
+    // Without this, the file is not written when we get a cache hit.
+    return ImmutableSortedSet.of(testBinaryBuildRule);
+  }
+
 }

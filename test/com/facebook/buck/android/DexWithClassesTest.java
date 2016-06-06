@@ -19,34 +19,38 @@ package com.facebook.buck.android;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
-import com.facebook.buck.java.FakeJavaLibrary;
-import com.facebook.buck.java.JavaLibrary;
+import com.facebook.buck.jvm.java.FakeJavaLibrary;
+import com.facebook.buck.jvm.java.JavaLibrary;
 import com.facebook.buck.model.BuildTarget;
-import com.facebook.buck.model.ImmutableFlavor;
+import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
+import com.google.common.base.Optional;
+import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.hash.HashCode;
 
 import org.junit.Test;
 
-import java.nio.file.Paths;
-
 public class DexWithClassesTest {
 
   @Test
   public void testIntermediateDexRuleToDexWithClasses() {
-    SourcePathResolver resolver = new SourcePathResolver(new BuildRuleResolver());
-    BuildTarget javaLibraryTarget = BuildTarget.builder("//java/com/example", "lib").build();
+        SourcePathResolver resolver =
+ new SourcePathResolver(
+         new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+     );
+    BuildTarget javaLibraryTarget = BuildTargetFactory.newInstance("//java/com/example:lib");
     JavaLibrary javaLibrary = new FakeJavaLibrary(javaLibraryTarget, resolver);
 
-    BuildTarget buildTarget = BuildTarget
-        .builder("//java/com/example", "lib")
-        .addFlavors(ImmutableFlavor.of("dex"))
-        .build();
+    BuildTarget buildTarget = BuildTargetFactory.newInstance("//java/com/example:lib#dex");
     BuildRuleParams params = new FakeBuildRuleParamsBuilder(buildTarget).build();
     DexProducedFromJavaLibrary dexFromJavaLibrary =
         new DexProducedFromJavaLibrary(params, resolver, javaLibrary);
@@ -55,10 +59,12 @@ public class DexWithClassesTest {
             /* linearAllocEstimate */ 1600,
             /* classNamesToHashes */ ImmutableSortedMap.of(
                 "com/example/Main",
-                HashCode.fromString("cafebabe"))));
+                HashCode.fromString(Strings.repeat("cafebabe", 5))),
+            Optional.<ImmutableList<String>>absent()));
 
     DexWithClasses dexWithClasses = DexWithClasses.TO_DEX_WITH_CLASSES.apply(dexFromJavaLibrary);
-    assertEquals(Paths.get("buck-out/gen/java/com/example/lib#dex.dex.jar"),
+    assertEquals(
+        BuildTargets.getGenPath(javaLibrary.getProjectFilesystem(), buildTarget, "%s.dex.jar"),
         dexWithClasses.getPathToDexFile());
     assertEquals(ImmutableSet.of("com/example/Main"), dexWithClasses.getClassNames());
     assertEquals(1600, dexWithClasses.getSizeEstimate());
@@ -66,21 +72,21 @@ public class DexWithClassesTest {
 
   @Test
   public void testIntermediateDexRuleToDexWithClassesWhenIntermediateDexHasNoClasses() {
-    SourcePathResolver resolver = new SourcePathResolver(new BuildRuleResolver());
-    BuildTarget javaLibraryTarget = BuildTarget.builder("//java/com/example", "lib").build();
+    SourcePathResolver resolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+    );
+    BuildTarget javaLibraryTarget = BuildTargetFactory.newInstance("//java/com/example:lib");
     JavaLibrary javaLibrary = new FakeJavaLibrary(javaLibraryTarget, resolver);
 
-    BuildTarget buildTarget = BuildTarget
-        .builder("//java/com/example", "lib")
-        .addFlavors(ImmutableFlavor.of("dex"))
-        .build();
+    BuildTarget buildTarget = BuildTargetFactory.newInstance("//java/com/example:lib#dex");
     BuildRuleParams params = new FakeBuildRuleParamsBuilder(buildTarget).build();
     DexProducedFromJavaLibrary dexFromJavaLibrary =
         new DexProducedFromJavaLibrary(params, resolver, javaLibrary);
     dexFromJavaLibrary.getBuildOutputInitializer().setBuildOutput(
         new DexProducedFromJavaLibrary.BuildOutput(
             /* linearAllocEstimate */ 1600,
-            /* classNamesToHashes */ ImmutableSortedMap.<String, HashCode>of()));
+            /* classNamesToHashes */ ImmutableSortedMap.<String, HashCode>of(),
+            Optional.<ImmutableList<String>>absent()));
 
     DexWithClasses dexWithClasses = DexWithClasses.TO_DEX_WITH_CLASSES.apply(dexFromJavaLibrary);
     assertNull(

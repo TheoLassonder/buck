@@ -1,10 +1,12 @@
 PLATFORM_SRCS = [
+  'Architecture.java',
   'Platform.java',
 ]
 
 java_library(
   name = 'platform',
   srcs = PLATFORM_SRCS,
+  autodeps = True,
   visibility = [
     'PUBLIC',
   ],
@@ -17,24 +19,22 @@ FILTER_SRCS = [
 java_library(
   name = 'env-filter',
   srcs = FILTER_SRCS,
-  deps = [
-    ':platform',
-    '//third-party/java/guava:guava',
-  ],
+  autodeps = True,
   visibility = [
     'PUBLIC',
   ],
 )
 
-java_library(
+java_immutables_library(
   name = 'environment',
   srcs = glob(['*.java'], excludes = FILTER_SRCS + PLATFORM_SRCS),
-  deps = [
-    ':env-filter',
-    ':platform',
-    '//third-party/java/guava:guava',
-    '//src/com/facebook/buck/util:io',
+  immutable_types = [
+    'BuildEnvironmentDescription',
   ],
+  tests = [
+    '//test/com/facebook/buck/util/environment:environment',
+  ],
+  autodeps = True,
   visibility = [
     'PUBLIC',
   ],

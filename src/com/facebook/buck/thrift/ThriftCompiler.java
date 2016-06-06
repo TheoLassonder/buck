@@ -23,11 +23,14 @@ import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildableContext;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.Tool;
 import com.facebook.buck.step.Step;
 import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
+import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 
 import java.nio.file.Path;
 import java.util.Map;
@@ -37,7 +40,7 @@ import javax.annotation.Nullable;
 public class ThriftCompiler extends AbstractBuildRule {
 
   @AddToRuleKey
-  private final SourcePath compiler;
+  private final Tool compiler;
   @AddToRuleKey
   private final ImmutableList<String> flags;
   @AddToRuleKey(stringify = true)
@@ -49,21 +52,26 @@ public class ThriftCompiler extends AbstractBuildRule {
   @AddToRuleKey
   private final ImmutableSet<String> options;
   private final ImmutableList<Path> includeRoots;
+  private final ImmutableSet<Path> headerMaps;
   @SuppressWarnings("PMD.UnusedPrivateField")
   @AddToRuleKey
   private final ImmutableMap<String, SourcePath> includes;
+  @AddToRuleKey
+  private final ImmutableSortedSet<String> generatedSources;
 
   public ThriftCompiler(
       BuildRuleParams params,
       SourcePathResolver resolver,
-      SourcePath compiler,
+      Tool compiler,
       ImmutableList<String> flags,
       Path outputDir,
       SourcePath input,
       String language,
       ImmutableSet<String> options,
       ImmutableList<Path> includeRoots,
-      ImmutableMap<Path, SourcePath> includes) {
+      ImmutableSet<Path> headerMaps,
+      ImmutableMap<Path, SourcePath> includes,
+      ImmutableSortedSet<String> generatedSources) {
     super(params, resolver);
     this.compiler = compiler;
     this.flags = flags;
@@ -72,6 +80,8 @@ public class ThriftCompiler extends AbstractBuildRule {
     this.language = language;
     this.options = options;
     this.includeRoots = includeRoots;
+    this.headerMaps = headerMaps;
+    this.generatedSources = generatedSources;
 
     // Hash the layout of each potentially included thrift file dependency and it's contents.
     // We do this here, rather than returning them from `getInputsToCompareToOutput` so that
@@ -83,22 +93,34 @@ public class ThriftCompiler extends AbstractBuildRule {
     this.includes = builder.build();
   }
 
+  public static String resolveLanguageDir(String language, String source) {
+    return String.format("gen-%s/%s", language, source);
+  }
+
   @Override
   public ImmutableList<Step> getBuildSteps(
       BuildContext context, BuildableContext buildableContext) {
 
-    buildableContext.recordArtifact(outputDir);
+    for (String source : generatedSources) {
+      buildableContext.recordArtifact(outputDir.resolve(resolveLanguageDir(language, source)));
+    }
 
     return ImmutableList.of(
-        new MakeCleanDirectoryStep(outputDir),
+        new MakeCleanDirectoryStep(getProjectFilesystem(), outputDir),
         new ThriftCompilerStep(
-            getResolver().getPath(compiler),
-            flags,
+            getProjectFilesystem().getRootPath(),
+            compiler.getEnvironment(getResolver()),
+            ImmutableList.<String>builder()
+                .addAll(compiler.getCommandPrefix(getResolver()))
+                .addAll(flags)
+                .build(),
             outputDir,
-            getResolver().getPath(input),
+            getResolver().getAbsolutePath(input),
             language,
             options,
-            includeRoots));
+            FluentIterable.from(headerMaps)
+                .append(includeRoots)
+                .toList()));
   }
 
   @Nullable

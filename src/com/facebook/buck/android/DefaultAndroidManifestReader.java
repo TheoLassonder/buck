@@ -18,7 +18,6 @@ package com.facebook.buck.android;
 
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.util.XmlDomParser;
-import com.google.common.base.Throwables;
 import com.google.common.collect.Lists;
 
 import org.w3c.dom.Document;
@@ -47,8 +46,9 @@ public class DefaultAndroidManifestReader implements AndroidManifestReader {
    * to show up in the launcher.
    */
   private static final String XPATH_LAUNCHER_ACTIVITIES =
-      "/manifest/application/*[self::activity or" +
-      "  self::activity-alias[not(@android:enabled) or @android:enabled='true']]" +
+      "/manifest/application/*" +
+      "  [self::activity[not(@android:enabled) or @android:enabled='true'] or " +
+      "                 self::activity-alias[not(@android:enabled) or @android:enabled='true']]" +
       "  [intent-filter[action/@android:name='android.intent.action.MAIN' and " +
       "                 category/@android:name='android.intent.category.LAUNCHER']]" +
       "  /@android:name";
@@ -67,9 +67,15 @@ public class DefaultAndroidManifestReader implements AndroidManifestReader {
    */
   private static final String XPATH_VERSION_CODE = "/manifest/@android:versionCode";
 
+  /**
+   * XPath expression to get the instrumentation test runner.
+   */
+  private static final String XPATH_INSTRUMENTATION_TEST_RUNNER =
+      "/manifest/instrumentation/@android:name";
 
   private final XPathExpression packageExpression;
   private final XPathExpression versionCodeExpression;
+  private final XPathExpression instrumentationTestRunnerExpression;
   private final XPathExpression launchableActivitiesExpression;
   private final Document doc;
 
@@ -84,8 +90,9 @@ public class DefaultAndroidManifestReader implements AndroidManifestReader {
       launchableActivitiesExpression = xPath.compile(XPATH_LAUNCHER_ACTIVITIES);
       packageExpression = xPath.compile(XPATH_PACKAGE);
       versionCodeExpression = xPath.compile(XPATH_VERSION_CODE);
+      instrumentationTestRunnerExpression = xPath.compile(XPATH_INSTRUMENTATION_TEST_RUNNER);
     } catch (XPathExpressionException | SAXException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
     }
   }
 
@@ -102,7 +109,7 @@ public class DefaultAndroidManifestReader implements AndroidManifestReader {
       return activities;
 
     } catch (XPathExpressionException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
     }
   }
 
@@ -111,7 +118,7 @@ public class DefaultAndroidManifestReader implements AndroidManifestReader {
     try {
       return (String) packageExpression.evaluate(doc, XPathConstants.STRING);
     } catch (XPathExpressionException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
     }
   }
 
@@ -120,7 +127,16 @@ public class DefaultAndroidManifestReader implements AndroidManifestReader {
     try {
       return (String) versionCodeExpression.evaluate(doc, XPathConstants.STRING);
     } catch (XPathExpressionException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
+    }
+  }
+
+  @Override
+  public String getInstrumentationTestRunner() {
+    try {
+      return (String) instrumentationTestRunnerExpression.evaluate(doc, XPathConstants.STRING);
+    } catch (XPathExpressionException e) {
+      throw new RuntimeException(e);
     }
   }
 

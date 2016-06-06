@@ -24,6 +24,8 @@ from optparse import OptionParser
 if __name__ == "__main__":
     parser = OptionParser()
     parser.add_option("--lib", action="store", dest="lib", default="")
+    parser.add_option("--extra-res-entry", action="store_true", dest="extra_res", default=False)
+    parser.add_option("--no-classes-dot-jar", action="store_true", dest="no_classes_dot_jar", default=False)
     (options, args) = parser.parse_args()
     tmp = args[0]
     output = args[1]
@@ -43,23 +45,30 @@ if __name__ == "__main__":
   <string name='app_name'>Hello World</string>
 </resources>""")
 
-    # Include some .class files in classes.jar because the .aar spec requires it
-    with open(os.path.join(tmp, "Utils.java"), "w") as f:
-        f.write("""package com.example;
-public class Utils {
-  public static String capitalize(String str) {
-    return str.substring(0, 1).toUpperCase() + str.substring(1);
-  }
-}""")
-    os.makedirs(os.path.join(tmp, "classes"))
-    subprocess.check_call(
-        ["javac", "-source", "1.7", "-target", "1.7", "-d", "classes", "Utils.java"],
-        cwd=tmp)
-    subprocess.check_call(
-        ["jar", "-cf", "classes.jar", "-C", "classes", "."],
-        cwd=tmp)
-    os.remove(os.path.join(tmp, "Utils.java"))
-    shutil.rmtree(os.path.join(tmp, "classes"))
+    # Write out R.txt
+    with open(os.path.join(tmp, "R.txt"), "w") as f:
+        f.write("int string app_name 0x7f030000")
+        if options.extra_res:
+            f.write("\nint string extra_res 0x7f030001")
+
+    if not options.no_classes_dot_jar:
+        # Include some .class files in classes.jar
+        with open(os.path.join(tmp, "Utils.java"), "w") as f:
+            f.write("""package com.example;
+    public class Utils {
+      public static String capitalize(String str) {
+        return str.substring(0, 1).toUpperCase() + str.substring(1);
+      }
+    }""")
+        os.makedirs(os.path.join(tmp, "classes"))
+        subprocess.check_call(
+            ["javac", "-source", "1.7", "-target", "1.7", "-d", "classes", "Utils.java"],
+            cwd=tmp)
+        subprocess.check_call(
+            ["jar", "-cf", "classes.jar", "-C", "classes", "."],
+            cwd=tmp)
+        os.remove(os.path.join(tmp, "Utils.java"))
+        shutil.rmtree(os.path.join(tmp, "classes"))
 
     # Include some .so in jni/ folder
     os.makedirs(os.path.join(tmp, "jni", "x86"))

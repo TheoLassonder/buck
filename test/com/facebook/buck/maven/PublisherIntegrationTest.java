@@ -20,8 +20,8 @@ import static org.hamcrest.Matchers.hasItem;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThat;
 
-import com.facebook.buck.testutil.integration.HttpdForTests;
 import com.facebook.buck.testutil.integration.TestDataHelper;
+import com.google.common.collect.ImmutableList;
 
 import org.junit.After;
 import org.junit.Before;
@@ -40,9 +40,7 @@ public class PublisherIntegrationTest {
   public TemporaryFolder temp = new TemporaryFolder();
 
   private static Path localRepo;
-  private HttpdForTests httpd;
-  private Publisher publisher;
-  private HttpdForTests.DummyPutRequestsHandler putRequestsHandler;
+  private TestPublisher publisher;
 
   @BeforeClass
   public static void setUpStatic() throws Exception {
@@ -52,16 +50,12 @@ public class PublisherIntegrationTest {
 
   @After
   public void shutDownHttpd() throws Exception {
-    httpd.close();
+    publisher.close();
   }
 
   @Before
   public void setUp() throws Exception {
-    httpd = new HttpdForTests();
-    putRequestsHandler = new HttpdForTests.DummyPutRequestsHandler();
-    httpd.addHandler(putRequestsHandler);
-    httpd.start();
-    publisher = new Publisher(temp.newFolder().toPath(), httpd.getUri("/").toString());
+    publisher = TestPublisher.create(temp);
   }
 
   @Test
@@ -76,9 +70,9 @@ public class PublisherIntegrationTest {
     File jar = artifactDir.resolve(String.format(fileNameTemplate, extension)).toFile();
     File pom = artifactDir.resolve(String.format(fileNameTemplate, "pom")).toFile();
 
-    publisher.publish(groupId, artifactName, version, jar, pom);
+    publisher.publish(groupId, artifactName, version, ImmutableList.of(jar, pom));
 
-    List<String> putRequestsInvoked = putRequestsHandler.getPutRequestsPaths();
+    List<String> putRequestsInvoked = publisher.getPutRequestsHandler().getPutRequestsPaths();
     assertFalse(putRequestsInvoked.isEmpty());
 
     String urlTemplate = String.format(

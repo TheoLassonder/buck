@@ -19,9 +19,11 @@ package com.facebook.buck.android;
 import static org.junit.Assert.assertEquals;
 
 import com.facebook.buck.android.AndroidBuildConfig.ReadValuesStep;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.FakeBuildContext;
@@ -29,11 +31,12 @@ import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
 import com.facebook.buck.rules.FakeBuildableContext;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.rules.coercer.BuildConfigFields;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
 import com.facebook.buck.step.TestExecutionContext;
-import com.facebook.buck.util.BuckConstant;
+import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.google.common.base.Optional;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
@@ -51,11 +54,15 @@ import java.util.List;
  */
 public class AndroidBuildConfigTest {
 
+  public static final BuildTarget BUILD_TARGET =
+      BuildTargetFactory.newInstance("//java/com/example:build_config");
+  private static final ProjectFilesystem filesystem = new FakeProjectFilesystem();
+
   @Test
   public void testGetPathToOutput() {
     AndroidBuildConfig buildConfig = createSimpleBuildConfigRule();
     assertEquals(
-        BuckConstant.GEN_PATH.resolve("java/com/example/__build_config__/BuildConfig.java"),
+        BuildTargets.getGenPath(filesystem, BUILD_TARGET, "__%s__/BuildConfig.java"),
         buildConfig.getPathToOutput());
   }
 
@@ -66,11 +73,13 @@ public class AndroidBuildConfigTest {
         FakeBuildContext.NOOP_CONTEXT, new FakeBuildableContext());
     Step generateBuildConfigStep = steps.get(1);
     GenerateBuildConfigStep expectedStep = new GenerateBuildConfigStep(
-        /* source */ BuildTargetFactory.newInstance("//java/com/example:build_config"),
+        new FakeProjectFilesystem(),
+        BuildTargetFactory.newInstance("//java/com/example:build_config")
+            .getUnflavoredBuildTarget(),
         /* javaPackage */ "com.example",
         /* useConstantExpressions */ false,
         /* constants */ Suppliers.ofInstance(BuildConfigFields.empty()),
-        BuckConstant.GEN_PATH.resolve("java/com/example/__build_config__/BuildConfig.java"));
+        BuildTargets.getGenPath(filesystem, BUILD_TARGET, "__%s__/BuildConfig.java"));
     assertEquals(expectedStep, generateBuildConfigStep);
   }
 
@@ -89,15 +98,14 @@ public class AndroidBuildConfigTest {
         ImmutableList.of("boolean DEBUG = false", "String FOO = \"BAR\""));
     EasyMock.replay(projectFilesystem);
 
-    ReadValuesStep step = new ReadValuesStep(pathToValues);
+    ReadValuesStep step = new ReadValuesStep(projectFilesystem, pathToValues);
     ExecutionContext context = TestExecutionContext
         .newBuilder()
-        .setProjectFilesystem(projectFilesystem)
         .build();
-    int exitCode = step.execute(context);
+    int exitCode = step.execute(context).getExitCode();
     assertEquals(0, exitCode);
     assertEquals(
-        BuildConfigFields.fromFields(ImmutableList.<BuildConfigFields.Field>of(
+        BuildConfigFields.fromFields(ImmutableList.of(
             BuildConfigFields.Field.of("boolean", "DEBUG", "false"),
             BuildConfigFields.Field.of("String", "FOO", "\"BAR\""))),
         step.get());
@@ -107,11 +115,14 @@ public class AndroidBuildConfigTest {
 
   private static AndroidBuildConfig createSimpleBuildConfigRule() {
     // First, create the BuildConfig object.
-    BuildTarget buildTarget = BuildTarget.builder("//java/com/example", "build_config").build();
-    BuildRuleParams params = new FakeBuildRuleParamsBuilder(buildTarget).build();
+    BuildRuleParams params = new FakeBuildRuleParamsBuilder(BUILD_TARGET).build();
     return new AndroidBuildConfig(
         params,
-        new SourcePathResolver(new BuildRuleResolver()),
+        new SourcePathResolver(
+            new BuildRuleResolver(
+              TargetGraph.EMPTY,
+              new DefaultTargetNodeToBuildRuleTransformer())
+        ),
         /* javaPackage */ "com.example",
         /* values */ BuildConfigFields.empty(),
         /* valuesFile */ Optional.<SourcePath>absent(),

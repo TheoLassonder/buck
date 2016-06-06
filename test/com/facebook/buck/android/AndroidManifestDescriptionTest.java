@@ -18,6 +18,7 @@ package com.facebook.buck.android;
 
 import static org.junit.Assert.assertEquals;
 
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.rules.BuildRule;
@@ -27,6 +28,7 @@ import com.facebook.buck.rules.BuildTargetSourcePath;
 import com.facebook.buck.rules.FakeBuildRule;
 import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableSortedSet;
 
@@ -39,7 +41,8 @@ public class AndroidManifestDescriptionTest {
 
   @Test
   public void testGeneratedSkeletonAppearsInDeps() {
-    BuildRuleResolver buildRuleResolver = new BuildRuleResolver();
+    BuildRuleResolver buildRuleResolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
 
     BuildRule ruleWithOutput = new FakeBuildRule(
         BuildTargetFactory.newInstance("//foo:bar"),
@@ -57,10 +60,10 @@ public class AndroidManifestDescriptionTest {
     arg.deps = Optional.of(ImmutableSortedSet.<BuildTarget>of());
 
     BuildRuleParams params = new FakeBuildRuleParamsBuilder("//foo:baz")
-        .setDeps(buildRuleResolver.getAllRules(arg.deps.get()))
+        .setDeclaredDeps(buildRuleResolver.getAllRules(arg.deps.get()))
         .build();
-    AndroidManifest androidManifest = new AndroidManifestDescription()
-        .createBuildRule(params, buildRuleResolver, arg);
+    BuildRule androidManifest = new AndroidManifestDescription()
+        .createBuildRule(TargetGraph.EMPTY, params, buildRuleResolver, arg);
 
     assertEquals(
         ImmutableSortedSet.of(ruleWithOutput),

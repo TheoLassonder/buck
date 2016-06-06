@@ -17,6 +17,8 @@ package com.facebook.buck.model;
 
 import com.google.common.base.Objects;
 
+import java.nio.file.Path;
+
 import javax.annotation.Nullable;
 
 /**
@@ -30,11 +32,15 @@ public class SingletonBuildTargetPattern implements BuildTargetPattern {
    * @param fullyQualifiedName The fully qualified name of valid target. It is expected to
    *     match the value returned from a {@link BuildTarget#getFullyQualifiedName()} call.
    */
-  public SingletonBuildTargetPattern(String fullyQualifiedName) {
+  public SingletonBuildTargetPattern(Path cellPath, String fullyQualifiedName) {
 
+    int buildTarget = fullyQualifiedName.indexOf("//");
     int colon = fullyQualifiedName.lastIndexOf(':');
     target = UnflavoredBuildTarget
-        .builder(fullyQualifiedName.substring(0, colon), fullyQualifiedName.substring(colon + 1))
+        .builder(
+            fullyQualifiedName.substring(buildTarget, colon),
+            fullyQualifiedName.substring(colon + 1))
+        .setCellPath(cellPath)
         .build();
   }
 
@@ -44,7 +50,13 @@ public class SingletonBuildTargetPattern implements BuildTargetPattern {
    */
   @Override
   public boolean apply(@Nullable BuildTarget target) {
-    return target != null && this.target.equals(target.getUnflavoredBuildTarget());
+    if (target == null) {
+      return false;
+    }
+
+    return
+        this.target.getCellPath().equals(target.getCellPath()) &&
+        this.target.equals(target.getUnflavoredBuildTarget());
   }
 
   @Override
@@ -59,6 +71,11 @@ public class SingletonBuildTargetPattern implements BuildTargetPattern {
   @Override
   public int hashCode() {
     return target.hashCode();
+  }
+
+  @Override
+  public String toString() {
+    return target.toString();
   }
 
 }

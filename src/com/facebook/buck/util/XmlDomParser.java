@@ -16,17 +16,16 @@
 
 package com.facebook.buck.util;
 
-import com.google.common.base.Throwables;
-import com.google.common.io.Files;
-
 import org.w3c.dom.Document;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 
 import java.io.ByteArrayInputStream;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -37,12 +36,14 @@ public class XmlDomParser {
   /** Utility class: do not instantiate. */
   private XmlDomParser() {}
 
-  public static Document parse(File xml) throws IOException, SAXException {
-    return parse(Files.asByteSource(xml).openStream());
+  public static Document parse(Path xml) throws IOException, SAXException {
+    try (InputStream is = Files.newInputStream(xml)) {
+      return parse(is);
+    }
   }
 
   public static Document parse(String xmlContents) throws IOException, SAXException {
-    return parse(new ByteArrayInputStream(xmlContents.getBytes()));
+    return parse(new ByteArrayInputStream(xmlContents.getBytes(StandardCharsets.UTF_8)));
   }
 
   public static Document parse(InputStream stream) throws IOException, SAXException {
@@ -59,7 +60,7 @@ public class XmlDomParser {
       }
       docBuilder = factory.newDocumentBuilder();
     } catch (ParserConfigurationException e) {
-      throw Throwables.propagate(e);
+      throw new RuntimeException(e);
     }
 
     return docBuilder.parse(xml);

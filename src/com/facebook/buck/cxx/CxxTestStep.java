@@ -19,12 +19,16 @@ package com.facebook.buck.cxx;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
+import com.facebook.buck.util.BgProcessKiller;
+import com.facebook.buck.util.HumanReadableException;
 import com.facebook.buck.util.ProcessExecutor;
 import com.google.common.base.Function;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Objects;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 
 import java.io.FileOutputStream;
@@ -38,20 +42,30 @@ import java.nio.file.Path;
  */
 public class CxxTestStep implements Step {
 
+  private final ProjectFilesystem filesystem;
   private final ImmutableList<String> command;
+  private final ImmutableMap<String, String> env;
   private final Path exitCode;
   private final Path output;
+  private final Optional<Long> testRuleTimeoutMs;
 
-  public CxxTestStep(ImmutableList<String> command, Path exitCode, Path output) {
+  public CxxTestStep(
+      ProjectFilesystem filesystem,
+      ImmutableList<String> command,
+      ImmutableMap<String, String> env,
+      Path exitCode,
+      Path output,
+      Optional<Long> testRuleTimeoutMs) {
+    this.filesystem = filesystem;
     this.command = command;
+    this.env = env;
     this.exitCode = exitCode;
     this.output = output;
+    this.testRuleTimeoutMs = testRuleTimeoutMs;
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
-    ProjectFilesystem filesystem = context.getProjectFilesystem();
-
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
     // Build the process, redirecting output to the provided output file.  In general,
     // it's undesirable that both stdout and stderr are being redirected to the same
     // input stream.  However, due to the nature of OS pipe buffering, we can't really
@@ -62,15 +76,16 @@ public class CxxTestStep implements Step {
     // use when we parse the test output.
     ProcessBuilder builder = new ProcessBuilder();
     builder.command(command);
+    builder.environment().putAll(env);
     builder.redirectOutput(filesystem.resolve(output).toFile());
     builder.redirectErrorStream(true);
 
     Process process;
     try {
-      process = builder.start();
+      process = BgProcessKiller.startProcess(builder);
     } catch (IOException e) {
       context.logError(e, "Error starting command %s", command);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
     // Run the test process, saving the exit code.
@@ -81,8 +96,15 @@ public class CxxTestStep implements Step {
         process,
         options,
         /* stdin */ Optional.<String>absent(),
-        /* timeOutMs */ Optional.<Long>absent(),
+        testRuleTimeoutMs,
         /* timeOutHandler */ Optional.<Function<Process, Void>>absent());
+
+    if (result.isTimedOut()) {
+      throw new HumanReadableException(
+          "Timed out after %d ms running test command %s",
+          testRuleTimeoutMs.or(-1L),
+          command);
+    }
 
     // Since test binaries return a non-zero exit code when unittests fail, save the exit code
     // to a file rather than signalling a step failure.
@@ -91,10 +113,10 @@ public class CxxTestStep implements Step {
       objectOut.writeInt(result.getExitCode());
     } catch (IOException e) {
       context.logError(e, "Error saving exit code to %s", exitCode);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   @Override
@@ -155,9 +177,14 @@ public class CxxTestStep implements Step {
   public String toString() {
     return MoreObjects.toStringHelper(this)
         .add("command", command)
+        .add("env", env)
         .add("exitCode", exitCode)
         .add("output", output)
         .toString();
+  }
+
+  public ImmutableMap<String, String> getEnv() {
+    return env;
   }
 
 }

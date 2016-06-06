@@ -16,21 +16,25 @@
 
 package com.facebook.buck.cxx;
 
+import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.rules.AbstractBuildRule;
 import com.facebook.buck.rules.AddToRuleKey;
 import com.facebook.buck.rules.BuildContext;
+import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildableContext;
-import com.facebook.buck.rules.RuleKey;
-import com.facebook.buck.rules.RuleKeyAppendable;
-import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.OverrideScheduleRule;
+import com.facebook.buck.rules.RuleScheduleInfo;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.facebook.buck.rules.Tool;
+import com.facebook.buck.rules.args.Arg;
 import com.facebook.buck.rules.keys.SupportsInputBasedRuleKey;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.fs.FileScrubberStep;
+import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
 import com.facebook.buck.step.fs.MkdirStep;
-import com.google.common.base.Functions;
 import com.google.common.base.Optional;
+import com.google.common.base.Preconditions;
+import com.google.common.base.Predicate;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -39,53 +43,53 @@ import java.nio.file.Path;
 
 public class CxxLink
     extends AbstractBuildRule
-    implements RuleKeyAppendable, SupportsInputBasedRuleKey {
+    implements SupportsInputBasedRuleKey, ProvidesLinkedBinaryDeps, OverrideScheduleRule {
+
+  private static final Predicate<BuildRule> ARCHIVE_RULES_PREDICATE = new Predicate<BuildRule>() {
+    @Override
+    public boolean apply(BuildRule input) {
+      return input instanceof Archive;
+    }
+  };
+
+  private static final Predicate<BuildRule> COMPILE_RULES_PREDICATE = new Predicate<BuildRule>() {
+    @Override
+    public boolean apply(BuildRule input) {
+      return input instanceof CxxPreprocessAndCompile;
+    }
+  };
 
   @AddToRuleKey
-  private final Tool linker;
+  private final Linker linker;
   @AddToRuleKey(stringify = true)
   private final Path output;
-  @SuppressWarnings("PMD.UnusedPrivateField")
   @AddToRuleKey
-  private final ImmutableList<SourcePath> inputs;
-  // We need to make sure we sanitize paths in the arguments, so add them to the rule key
-  // in `appendToRuleKey` where we can first filter the args through the sanitizer.
-  private final ImmutableList<String> args;
-  private final ImmutableSet<Path> frameworkRoots;
-  private final DebugPathSanitizer sanitizer;
+  private final ImmutableList<Arg> args;
+  private final Optional<RuleScheduleInfo> ruleScheduleInfo;
+  private final boolean cacheable;
 
   public CxxLink(
       BuildRuleParams params,
       SourcePathResolver resolver,
-      Tool linker,
+      Linker linker,
       Path output,
-      ImmutableList<SourcePath> inputs,
-      ImmutableList<String> args,
-      ImmutableSet<Path> frameworkRoots,
-      DebugPathSanitizer sanitizer) {
+      ImmutableList<Arg> args,
+      Optional<RuleScheduleInfo> ruleScheduleInfo,
+      boolean cacheable) {
     super(params, resolver);
     this.linker = linker;
     this.output = output;
-    this.inputs = inputs;
     this.args = args;
-    this.frameworkRoots = frameworkRoots;
-    this.sanitizer = sanitizer;
+    this.ruleScheduleInfo = ruleScheduleInfo;
+    this.cacheable = cacheable;
+    performChecks(params);
   }
 
-  @Override
-  public RuleKey.Builder appendToRuleKey(RuleKey.Builder builder) {
-    return builder
-        .setReflectively(
-            "args",
-            FluentIterable.from(args)
-                .transform(sanitizer.sanitize(Optional.<Path>absent(), /* expandPaths */ false))
-                .toList())
-        .setReflectively(
-            "frameworkRoots",
-            FluentIterable.from(frameworkRoots)
-                .transform(Functions.toStringFunction())
-                .transform(sanitizer.sanitize(Optional.<Path>absent(), /* expandPaths */ false))
-                .toList());
+  private void performChecks(BuildRuleParams params) {
+    Preconditions.checkArgument(
+        !params.getBuildTarget().getFlavors().contains(CxxStrip.RULE_FLAVOR) ||
+            !StripStyle.FLAVOR_DOMAIN.containsAnyOf(params.getBuildTarget().getFlavors()),
+        "CxxLink should not be created with CxxStrip flavors");
   }
 
   @Override
@@ -93,13 +97,54 @@ public class CxxLink
       BuildContext context,
       BuildableContext buildableContext) {
     buildableContext.recordArtifact(output);
+    if (linker instanceof HasLinkerMap) {
+      buildableContext.recordArtifact(((HasLinkerMap) linker).linkerMapPath(output));
+    }
+    Path scratchDir =
+        BuildTargets.getScratchPath(getProjectFilesystem(), getBuildTarget(), "%s-tmp");
+    Path argFilePath = getProjectFilesystem().getRootPath().resolve(
+        BuildTargets.getScratchPath(getProjectFilesystem(), getBuildTarget(), "%s__argfile.txt"));
+    Path fileListPath = getProjectFilesystem().getRootPath().resolve(
+        BuildTargets.getScratchPath(getProjectFilesystem(), getBuildTarget(), "%s__filelist.txt"));
+
+    // Try to find all the cell roots used during the link.  This isn't technically correct since,
+    // in theory not all inputs need to come from build rules, but it probably works in practice.
+    // One way that we know would work is exposing every known cell root paths, since the only rules
+    // that we built (and therefore need to scrub) will be in one of those roots.
+    ImmutableSet.Builder<Path> cellRoots = ImmutableSet.builder();
+    for (BuildRule dep : getDeps()) {
+      cellRoots.add(dep.getProjectFilesystem().getRootPath());
+    }
+
     return ImmutableList.of(
-        new MkdirStep(output.getParent()),
-        new CxxLinkStep(
-            linker.getCommandPrefix(getResolver()),
+        new MkdirStep(getProjectFilesystem(), output.getParent()),
+        new MakeCleanDirectoryStep(getProjectFilesystem(), scratchDir),
+        new CxxPrepareForLinkStep(
+            argFilePath,
+            fileListPath,
+            linker.fileList(fileListPath),
             output,
-            args,
-            frameworkRoots));
+            args),
+        new CxxLinkStep(
+            getProjectFilesystem().getRootPath(),
+            linker.getEnvironment(getResolver()),
+            linker.getCommandPrefix(getResolver()),
+            argFilePath,
+            getProjectFilesystem().getRootPath().resolve(scratchDir)),
+        new FileScrubberStep(
+            getProjectFilesystem(),
+            output,
+            linker.getScrubbers(cellRoots.build())));
+  }
+
+  @Override
+  public ImmutableSet<BuildRule> getStaticLibraryDeps() {
+    return FluentIterable.from(getDeps()).filter(ARCHIVE_RULES_PREDICATE).toSet();
+  }
+
+  @Override
+  public ImmutableSet<BuildRule> getCompileDeps() {
+    return FluentIterable.from(getDeps()).filter(COMPILE_RULES_PREDICATE).toSet();
   }
 
   @Override
@@ -107,16 +152,21 @@ public class CxxLink
     return output;
   }
 
-  public Tool getLinker() {
+  @Override
+  public RuleScheduleInfo getRuleScheduleInfo() {
+    return ruleScheduleInfo.or(RuleScheduleInfo.DEFAULT);
+  }
+
+  @Override
+  public boolean isCacheable() {
+    return cacheable;
+  }
+
+  public Linker getLinker() {
     return linker;
   }
 
-  public Path getOutput() {
-    return output;
-  }
-
-  public ImmutableList<String> getArgs() {
+  public ImmutableList<Arg> getArgs() {
     return args;
   }
-
 }

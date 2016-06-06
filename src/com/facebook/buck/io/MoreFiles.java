@@ -23,11 +23,14 @@ import com.google.common.base.Function;
 import com.google.common.base.Functions;
 import com.google.common.base.Objects;
 import com.google.common.collect.Lists;
+import com.google.common.io.ByteStreams;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.InputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.file.FileSystems;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -35,16 +38,31 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 public final class MoreFiles {
+
+  // Extended attribute bits for directories and symlinks; see:
+  // http://unix.stackexchange.com/questions/14705/the-zip-formats-external-file-attribute
+  @SuppressWarnings("PMD.AvoidUsingOctalValues")
+  public static final long S_IFDIR = 0040000;
+  @SuppressWarnings("PMD.AvoidUsingOctalValues")
+  public static final long S_IFLNK = 0120000;
+
+  public enum DeleteRecursivelyOptions {
+      IGNORE_NO_SUCH_FILE_EXCEPTION,
+      DELETE_CONTENTS_ONLY,
+  }
 
   // Unix has two illegal characters - '/', and '\0'.  Windows has ten, which includes those two.
   // The full list can be found at https://msdn.microsoft.com/en-us/library/aa365247
@@ -83,13 +101,9 @@ public final class MoreFiles {
   private MoreFiles() {}
 
   public static void deleteRecursivelyIfExists(Path path) throws IOException {
-    try {
-      deleteRecursively(path);
-    } catch (NoSuchFileException e) {
-      // Delete anyway even if the directory does not exist
-      // This behavior is the same as rm -rf
-      return;
-    }
+    deleteRecursivelyWithOptions(
+        path,
+        EnumSet.of(DeleteRecursivelyOptions.IGNORE_NO_SUCH_FILE_EXCEPTION));
   }
 
   /**
@@ -151,34 +165,54 @@ public final class MoreFiles {
   }
 
   public static void deleteRecursively(final Path path) throws IOException {
-    // Adapted from http://codingjunkie.net/java-7-copy-move/.
-    SimpleFileVisitor<Path> deleteDirVisitor = new SimpleFileVisitor<Path>() {
+    deleteRecursivelyWithOptions(path, EnumSet.noneOf(DeleteRecursivelyOptions.class));
+  }
 
-      @Override
-      public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-        Files.delete(file);
-        return FileVisitResult.CONTINUE;
-      }
+  public static void deleteRecursivelyWithOptions(
+      final Path path,
+      final EnumSet<DeleteRecursivelyOptions> options) throws IOException {
+    try {
+        // Adapted from http://codingjunkie.net/java-7-copy-move/.
+        SimpleFileVisitor<Path> deleteDirVisitor = new SimpleFileVisitor<Path>() {
 
-      @Override
-      public FileVisitResult postVisitDirectory(Path dir, IOException e) throws IOException {
-        if (e == null) {
-          Files.delete(dir);
-          return FileVisitResult.CONTINUE;
-        } else {
-          throw e;
-        }
+          @Override
+          public FileVisitResult visitFile(
+              Path file,
+              BasicFileAttributes attrs) throws IOException {
+            Files.delete(file);
+            return FileVisitResult.CONTINUE;
+          }
+
+          @Override
+          public FileVisitResult postVisitDirectory(Path dir, IOException e) throws IOException {
+            if (e == null) {
+              // Allow leaving the top-level directory in place (e.g. for deleting the contents of
+              // the trash dir but not the trash dir itself)
+              if (!(options.contains(DeleteRecursivelyOptions.DELETE_CONTENTS_ONLY) &&
+                    dir.equals(path))) {
+                Files.delete(dir);
+              }
+              return FileVisitResult.CONTINUE;
+            } else {
+              throw e;
+            }
+          }
+        };
+        Files.walkFileTree(path, deleteDirVisitor);
+    } catch (NoSuchFileException e) {
+      if (!options.contains(DeleteRecursivelyOptions.IGNORE_NO_SUCH_FILE_EXCEPTION)) {
+        throw e;
       }
-    };
-    Files.walkFileTree(path, deleteDirVisitor);
+    }
+
   }
 
   /**
    * Writes the specified lines to the specified file, encoded as UTF-8.
    */
-  public static void writeLinesToFile(Iterable<String> lines, File file)
+  public static void writeLinesToFile(Iterable<String> lines, Path file)
       throws IOException {
-    try (BufferedWriter writer = Files.newBufferedWriter(file.toPath(), Charsets.UTF_8)) {
+    try (BufferedWriter writer = Files.newBufferedWriter(file, Charsets.UTF_8)) {
       for (String line : lines) {
         writer.write(line);
         writer.newLine();
@@ -242,10 +276,9 @@ public final class MoreFiles {
    * If the file system does not support the executable permission or the operation fails,
    * a {@code java.io.IOException} is thrown.
    */
-  public static void makeExecutable(File file) throws IOException {
+  public static void makeExecutable(Path file) throws IOException {
     if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
-      Path path = file.toPath();
-      Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(path);
+      Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(file);
 
       if (permissions.contains(PosixFilePermission.OWNER_READ)) {
         permissions.add(PosixFilePermission.OWNER_EXECUTE);
@@ -257,9 +290,9 @@ public final class MoreFiles {
         permissions.add(PosixFilePermission.OTHERS_EXECUTE);
       }
 
-      Files.setPosixFilePermissions(path, permissions);
+      Files.setPosixFilePermissions(file, permissions);
     } else {
-      if (!file.setExecutable(/* executable */ true, /* ownerOnly */ true)) {
+      if (!file.toFile().setExecutable(/* executable */ true, /* ownerOnly */ true)) {
         throw new IOException("The file could not be made executable");
       }
     }
@@ -272,5 +305,51 @@ public final class MoreFiles {
    */
   public static String sanitize(String name) {
     return CharMatcher.anyOf(ILLEGAL_FILE_NAME_CHARACTERS).replaceFrom(name, "_");
+  }
+
+  /**
+   * Concatenates the contents of one or more files.
+   *
+   * @param dest The path to which the concatenated files' contents are written.
+   * @param pathsToConcatenate The paths whose contents are concatenated to {@code dest}.
+   *
+   * @return {@code true} if any data was concatenated to {@code dest}, {@code false} otherwise.
+   */
+  public static boolean concatenateFiles(Path dest, Iterable<Path> pathsToConcatenate)
+      throws IOException {
+    // Concatenate all the logs to a temp file, then atomically rename it to the
+    // passed-in concatenatedPath if any log data was collected.
+    String tempFilename = "." + dest.getFileName() + ".tmp." + UUID.randomUUID().toString();
+    Path tempPath = dest.resolveSibling(tempFilename);
+
+    try {
+      long bytesCollected = 0;
+      try (OutputStream os =
+           Files.newOutputStream(
+               tempPath,
+               StandardOpenOption.CREATE,
+               StandardOpenOption.TRUNCATE_EXISTING,
+               StandardOpenOption.WRITE)) {
+        for (Path path : pathsToConcatenate) {
+          try (InputStream is = Files.newInputStream(path)) {
+            bytesCollected += ByteStreams.copy(is, os);
+          } catch (NoSuchFileException e) {
+            continue;
+          }
+        }
+      }
+      if (bytesCollected > 0) {
+        Files.move(
+            tempPath,
+            dest,
+            StandardCopyOption.REPLACE_EXISTING,
+            StandardCopyOption.ATOMIC_MOVE);
+        return true;
+      } else {
+        return false;
+      }
+    } finally {
+      Files.deleteIfExists(tempPath);
+    }
   }
 }

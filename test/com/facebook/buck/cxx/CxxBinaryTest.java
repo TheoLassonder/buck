@@ -18,15 +18,24 @@ package com.facebook.buck.cxx;
 
 import static org.junit.Assert.assertTrue;
 
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.BuildTargetSourcePath;
+import com.facebook.buck.rules.CommandTool;
 import com.facebook.buck.rules.FakeBuildRuleParamsBuilder;
+import com.facebook.buck.rules.RuleScheduleInfo;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.facebook.buck.testutil.FakeProjectFilesystem;
+import com.facebook.buck.rules.TargetGraph;
+import com.facebook.buck.rules.args.Arg;
+import com.facebook.buck.rules.args.SourcePathArg;
+import com.facebook.buck.rules.coercer.FrameworkPath;
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSortedSet;
 
-import org.easymock.EasyMock;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -37,21 +46,40 @@ public class CxxBinaryTest {
 
   @Test
   public void getExecutableCommandUsesAbsolutePath() throws IOException {
-    FakeProjectFilesystem filesystem = new FakeProjectFilesystem();
+    BuildRuleResolver ruleResolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
+    SourcePathResolver pathResolver = new SourcePathResolver(ruleResolver);
+
+    BuildRuleParams linkParams = new FakeBuildRuleParamsBuilder("//:link").build();
     Path bin = Paths.get("path/to/exectuable");
-    filesystem.touch(bin);
-    BuildRuleParams params = new FakeBuildRuleParamsBuilder("//:target")
-        .build();
-    BuildRuleResolver ruleResolver = new BuildRuleResolver();
-    CxxBinary binary = new CxxBinary(
-        params,
-        ruleResolver,
-        new SourcePathResolver(ruleResolver),
-        bin,
-        EasyMock.createMock(CxxLink.class),
-        ImmutableList.<Path>of(),
-        ImmutableList.<BuildTarget>of());
-    ImmutableList<String> command = binary.getExecutableCommand(filesystem);
+    CxxLink cxxLink =
+        ruleResolver.addToIndex(
+            new CxxLink(
+                linkParams,
+                pathResolver,
+                CxxPlatformUtils.DEFAULT_PLATFORM.getLd().resolve(ruleResolver),
+                bin,
+                ImmutableList.<Arg>of(),
+                Optional.<RuleScheduleInfo>absent(),
+                /* cacheable */ true));
+    BuildRuleParams params = new FakeBuildRuleParamsBuilder("//:target").build();
+    CxxBinary binary =
+        ruleResolver.addToIndex(
+            new CxxBinary(
+                params.appendExtraDeps(ImmutableSortedSet.<BuildRule>of(cxxLink)),
+                ruleResolver,
+                pathResolver,
+                cxxLink,
+                new CommandTool.Builder()
+                    .addArg(
+                        new SourcePathArg(
+                            pathResolver,
+                            new BuildTargetSourcePath(cxxLink.getBuildTarget())))
+                    .build(),
+                ImmutableSortedSet.<FrameworkPath>of(),
+                ImmutableList.<BuildTarget>of(),
+                params.getBuildTarget()));
+    ImmutableList<String> command = binary.getExecutableCommand().getCommandPrefix(pathResolver);
     assertTrue(Paths.get(command.get(0)).isAbsolute());
   }
 

@@ -17,13 +17,17 @@
 package com.facebook.buck.apple;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
+import com.facebook.buck.cxx.CxxDescriptionEnhancer;
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.model.ImmutableFlavor;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
@@ -32,7 +36,12 @@ import com.facebook.buck.testutil.integration.TestDataHelper;
 import com.facebook.buck.util.HumanReadableException;
 import com.facebook.buck.util.ProcessExecutor;
 import com.facebook.buck.util.environment.Platform;
+import com.google.common.base.Optional;
+import com.google.common.base.Splitter;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
@@ -50,6 +59,13 @@ public class AppleTestIntegrationTest {
   @Rule
   public ExpectedException thrown = ExpectedException.none();
 
+  private ProjectFilesystem filesystem;
+
+  @Before
+  public void setUp() {
+    filesystem = new ProjectFilesystem(tmp.getRootPath());
+  }
+
   @Test
   public void testAppleTestHeaderSymlinkTree() throws IOException {
     assumeTrue(Platform.detect() == Platform.MACOS);
@@ -58,10 +74,8 @@ public class AppleTestIntegrationTest {
         this, "apple_test_header_symlink_tree", tmp);
     workspace.setUp();
 
-    BuildTarget buildTarget = BuildTarget.builder("//Libraries/TestLibrary", "Test")
-        .addFlavors(ImmutableFlavor.of("default"))
-        .addFlavors(ImmutableFlavor.of("header-symlink-tree"))
-        .build();
+    BuildTarget buildTarget = BuildTargetFactory.newInstance(
+        "//Libraries/TestLibrary:Test#iphonesimulator-x86_64,private-headers");
     ProjectWorkspace.ProcessResult result = workspace.runBuckCommand(
         "build",
         buildTarget.getFullyQualifiedName());
@@ -72,7 +86,7 @@ public class AppleTestIntegrationTest {
     Path inputPath = projectRoot.resolve(
         buildTarget.getBasePath());
     Path outputPath = projectRoot.resolve(
-        BuildTargets.getGenPath(buildTarget, "%s"));
+        BuildTargets.getGenPath(filesystem, buildTarget, "%s"));
 
     assertIsSymbolicLink(
         outputPath.resolve("Header.h"),
@@ -90,9 +104,7 @@ public class AppleTestIntegrationTest {
         this, "apple_test_info_plist_export_file", tmp);
     workspace.setUp();
 
-    BuildTarget buildTarget = BuildTarget.builder("//", "foo")
-        .addFlavors(ImmutableFlavor.of("iphonesimulator-x86_64"))
-        .build();
+    BuildTarget buildTarget = BuildTargetFactory.newInstance("//:foo#iphonesimulator-x86_64");
     ProjectWorkspace.ProcessResult result = workspace.runBuckCommand(
         "build",
         buildTarget.getFullyQualifiedName());
@@ -100,12 +112,15 @@ public class AppleTestIntegrationTest {
 
     Path projectRoot = Paths.get(tmp.getRootPath().toFile().getCanonicalPath());
 
-    BuildTarget appleTestBundleFlavoredBuildTarget = BuildTarget.copyOf(buildTarget)
+    BuildTarget appleTestBundleFlavoredBuildTarget = buildTarget
         .withFlavors(
             ImmutableFlavor.of("iphonesimulator-x86_64"),
-            ImmutableFlavor.of("apple-test-bundle"));
+            ImmutableFlavor.of("apple-test-bundle"),
+            AppleDebugFormat.DWARF.getFlavor(),
+            AppleDescriptions.NO_INCLUDE_FRAMEWORKS_FLAVOR);
     Path outputPath = projectRoot.resolve(
         BuildTargets.getGenPath(
+            filesystem,
             appleTestBundleFlavoredBuildTarget,
             "%s"));
     Path bundlePath = outputPath.resolve("foo.xctest");
@@ -123,9 +138,7 @@ public class AppleTestIntegrationTest {
         this, "apple_test_framework_search_path", tmp);
     workspace.setUp();
 
-    BuildTarget buildTarget = BuildTarget.builder("//", "foo")
-        .addFlavors(ImmutableFlavor.of("iphonesimulator-x86_64"))
-        .build();
+    BuildTarget buildTarget = BuildTargetFactory.newInstance("//:foo#iphonesimulator-x86_64");
     ProjectWorkspace.ProcessResult result = workspace.runBuckCommand(
         "build",
         buildTarget.getFullyQualifiedName());
@@ -133,12 +146,15 @@ public class AppleTestIntegrationTest {
 
     Path projectRoot = Paths.get(tmp.getRootPath().toFile().getCanonicalPath());
 
-    BuildTarget appleTestBundleFlavoredBuildTarget = BuildTarget.copyOf(buildTarget)
+    BuildTarget appleTestBundleFlavoredBuildTarget = buildTarget
         .withFlavors(
             ImmutableFlavor.of("iphonesimulator-x86_64"),
-            ImmutableFlavor.of("apple-test-bundle"));
+            ImmutableFlavor.of("apple-test-bundle"),
+            AppleDebugFormat.DWARF.getFlavor(),
+            AppleDescriptions.NO_INCLUDE_FRAMEWORKS_FLAVOR);
     Path outputPath = projectRoot.resolve(
         BuildTargets.getGenPath(
+            filesystem,
             appleTestBundleFlavoredBuildTarget,
             "%s"));
     Path bundlePath = outputPath.resolve("foo.xctest");
@@ -156,14 +172,19 @@ public class AppleTestIntegrationTest {
         this, "apple_test_info_plist_substitution", tmp);
     workspace.setUp();
 
-    BuildTarget buildTarget = BuildTarget.builder("//", "foo")
-        .addFlavors(ImmutableFlavor.of("iphonesimulator-x86_64"))
-        .build();
-    ProjectWorkspace.ProcessResult result = workspace.runBuckCommand(
-        "build",
-        buildTarget.getFullyQualifiedName());
-    result.assertSuccess();
-    workspace.verify();
+    BuildTarget target = workspace.newBuildTarget("//:foo#iphonesimulator-x86_64");
+    workspace.runBuckCommand("build", target.getFullyQualifiedName()).assertSuccess();
+
+    workspace.verify(
+        Paths.get("foo_output.expected"),
+        BuildTargets.getGenPath(
+            filesystem,
+            BuildTarget.builder(target)
+                .addFlavors(AppleDebugFormat.DWARF.getFlavor())
+                .addFlavors(AppleTestDescription.BUNDLE_FLAVOR)
+                .addFlavors(AppleDescriptions.NO_INCLUDE_FRAMEWORKS_FLAVOR)
+                .build(),
+            "%s"));
   }
 
   @Test
@@ -174,13 +195,19 @@ public class AppleTestIntegrationTest {
         this, "apple_test_default_platform", tmp);
     workspace.setUp();
 
-    BuildTarget buildTarget = BuildTarget.builder("//", "foo")
-        .build();
-    ProjectWorkspace.ProcessResult result = workspace.runBuckCommand(
-        "build",
-        buildTarget.getFullyQualifiedName());
-    result.assertSuccess();
-    workspace.verify();
+    BuildTarget target = workspace.newBuildTarget("//:foo");
+    workspace.runBuckCommand("build", target.getFullyQualifiedName()).assertSuccess();
+
+    workspace.verify(
+        Paths.get("foo_output.expected"),
+        BuildTargets.getGenPath(
+            filesystem,
+            BuildTarget.builder(target)
+                .addFlavors(AppleTestDescription.BUNDLE_FLAVOR)
+                .addFlavors(AppleDebugFormat.DWARF.getFlavor())
+                .addFlavors(AppleDescriptions.NO_INCLUDE_FRAMEWORKS_FLAVOR)
+                .build(),
+            "%s"));
   }
 
   @Test
@@ -191,20 +218,29 @@ public class AppleTestIntegrationTest {
         this, "apple_test_with_deps", tmp);
     workspace.setUp();
 
-    BuildTarget buildTarget = BuildTarget.builder("//", "foo")
-        .build();
-    ProjectWorkspace.ProcessResult result = workspace.runBuckCommand(
-        "build",
-        buildTarget.getFullyQualifiedName());
-    result.assertSuccess();
-    workspace.verify();
+    BuildTarget buildTarget = workspace.newBuildTarget("//:foo");
+    workspace.runBuckCommand("build", buildTarget.getFullyQualifiedName()).assertSuccess();
+
+    workspace.verify(
+        Paths.get("foo_output.expected"),
+        BuildTargets.getGenPath(
+            filesystem,
+            BuildTarget.builder(buildTarget)
+                .addFlavors(AppleDebugFormat.DWARF.getFlavor())
+                .addFlavors(AppleTestDescription.BUNDLE_FLAVOR)
+                .addFlavors(AppleDescriptions.NO_INCLUDE_FRAMEWORKS_FLAVOR)
+                .build(),
+            "%s"));
 
     Path projectRoot = Paths.get(tmp.getRootPath().toFile().getCanonicalPath());
-    BuildTarget appleTestBundleFlavoredBuildTarget = BuildTarget.copyOf(buildTarget)
+    BuildTarget appleTestBundleFlavoredBuildTarget = buildTarget
         .withFlavors(
-            ImmutableFlavor.of("apple-test-bundle"));
+            ImmutableFlavor.of("apple-test-bundle"),
+            AppleDebugFormat.DWARF.getFlavor(),
+            AppleDescriptions.NO_INCLUDE_FRAMEWORKS_FLAVOR);
     Path outputPath = projectRoot.resolve(
         BuildTargets.getGenPath(
+            filesystem,
             appleTestBundleFlavoredBuildTarget,
             "%s"));
     Path bundlePath = outputPath.resolve("foo.xctest");
@@ -246,14 +282,19 @@ public class AppleTestIntegrationTest {
         this, "apple_test_with_resources", tmp);
     workspace.setUp();
 
-    BuildTarget buildTarget = BuildTarget.builder("//", "foo")
-        .addFlavors(ImmutableFlavor.of("iphonesimulator-x86_64"))
-        .build();
-    ProjectWorkspace.ProcessResult result = workspace.runBuckCommand(
-        "build",
-        buildTarget.getFullyQualifiedName());
-    result.assertSuccess();
-    workspace.verify();
+    BuildTarget target = workspace.newBuildTarget("//:foo#iphonesimulator-x86_64");
+    workspace.runBuckCommand("build", target.getFullyQualifiedName()).assertSuccess();
+
+    workspace.verify(
+        Paths.get("foo_output.expected"),
+        BuildTargets.getGenPath(
+            filesystem,
+            BuildTarget.builder(target)
+                .addFlavors(AppleDebugFormat.DWARF.getFlavor())
+                .addFlavors(AppleTestDescription.BUNDLE_FLAVOR)
+                .addFlavors(AppleDescriptions.NO_INCLUDE_FRAMEWORKS_FLAVOR)
+                .build(),
+            "%s"));
   }
 
   @Test
@@ -328,6 +369,54 @@ public class AppleTestIntegrationTest {
     assertThat(
         result.getStderr(),
         containsString("1 Passed   0 Skipped   0 Failed   AppTest"));
+  }
+
+  @Test
+  public void testWithHostAppWithDsym() throws IOException, InterruptedException {
+    assumeTrue(Platform.detect() == Platform.MACOS);
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "apple_test_with_host_app", tmp);
+    workspace.setUp();
+    workspace.copyRecursively(
+        TestDataHelper.getTestDataDirectory(this).resolve("xctool"),
+        Paths.get("xctool"));
+    workspace.writeContentsToPath(
+        "[apple]\n  xctool_path = xctool/bin/xctool\n",
+        ".buckconfig.local");
+    ProjectWorkspace.ProcessResult result = workspace.runBuckCommand(
+        "test",
+        "//:AppTest",
+        "--config",
+        "cxx.cflags=-g",
+        "--config",
+        "apple.default_debug_info_format_for_binaries=DWARF_AND_DSYM",
+        "--config",
+        "apple.default_debug_info_format_for_libraries=DWARF_AND_DSYM",
+        "--config",
+        "apple.default_debug_info_format_for_tests=DWARF_AND_DSYM");
+    result.assertSuccess();
+
+    assertThat(
+        result.getStderr(),
+        containsString("1 Passed   0 Skipped   0 Failed   AppTest"));
+
+    Path appTestDsym = tmp.getRootPath()
+        .resolve(filesystem.getBuckPaths().getGenDir())
+        .resolve("AppTest#apple-test-bundle,dwarf-and-dsym,no-include-frameworks")
+        .resolve("AppTest.xctest.dSYM");
+    AppleDsymTestUtil.checkDsymFileHasDebugSymbol(
+        "-[AppTest testMagicValue]",
+        workspace,
+        appTestDsym);
+
+    Path hostAppDsym = tmp.getRootPath()
+        .resolve(filesystem.getBuckPaths().getGenDir())
+        .resolve("TestHostApp#dwarf-and-dsym,no-include-frameworks")
+        .resolve("TestHostApp.app.dSYM");
+    AppleDsymTestUtil.checkDsymFileHasDebugSymbol(
+        "-[TestHostApp magicValue]",
+        workspace,
+        hostAppDsym);
   }
 
   @Test
@@ -420,7 +509,7 @@ public class AppleTestIntegrationTest {
   public void successForAppTestWithXib() throws IOException {
     assumeTrue(Platform.detect() == Platform.MACOS);
     ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
-        this, "app_bundle_with_xib", tmp);
+        this, "app_bundle_with_xib_and_storyboard", tmp);
     workspace.setUp();
     workspace.copyRecursively(
         TestDataHelper.getTestDataDirectory(this).resolve("xctool"),
@@ -450,6 +539,193 @@ public class AppleTestIntegrationTest {
     assertThat(
         result.getStderr(),
         containsString("1 Passed   0 Skipped   0 Failed   FooXCTest"));
+  }
+
+  @Test
+  public void testDependenciesLinking() throws IOException, InterruptedException {
+    assumeTrue(Platform.detect() == Platform.MACOS);
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "apple_test_dependencies_test", tmp);
+    workspace.setUp();
+    workspace.copyRecursively(
+        TestDataHelper.getTestDataDirectory(this).resolve("xctool"),
+        Paths.get("xctool"));
+    ProjectWorkspace.ProcessResult result = workspace.runBuckCommand("test", "//:App");
+    result.assertSuccess();
+
+    ProcessExecutor.Result hasSymbol = workspace.runCommand(
+        "nm",
+        workspace
+            .getPath(
+                BuildTargets.getGenPath(
+                    filesystem,
+                    workspace.newBuildTarget(
+                        "//:AppTests#apple-test-library,iphonesimulator-x86_64,mach-o-bundle"),
+                    "%s/libAppTests#apple-test-library.dylib"))
+            .toString());
+
+    assertThat(hasSymbol.getExitCode(), equalTo(0));
+    assertThat(hasSymbol.getStdout().get(), containsString("U _OBJC_CLASS_$_Library"));
+  }
+
+  @Test
+  public void environmentOverrideAffectsXctoolTest() throws Exception {
+    assumeTrue(Platform.detect() == Platform.MACOS);
+
+    // Our version of xctool doesn't pass through any environment variables, so just see if xctool
+    // itself crashes.
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "apple_test_xctest", tmp);
+    workspace.setUp();
+    workspace.copyRecursively(
+        TestDataHelper.getTestDataDirectory(this).resolve("xctool"),
+        Paths.get("xctool"));
+    workspace.runBuckCommand(
+        "test",
+        "--config", "apple.xctool_path=xctool/bin/xctool",
+        "//:foo")
+        .assertSuccess("normally the test should succeed");
+    workspace.resetBuildLogFile();
+    workspace.runBuckCommand(
+        "test",
+        "--config", "apple.xctool_path=xctool/bin/xctool",
+        "--test-runner-env", "DYLD_INSERT_LIBRARIES=/non_existent_library_omg.dylib",
+        "//:foo")
+        .assertTestFailure("test should fail if i set incorrect dyld environment");
+  }
+
+  @Test
+  public void environmentOverrideAffectsXctestTest() throws Exception {
+    assumeTrue(Platform.detect() == Platform.MACOS);
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "apple_test_env", tmp);
+    workspace.setUp();
+    ProjectWorkspace.ProcessResult result;
+    result = workspace.runBuckCommand(
+        "test",
+        "--config", "apple.xctest_platforms=macosx",
+        "//:foo#macosx-x86_64");
+    result.assertTestFailure("normally the test should fail");
+    workspace.resetBuildLogFile();
+    result = workspace.runBuckCommand(
+        "test",
+        "--config", "apple.xctest_platforms=macosx",
+        "--test-runner-env", "FOO=bar",
+        "//:foo#macosx-x86_64");
+    result.assertSuccess("should pass when I pass correct environment");
+  }
+
+  @Test
+  public void appleTestWithoutTestHostShouldSupportMultiarch() throws Exception {
+    assumeTrue(Platform.detect() == Platform.MACOS);
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "apple_test_xctest", tmp);
+    workspace.setUp();
+    workspace.copyRecursively(
+        TestDataHelper.getTestDataDirectory(this).resolve("xctool"),
+        Paths.get("xctool"));
+    BuildTarget target = BuildTargetFactory.newInstance(
+        "//:foo#iphonesimulator-i386,iphonesimulator-x86_64");
+    ProjectWorkspace.ProcessResult result =
+        workspace.runBuckCommand(
+            "test",
+            "--config", "apple.xctool_path=xctool/bin/xctool",
+            target.getFullyQualifiedName());
+    result.assertSuccess();
+    assertThat(
+        result.getStderr(),
+        containsString("1 Passed   0 Skipped   0 Failed   FooXCTest"));
+
+    result = workspace.runBuckCommand("targets", "--show-output", target.getFullyQualifiedName());
+    result.assertSuccess();
+    Path output = workspace.getDestPath().resolve(
+        Iterables.getLast(Splitter.on(' ').limit(2).split(result.getStdout().trim())));
+    // check result is actually multiarch.
+    ProcessExecutor.Result lipoVerifyResult = workspace.runCommand(
+        "lipo", output.resolve("foo").toString(), "-verify_arch", "i386", "x86_64");
+    assertEquals(
+        lipoVerifyResult.getStderr().or(""),
+        0,
+        lipoVerifyResult.getExitCode());
+  }
+
+  @Test
+  public void appleTestWithoutTestHostMultiarchShouldHaveMultiarchDsym() throws Exception {
+    assumeTrue(Platform.detect() == Platform.MACOS);
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "apple_test_xctest", tmp);
+    workspace.setUp();
+    workspace.copyRecursively(
+        TestDataHelper.getTestDataDirectory(this).resolve("xctool"),
+        Paths.get("xctool"));
+    BuildTarget target = BuildTargetFactory.newInstance(
+        "//:foo#iphonesimulator-i386,iphonesimulator-x86_64");
+    ProjectWorkspace.ProcessResult result =
+        workspace.runBuckCommand(
+            "build",
+            "--config", "cxx.cflags=-g",
+            "--config", "apple.xctool_path=xctool/bin/xctool",
+            "--config", "apple.default_debug_info_format_for_binaries=DWARF_AND_DSYM",
+            "--config", "apple.default_debug_info_format_for_libraries=DWARF_AND_DSYM",
+            "--config", "apple.default_debug_info_format_for_tests=DWARF_AND_DSYM",
+            target.getFullyQualifiedName());
+    result.assertSuccess();
+
+    BuildTarget libraryTarget =
+        target.withAppendedFlavors(
+            AppleTestDescription.LIBRARY_FLAVOR,
+            CxxDescriptionEnhancer.MACH_O_BUNDLE_FLAVOR);
+    Path output = workspace.getDestPath().resolve(
+        BuildTargets.getGenPath(
+            filesystem,
+            libraryTarget.withAppendedFlavors(AppleDsym.RULE_FLAVOR),
+            "%s.dSYM"))
+        .resolve("Contents/Resources/DWARF/" + libraryTarget.getShortNameAndFlavorPostfix());
+    ProcessExecutor.Result lipoVerifyResult = workspace.runCommand(
+        "lipo", output.toString(), "-verify_arch", "i386", "x86_64");
+    assertEquals(
+        lipoVerifyResult.getStderr().or(""),
+        0,
+        lipoVerifyResult.getExitCode());
+    AppleDsymTestUtil.checkDsymFileHasDebugSymbolForConcreteArchitectures(
+        "-[FooXCTest testTwoPlusTwoEqualsFour]",
+        workspace,
+        output,
+        Optional.of(ImmutableList.of("i386", "x86_64")));
+  }
+
+  @Test
+  public void appleTestWithTestHostShouldSupportMultiarch() throws Exception {
+    assumeTrue(Platform.detect() == Platform.MACOS);
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "apple_test_with_host_app", tmp);
+    workspace.setUp();
+    workspace.copyRecursively(
+        TestDataHelper.getTestDataDirectory(this).resolve("xctool"),
+        Paths.get("xctool"));
+    BuildTarget target = BuildTargetFactory.newInstance(
+        "//:AppTest#iphonesimulator-i386,iphonesimulator-x86_64");
+    ProjectWorkspace.ProcessResult result =
+        workspace.runBuckCommand(
+            "test",
+            "--config", "apple.xctool_path=xctool/bin/xctool",
+            target.getFullyQualifiedName());
+    result.assertSuccess();
+    assertThat(
+        result.getStderr(),
+        containsString("1 Passed   0 Skipped   0 Failed   AppTest"));
+
+    result = workspace.runBuckCommand("targets", "--show-output", target.getFullyQualifiedName());
+    result.assertSuccess();
+    Path output = workspace.getDestPath().resolve(
+        Iterables.getLast(Splitter.on(' ').limit(2).split(result.getStdout().trim())));
+    // check result is actually multiarch.
+    ProcessExecutor.Result lipoVerifyResult = workspace.runCommand(
+        "lipo", output.resolve("AppTest").toString(), "-verify_arch", "i386", "x86_64");
+    assertEquals(
+        lipoVerifyResult.getStderr().or(""),
+        0,
+        lipoVerifyResult.getExitCode());
   }
 
   private static void assertIsSymbolicLink(

@@ -48,6 +48,16 @@
     window.location.replace(loc.replace('facebook.github.io/buck', 'buckbuild.com'));
   {rb}
 </script>
+<!-- Facebook Pixel Code -->
+<script>
+!function(f,b,e,v,n,t,s){lb}if(f.fbq)return;n=f.fbq=function(){lb}n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments){rb};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s){rb}(window,document,'script','//connect.facebook.net/en_US/fbevents.js');
+fbq('init', '1637165926500152');
+fbq('track', 'PageView');
+</script>
+<noscript><img height="1" width="1" style="display:none"
+src="https://www.facebook.com/tr?id=1637165926500152&ev=PageView&noscript=1"
+/></noscript>
+<!-- End Facebook Pixel Code -->
   <title>{$fullTitle}</title>
   <link type="image/png" rel="shortcut icon" href="{ROOT}static/favicon.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no" />
@@ -61,7 +71,7 @@
   // List buck.css second to override prettify.
   <link type="text/css" rel="stylesheet" href="{ROOT}static/buck.css">
 
-  // TODO(mbolin): Pass $og_type in as a parameter.
+  // TODO(bolinfest): Pass $og_type in as a parameter.
   {let $og_type}
     {if $ishome}
       website
@@ -150,6 +160,7 @@
             'android_binary',
             'android_build_config',
             'android_instrumentation_apk',
+            'android_instrumentation_test',
             'android_library',
             'android_manifest',
             'android_prebuilt_aar',
@@ -159,24 +170,57 @@
             'gen_aidl',
             'keystore',
             'ndk_library',
+            'prebuilt_cxx_library',
             'prebuilt_jar',
             'prebuilt_native_library',
             'project_config',
         ],
         'core': [
+            'export_file',
             'genrule',
             'remote_file',
+            'zip_file',
         ],
         'cxx': [
             'cxx_binary',
             'cxx_library',
             'cxx_test',
-            'prebuilt_native_library',
+            'prebuilt_cxx_library',
         ],
         'd': [
             'd_binary',
             'd_library',
             'd_test',
+        ],
+        'dotnet': [
+            'csharp_library',
+            'prebuilt_dotnet_library',
+        ],
+        'go': [
+            'go_binary',
+            'go_library',
+            'go_test',
+        ],
+        'groovy': [
+            'groovy_library',
+        ],
+        'halide': [
+            'halide_library',
+        ],
+        'haskell': [
+            'haskell_binary',
+            'haskell_library',
+            'prebuilt_haskell_library',
+        ],
+        'ios': [
+            'apple_asset_catalog',
+            'apple_binary',
+            'apple_bundle',
+            'apple_library',
+            'apple_package',
+            'apple_resource',
+            'apple_test',
+            'prebuilt_cxx_library',
         ],
         'java': [
             'cxx_library',
@@ -186,19 +230,30 @@
             'prebuilt_jar',
             'prebuilt_native_library',
         ],
+        'lua': [
+            'cxx_lua_extension',
+            'lua_binary',
+            'lua_library',
+        ],
         'python': [
             'prebuilt_python_library',
             'python_binary',
             'python_library',
             'python_test',
         ],
+        'rust': [
+            'rust_binary',
+            'rust_library',
+        ],
     ] /}
   <h3>Getting Started</h3>
   <ul>
-    <li><a href="{ROOT}">Overview</a>
-    <li><a href="{ROOT}setup/quick_start.html">Quick Start</a>
+    <li><a href="{ROOT}about/overview.html">Overview</a>
     <li><a href="{ROOT}setup/install.html">Downloading and Installing Buck</a>
+    <li><a href="{ROOT}setup/intellij_plugin_install.html">Installing the IntelliJ Plugin</a>
+    <li><a href="{ROOT}setup/quick_start.html">Quick Start</a>
     <li><a href="{ROOT}article/exopackage.html">Exopackage</a>
+    <li><a href="{ROOT}article/query_cheat_sheet.html">Buck Query Cheat Sheet</a>
   </ul>
   <h3>About</h3>
   <ul>
@@ -242,19 +297,75 @@
         {param rules: $platformRulesMap['d'] /}
     {/call}
     {call .platformBuildRuleLink}
+        {param platform: 'Go' /}
+        {param rules: $platformRulesMap['go'] /}
+    {/call}
+    {call .platformBuildRuleLink}
+        {param platform: 'Groovy' /}
+        {param rules: $platformRulesMap['groovy'] /}
+    {/call}
+    {call .platformBuildRuleLink}
+        {param platform: 'Halide' /}
+        {param rules: $platformRulesMap['halide'] /}
+    {/call}
+    {call .platformBuildRuleLink}
+        {param platform: 'Haskell' /}
+        {param rules: $platformRulesMap['haskell'] /}
+    {/call}
+    {call .platformBuildRuleLink}
+        {param platform: 'Halide' /}
+        {param rules: $platformRulesMap['halide'] /}
+    {/call}
+    {call .platformBuildRuleLink}
+        {param platform: 'iOS' /}
+        {param rules: $platformRulesMap['ios'] /}
+    {/call}
+    {call .platformBuildRuleLink}
         {param platform: 'Java' /}
         {param rules: $platformRulesMap['java'] /}
+    {/call}
+    {call .platformBuildRuleLink}
+        {param platform: 'Lua' /}
+        {param rules: $platformRulesMap['lua'] /}
     {/call}
     {call .platformBuildRuleLink}
         {param platform: 'Python' /}
         {param rules: $platformRulesMap['python'] /}
     {/call}
+    {call .platformBuildRuleLink}
+        {param platform: 'iOS' /}
+        {param rules: $platformRulesMap['ios'] /}
+    {/call}
+    {call .platformBuildRuleLink}
+        {param platform: 'Java' /}
+        {param rules: $platformRulesMap['java'] /}
+    {/call}
+    {call .platformBuildRuleLink}
+        {param platform: 'Lua' /}
+        {param rules: $platformRulesMap['lua'] /}
+    {/call}
+    {call .platformBuildRuleLink}
+        {param platform: 'Python' /}
+        {param rules: $platformRulesMap['python'] /}
+    {/call}
+    {call .platformBuildRuleLink}
+        {param platform: 'Rust' /}
+        {param rules: $platformRulesMap['rust'] /}
+    {/call}
+    {call .platformBuildRuleLink}
+        {param platform: '.Net' /}
+        {param rules: $platformRulesMap['dotnet'] /}
+    {/call}
   </ul>
   <h3>Functions</h3>
   <ul>
     {foreach $function in [
+        'add_build_file_dep',
         'glob',
         'include_defs',
+        'read_config',
+        'subdir_glob',
+        'flatten_dicts',
         ]}
       <li><a href="{ROOT}function/{$function}.html">{$function}()</a>
     {/foreach}
@@ -265,13 +376,19 @@
     <li><a href="{ROOT}command/common_parameters.html">Common Parameters</a>
     {foreach $command in [
         'audit',
+        'autodeps',
         'build',
         'clean',
         'fetch',
         'install',
         'project',
+        'query',
         'quickstart',
+        'repl',
+        'run',
+        'root',
         'server',
+        'simulate',
         'targets',
         'test',
         'uninstall',
@@ -288,6 +405,7 @@
   <h3>Contributing to Buck</h3>
   <ul>
     <li><a href="https://groups.google.com/group/buck-build">Discussion Group</a>
+    <li><a href="http://stackoverflow.com/questions/ask?tags=buck">Get Support</a>
     <li><a href="https://github.com/facebook/buck/issues/new">Report a Bug</a>
     <li><a href="{ROOT}contributing/tour.html">Tour of the Codebase</a>
     <li><a href="{ROOT}contributing/development.html">Development Workflow</a>
@@ -361,6 +479,9 @@
  * @param args HTML documentation for each arg for the rule.
  *     Should be created using multiple applications of the {buck.arg}
  *     template.
+ * @param? flavors HTML documentation for each flavor supported by the rule.
+ *     Should be created using multiple applications of the {buck.arg}
+ *     template.
  * @param? examples HTML documentation that shows examples of the build
  *     rule in action.
  * @param? furtherexp Further explanation; HTML shown after arguments and
@@ -380,7 +501,14 @@
 <h2>Arguments</h2>
 <ul class="{css arglist}">
   {$args|noAutoescape}
+  {call buck.visibility_arg /}
+  {call buck.licenses_arg /}
 </ul>
+
+{if $flavors}
+  <h2>Flavors</h2>
+  {$flavors|noAutoescape}
+{/if}
 
 {if $examples}
   <h2>Examples</h2>
@@ -390,7 +518,6 @@
   {$furtherexp|noAutoescape}
 {/if}
 {/template}
-
 
 /**
  * Used to format an argument to a build rule.
@@ -438,7 +565,7 @@
 
 /**
  * @param overview HTML description of the command.
- * @param params HTML documentation for each param of the command.
+ * @param? params HTML documentation for each param of the command.
  *     Should be created using multiple applications of the {buck.param}
  *     template.
  * @param? examples HTML documentation that shows examples of the build
@@ -447,10 +574,12 @@
 {template .command}
 {$overview|noAutoescape}
 
-<h2>Parameters</h2>
-<ul class="{css arglist}">
-  {$params|noAutoescape}
-</ul>
+{if $params}
+  <h2>Parameters</h2>
+  <ul class="{css arglist}">
+    {$params|noAutoescape}
+  </ul>
+{/if}
 
 {if $examples}
   <h2>Examples</h2>
@@ -461,15 +590,40 @@
 
 /**
  * @param overview HTML description of the function.
+ * @param status one of FROZEN, UNFROZEN, or DEPRECATED to indicate the
+       current level of support for the rule.
  * @param args HTML documentation for each arg for the function.
  *     Should be created using multiple applications of the {buck.functionArg}
  *     template.
  * @param? examples HTML documentation that shows examples of the function
  *     in action.
+ * @param? furtherexp Further explanation; HTML shown after arguments and
+        examples.
  */
 {template .function}
-  // For now, functions and build rules should be documented the same way.
-  {call .rule data="all" /}
+{switch $status}
+  {case 'FROZEN'}
+    // Nothing to show here.
+  {case 'UNFROZEN'}
+    <p><small>This is liable to change in the future.</small></p>
+  {case 'DEPRECATED'}
+    <p><small>This will be removed in the future.</small></p>
+{/switch}
+{$overview|noAutoescape}
+
+<h2>Arguments</h2>
+<ul class="{css arglist}">
+  {$args|noAutoescape}
+</ul>
+
+{if $examples}
+  <h2>Examples</h2>
+  {$examples|noAutoescape}
+{/if}
+
+{if $furtherexp}
+  {$furtherexp|noAutoescape}
+{/if}
 {/template}
 
 
@@ -492,6 +646,11 @@
 /***/
 {template .android_build_config}
 {call .ruleLink}{param name : 'android_build_config' /}{/call}
+{/template}
+
+/***/
+{template .android_instrumentation_apk}
+{call .ruleLink}{param name : 'android_instrumentation_apk' /}{/call}
 {/template}
 
 /***/
@@ -520,13 +679,68 @@
 {/template}
 
 /***/
+{template .apple_binary}
+{call .ruleLink}{param name: 'apple_binary' /}{/call}
+{/template}
+
+/***/
+{template .apple_bundle}
+{call .ruleLink}{param name: 'apple_bundle' /}{/call}
+{/template}
+
+/***/
+{template .apple_library}
+{call .ruleLink}{param name: 'apple_library' /}{/call}
+{/template}
+
+/***/
 {template .genrule}
 {call .ruleLink}{param name : 'genrule' /}{/call}
 {/template}
 
 /***/
+{template .groovy_library}
+{call .ruleLink}{param name : 'groovy_library' /}{/call}
+{/template}
+
+/***/
+{template .haskell_binary}
+{call .ruleLink}{param name : 'haskell_binary' /}{/call}
+{/template}
+
+/***/
+{template .haskell_library}
+{call .ruleLink}{param name : 'haskell_library' /}{/call}
+{/template}
+
+/***/
+{template .prebuilt_haskell_library}
+{call .ruleLink}{param name : 'prebuilt_haskell_library' /}{/call}
+{/template}
+
+/***/
 {template .java_library}
 {call .ruleLink}{param name : 'java_library' /}{/call}
+{/template}
+
+/***/
+{template .java_test}
+{call .ruleLink}{param name : 'java_test' /}{/call}
+{/template}
+
+/***/
+{template .cxx_lua_extension}
+{call .ruleLink}{param name : 'cxx_lua_extension' /}{/call}
+{/template}
+
+/***/
+{template .lua_binary}
+{call .ruleLink}{param name : 'lua_binary' /}{/call}
+{/template}
+
+/***/
+{template .lua_library}
+{call .ruleLink}{param name : 'lua_library' /}{/call}
 {/template}
 
 /***/
@@ -547,6 +761,11 @@
 /***/
 {template .project_config}
 {call .ruleLink}{param name : 'project_config' /}{/call}
+{/template}
+
+/***/
+{template .prebuilt_cxx_library}
+{call .ruleLink}{param name : 'prebuilt_cxx_library' /}{/call}
 {/template}
 
 /***/
@@ -580,14 +799,35 @@
 {/template}
 
 /***/
+{template .fn_add_build_file_dep}
+<a href="{ROOT}function/add_build_file_dep.html"><code>add_build_file_dep()</code></a>
+{/template}
+
+/***/
 {template .fn_glob}
 <a href="{ROOT}function/glob.html"><code>glob()</code></a>
+{/template}
+
+/***/
+{template .fn_include_defs}
+<a href="{ROOT}function/include_defs.html"><code>include_defs()</code></a>
+{/template}
+
+/***/
+{template .fn_read_config}
+<a href="{ROOT}function/read_config.html"><code>read_config()</code></a>
 {/template}
 
 /***/
 {template .string_parameter_macros}
 <a href="{ROOT}function/string_parameter_macros.html">string parameter macros</a>
 {/template}
+
+/***/
+{template .fn_flatten_dicts}
+<a href="{ROOT}function/flatten_dicts.html"><code>flatten_dicts()</code></a>
+{/template}
+
 
 /**
  * @param page
@@ -598,8 +838,36 @@
 {/template}
 
 /***/
+{template .build_file}
+{call .concept_link}{param page: 'build_file' /}{param name: 'build file' /}{/call}
+{/template}
+
+/***/
+{template .build_rule}
+{call .concept_link}{param page: 'build_rule' /}{param name: 'build rule' /}{/call}
+{/template}
+
+/***/
 {template .build_target}
 {call .concept_link}{param page: 'build_target' /}{param name: 'build target' /}{/call}
+{/template}
+
+/***/
+{template .build_target_pattern}
+  {call .concept_link}
+    {param page: 'build_target_pattern' /}
+    {param name: 'build target pattern' /}
+  {/call}
+{/template}
+
+/***/
+{template .setup_install}
+<a href="{ROOT}setup/install.html">Downloading and Installing Buck</a>
+{/template}
+
+/***/
+{template .setup_build_intellij_plugin}
+<a href="{ROOT}setup/intellij_plugin_build.html">Building the Buck Intellij Plugin</a>
 {/template}
 
 /**
@@ -607,6 +875,11 @@
  */
 {template .cmd_link}
 <a href="{ROOT}command/{$name}.html"><code>buck {$name}</code></a>
+{/template}
+
+/***/
+{template .cmd_autodeps}
+{call .cmd_link}{param name : 'autodeps' /}{/call}
 {/template}
 
 /***/
@@ -640,13 +913,50 @@
 {/template}
 
 /***/
+{template .cmd_repl}
+{call .cmd_link}{param name : 'repl' /}{/call}
+{/template}
+
+/***/
+{template .cmd_run}
+{call .cmd_link}{param name : 'run' /}{/call}
+{/template}
+
+/***/
+{template .cmd_simulate}
+{call .cmd_link}{param name : 'simulate' /}{/call}
+{/template}
+
+/***/
+{template .cmd_test}
+{call .cmd_link}{param name: 'test' /}{/call}
+{/template}
+
+/***/
 {template .cmd_uninstall}
 {call .cmd_link}{param name : 'uninstall' /}{/call}
 {/template}
 
 /***/
+{template .cmd_query}
+{call .cmd_link}{param name : 'query' /}{/call}
+{/template}
+
+/***/
 {template .concept_buckconfig}
 <a href="{ROOT}concept/buckconfig.html"><code>.buckconfig</code></a>
+{/template}
+
+/***/
+{template .licenses_arg}
+{call buck.arg}
+  {param name: 'licenses' /}
+  {param default: '[]' /}
+  {param desc}
+  Set of license files for this library.  To get the list of license files for a given{sp}
+  {call buck.build_rule /} and all of its dependencies, you can use {call buck.cmd_query /}.
+  {/param}
+{/call}
 {/template}
 
 /***/
@@ -668,21 +978,56 @@
   {param name : 'tests' /}
   {param default : '[]' /}
   {param desc}
-  List of <a href="{ROOT}concept/build_target.html">build target</a> that
+  List of <a href="{ROOT}concept/build_target.html">build targets</a> that
   identify the test rules that exercise this target.
   {/param}
 {/call}
 {/template}
 
-/**
- *
- */
-{template .platformWarning}
-<p><strong>
-Note: Buck works only on Mac OS X and Linux. Windows is not supported.
-</strong></p>
+/***/
+{template .test_label_arg}
+{call buck.arg}
+  {param name: 'labels' /}
+  {param default: '[]' /}
+  {param desc}
+  A list of labels to be applied to these tests. These labels are
+  arbitrary text strings and have no meaning within buck itself. They
+  can, however, have meaning for you as a test author
+  (e.g., <code>smoke</code> or <code>fast</code>). A label can be
+  used to filter or include a specific test rule
+  when executing <a href="{ROOT}command/test.html"><code>buck
+  test</code></a>.
+  {/param}
+{/call}
 {/template}
 
+/***/
+{template .run_test_separately_arg}
+{call buck.arg}
+  {param name: 'run_test_separately' /}
+  {param default : 'False' /}
+  {param desc}
+  If set to <code>true</code>, the test(s) in this rule are run separately
+  from all other tests. (This is useful
+  for integration tests which access a physical device or other limited
+  resource.)
+  <p>If unset, the test(s) in this rule in parallel with all other tests.</p>
+  {/param}
+{/call}
+{/template}
+
+/***/
+{template .test_rule_timeout_ms}
+{call buck.arg}
+  {param name: 'test_rule_timeout_ms' /}
+  {param default: '[]' /}
+  {param desc}
+  If set specifies the maximum amount of time (in milliseconds) in which all of the tests in this
+  rule should complete. This overrides the default <code>rule_timeout</code> if any has been
+  specified in {call buckconfig.test_rule_timeout /}.
+  {/param}
+{/call}
+{/template}
 
 /**
  * @param? withAlias

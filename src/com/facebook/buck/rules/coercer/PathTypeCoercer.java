@@ -17,6 +17,7 @@
 package com.facebook.buck.rules.coercer;
 
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.rules.CellPathResolver;
 
 import java.nio.file.Path;
 
@@ -29,6 +30,7 @@ public class PathTypeCoercer extends LeafTypeCoercer<Path> {
 
   @Override
   public Path coerce(
+      CellPathResolver cellRoots,
       ProjectFilesystem filesystem,
       Path pathRelativeToProjectRoot,
       Object object) throws CoerceFailedException {

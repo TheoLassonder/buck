@@ -1,88 +1,66 @@
 CONFIG_SRCS = [
+  'NativeLinkStrategy.java',
   'PythonBuckConfig.java',
 ]
 java_library(
   name = 'config',
   srcs = CONFIG_SRCS,
-  deps = [
-    '//src/com/facebook/buck/cli:config',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/util:io',
-    '//third-party/java/guava:guava',
-    ':support',
+  resources = [
+    '__test_main__.py',
   ],
+  autodeps = True,
   visibility = ['PUBLIC'],
 )
 
 SUPPORT_SRCS = [
+  'AbstractNeededCoverageSpec.java',
+  'AbstractPythonPlatform.java',
   'AbstractPythonVersion.java',
   'PythonEnvironment.java',
 ]
 java_immutables_library(
   name = 'support',
   srcs = SUPPORT_SRCS,
-  deps = [
-    '//src/com/facebook/buck/rules:build_rule',
-    '//third-party/java/guava:guava',
+  immutable_types = [
+    'NeededCoverageSpec',
+    'PythonPlatform',
+    'PythonVersion',
   ],
+  autodeps = True,
   visibility = ['PUBLIC'],
 )
-
 
 java_immutables_library(
   name = 'rules',
   srcs = glob(['*.java'], excludes=CONFIG_SRCS + SUPPORT_SRCS),
-  deps = [
-    ':support',
-    '//src/com/facebook/buck/cxx:platform',
-    '//src/com/facebook/buck/file:rules',
-    '//src/com/facebook/buck/graph:graph',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/log:api',
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/parser:rule_pattern',
-    '//src/com/facebook/buck/rules:build_rule',
-    '//src/com/facebook/buck/rules:rules',
-    '//src/com/facebook/buck/shell:steps',
-    '//src/com/facebook/buck/step:step',
-    '//src/com/facebook/buck/step/fs:fs',
-    '//src/com/facebook/buck/util:constants',
-    '//src/com/facebook/buck/util:util',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/test:test',
-    '//src/com/facebook/buck/test/selectors:selectors',
-    '//src/com/facebook/buck/zip:unzip',
-    '//third-party/java/guava:guava',
-    '//third-party/java/infer-annotations:infer-annotations',
-    '//third-party/java/jsr:jsr305',
-    '//third-party/java/jackson:jackson',
+  immutable_types = [
+    'PythonPackageComponents',
   ],
+  tests = [
+    '//test/com/facebook/buck/python:python',
+  ],
+  resources = [
+    'run_inplace.py.in',
+  ],
+  autodeps = True,
   visibility = [
-    '//src/com/facebook/buck/rules:types',
-    '//src/com/facebook/buck/ocaml:rules',
     '//src/com/facebook/buck/cxx:rules',
-    '//test/com/facebook/buck/python:',
+    '//src/com/facebook/buck/lua:lua',
+    '//src/com/facebook/buck/ocaml:rules',
+    '//src/com/facebook/buck/rules:types',
+    '//src/com/facebook/buck/thrift:thrift',
     '//test/com/facebook/buck/cxx:cxx',
     '//test/com/facebook/buck/cxx:testutil',
-    '//src/com/facebook/buck/thrift:rules',
+    '//test/com/facebook/buck/python:',
     '//test/com/facebook/buck/thrift:thrift',
-  ],
-)
-
-python_library(
-  name = 'pexlib',
-  resources = [
-    '//third-party/py/setuptools:pkg_resources.py',
   ],
 )
 
 python_binary(
   name = 'pex',
-  main = 'pex.py',
+  main = 'make_pex.py',
   deps = [
-    ':pexlib',
-    '//third-party/py/twitter-commons/src/python:twitter-commons',
+    '//third-party/py/pex:pex',
   ],
   visibility = [
     'PUBLIC',

@@ -32,15 +32,13 @@
 
 package com.facebook.buck.log;
 
-import static java.lang.String.format;
-import static java.util.Arrays.asList;
 import static java.util.logging.Level.FINE;
 import static java.util.logging.Level.FINER;
 import static java.util.logging.Level.INFO;
 import static java.util.logging.Level.SEVERE;
 import static java.util.logging.Level.WARNING;
 
-import java.util.IllegalFormatException;
+import java.util.logging.Level;
 
 import javax.annotation.Nullable;
 
@@ -102,7 +100,7 @@ public class Logger
 
     /**
      * Logs a message at VERBOSE level.
-     * <br/>
+     * <br>
      * Usage example:
      * <pre>
      *    logger.verbose("value is %s (%d ms)", value, time);
@@ -115,22 +113,12 @@ public class Logger
      */
     public void verbose(String format, Object... args)
     {
-        if (logger.isLoggable(FINER)) {
-            String message;
-            try {
-                message = format(format, args);
-            }
-            catch (IllegalFormatException e) {
-                logger.log(SEVERE, illegalFormatMessageFor("VERBOSE", format, args), e);
-                message = rawMessageFor(format, args);
-            }
-            logger.finer(message);
-        }
+        verbose(null, format, args);
     }
 
     /**
      * Logs a message at VERBOSE level.
-     * <br/>
+     * <br>
      * Usage example:
      * <pre>
      *    logger.verbose(e, "value is %s (%d ms)", value, time);
@@ -142,19 +130,9 @@ public class Logger
      * @param format a format string compatible with String.format()
      * @param args arguments for the format string
      */
-    public void verbose(Throwable exception, String format, Object... args)
+    public void verbose(@Nullable Throwable exception, String format, Object... args)
     {
-        if (logger.isLoggable(FINER)) {
-            String message;
-            try {
-                message = format(format, args);
-            }
-            catch (IllegalFormatException e) {
-                logger.log(SEVERE, illegalFormatMessageFor("VERBOSE", format, args), e);
-                message = rawMessageFor(format, args);
-            }
-            logger.log(FINER, message, exception);
-        }
+        logAppendableLogRecord(FINER, "VERBOSE", exception, format, args);
     }
 
     /**
@@ -180,7 +158,7 @@ public class Logger
 
     /**
      * Logs a message at DEBUG level.
-     * <br/>
+     * <br>
      * Usage example:
      * <pre>
      *    logger.debug("value is %s (%d ms)", value, time);
@@ -193,22 +171,12 @@ public class Logger
      */
     public void debug(String format, Object... args)
     {
-        if (logger.isLoggable(FINE)) {
-            String message;
-            try {
-                message = format(format, args);
-            }
-            catch (IllegalFormatException e) {
-                logger.log(SEVERE, illegalFormatMessageFor("DEBUG", format, args), e);
-                message = rawMessageFor(format, args);
-            }
-            logger.fine(message);
-        }
+        debug(null, format, args);
     }
 
     /**
      * Logs a message at DEBUG level.
-     * <br/>
+     * <br>
      * Usage example:
      * <pre>
      *    logger.debug(e, "value is %s (%d ms)", value, time);
@@ -220,19 +188,9 @@ public class Logger
      * @param format a format string compatible with String.format()
      * @param args arguments for the format string
      */
-    public void debug(Throwable exception, String format, Object... args)
+    public void debug(@Nullable Throwable exception, String format, Object... args)
     {
-        if (logger.isLoggable(FINE)) {
-            String message;
-            try {
-                message = format(format, args);
-            }
-            catch (IllegalFormatException e) {
-                logger.log(SEVERE, illegalFormatMessageFor("DEBUG", format, args), e);
-                message = rawMessageFor(format, args);
-            }
-            logger.log(FINE, message, exception);
-        }
+        logAppendableLogRecord(FINE, "DEBUG", exception, format, args);
     }
 
     /**
@@ -247,7 +205,7 @@ public class Logger
 
     /**
      * Logs a message at INFO level.
-     * <br/>
+     * <br>
      * Usage example:
      * <pre>
      *    logger.info("value is %s (%d ms)", value, time);
@@ -255,22 +213,23 @@ public class Logger
      * If the format string is invalid or the arguments are insufficient, an error will be logged and execution
      * will continue.
      *
+     * @param exception an exception associated with the warning being logged
      * @param format a format string compatible with String.format()
      * @param args arguments for the format string
      */
-    public void info(String format, Object... args)
+    public void info(@Nullable Throwable exception, String format, Object... args)
     {
-        if (logger.isLoggable(INFO)) {
-            String message;
-            try {
-                message = format(format, args);
-            }
-            catch (IllegalFormatException e) {
-                logger.log(SEVERE, illegalFormatMessageFor("INFO", format, args), e);
-                message = rawMessageFor(format, args);
-            }
-            logger.info(message);
-        }
+        logAppendableLogRecord(INFO, "INFO", exception, format, args);
+    }
+
+    /**
+     * Logs a message at INFO level.
+     *
+     * @param format a format string compatible with String.format()
+     * @param args arguments for the format string
+     */
+    public void info(String format, Object... args) {
+        info(null, format, args);
     }
 
     /**
@@ -296,7 +255,7 @@ public class Logger
 
     /**
      * Logs a message at WARN level.
-     * <br/>
+     * <br>
      * Usage example:
      * <pre>
      *    logger.warn(e, "something bad happened when connecting to %s:%d", host, port);
@@ -310,22 +269,12 @@ public class Logger
      */
     public void warn(@Nullable Throwable exception, String format, Object... args)
     {
-        if (logger.isLoggable(WARNING)) {
-            String message;
-            try {
-                message = format(format, args);
-            }
-            catch (IllegalFormatException e) {
-                logger.log(SEVERE, illegalFormatMessageFor("WARN", format, args), e);
-                message = rawMessageFor(format, args);
-            }
-            logger.log(WARNING, message, exception);
-        }
+        logAppendableLogRecord(WARNING, "WARN", exception, format, args);
     }
 
     /**
      * Logs a message at WARN level.
-     * <br/>
+     * <br>
      * Usage example:
      * <pre>
      *    logger.warn("something bad happened when connecting to %s:%d", host, port);
@@ -364,7 +313,7 @@ public class Logger
 
     /**
      * Logs a message at ERROR level.
-     * <br/>
+     * <br>
      * Usage example:
      * <pre>
      *    logger.error(e, "something really bad happened when connecting to %s:%d", host, port);
@@ -378,22 +327,12 @@ public class Logger
      */
     public void error(@Nullable Throwable exception, String format, Object... args)
     {
-        if (logger.isLoggable(SEVERE)) {
-            String message;
-            try {
-                message = format(format, args);
-            }
-            catch (IllegalFormatException e) {
-                logger.log(SEVERE, illegalFormatMessageFor("ERROR", format, args), e);
-                message = rawMessageFor(format, args);
-            }
-            logger.log(SEVERE, message, exception);
-        }
+        logAppendableLogRecord(SEVERE, "ERROR", exception, format, args);
     }
 
     /**
      * Logs a message at ERROR level. The value of {@code exception.getMessage()} will be used as the log message.
-     * <br/>
+     * <br>
      * Usage example:
      * <pre>
      *    logger.error(e);
@@ -410,7 +349,7 @@ public class Logger
 
     /**
      * Logs a message at ERROR level.
-     * <br/>
+     * <br>
      * Usage example:
      * <pre>
      *    logger.error("something really bad happened when connecting to %s:%d", host, port);
@@ -426,6 +365,22 @@ public class Logger
         error(null, format, args);
     }
 
+    private void logAppendableLogRecord(
+        Level level,
+        String displayLevel,
+        @Nullable Throwable exception,
+        String format,
+        Object... args)
+    {
+      if (logger.isLoggable(level)) {
+          AppendableLogRecord lr = new AppendableLogRecord(level, displayLevel, format);
+          lr.setParameters(args);
+          lr.setThrown(exception);
+          lr.setLoggerName(logger.getName());
+          logger.log(lr);
+      }
+    }
+
     public boolean isVerboseEnabled()
     {
         return logger.isLoggable(FINER);
@@ -439,15 +394,5 @@ public class Logger
     public boolean isInfoEnabled()
     {
         return logger.isLoggable(INFO);
-    }
-
-    private String illegalFormatMessageFor(String level, String message, Object... args)
-    {
-        return format("Invalid format string while trying to log: %s '%s' %s", level, message, asList(args));
-    }
-
-    private String rawMessageFor(String format, Object... args)
-    {
-        return format("'%s' %s", format, asList(args));
     }
 }

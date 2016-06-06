@@ -32,7 +32,10 @@ public class PathSourcePathTest {
     ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
     PathSourcePath path = new PathSourcePath(projectFilesystem, Paths.get("cheese"));
 
-    Path resolved = new SourcePathResolver(new BuildRuleResolver()).getPath(path);
+    SourcePathResolver resolver = new SourcePathResolver(
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer())
+     );
+    Path resolved = resolver.deprecatedGetPath(path);
 
     assertEquals(Paths.get("cheese"), resolved);
   }

@@ -20,14 +20,13 @@ import static com.facebook.buck.zip.ZipOutputStreams.HandleDuplicates.OVERWRITE_
 
 import com.facebook.buck.event.ConsoleEvent;
 import com.facebook.buck.io.MorePaths;
-import com.facebook.buck.io.MorePosixFilePermissions;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.log.Logger;
 import com.facebook.buck.model.Pair;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.google.common.base.Optional;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.common.hash.Hashing;
@@ -42,8 +41,6 @@ import java.nio.file.FileVisitor;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.PosixFilePermission;
-import java.util.EnumSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.zip.ZipEntry;
@@ -51,25 +48,23 @@ import java.util.zip.ZipEntry;
 /**
  * A {@link com.facebook.buck.step.Step} that creates a ZIP archive..
  */
+@SuppressWarnings("PMD.AvoidUsingOctalValues")
 public class ZipStep implements Step {
 
   private static final Logger LOG = Logger.get(ZipStep.class);
 
-  public static final int MIN_COMPRESSION_LEVEL = 0;
-  public static final int DEFAULT_COMPRESSION_LEVEL = 6;
-  public static final int MAX_COMPRESSION_LEVEL = 9;
-
+  private final ProjectFilesystem filesystem;
   private final Path pathToZipFile;
   private final ImmutableSet<Path> paths;
   private final boolean junkPaths;
-  private final int compressionLevel;
+  private final ZipCompressionLevel compressionLevel;
   private final Path baseDir;
 
 
   /**
    * Create a {@link ZipStep} to create or update a zip archive.
    *
-   * Note that paths added to the archive are always relative to the working directory.<br/>
+   * Note that paths added to the archive are always relative to the working directory.<br>
    * For example, if you're in {@code /dir} and you add {@code file.txt}, you get
    * an archive containing just the file. If you were in {@code /} and added
    * {@code dir/file.txt}, you would get an archive containing the file within a directory.
@@ -83,13 +78,13 @@ public class ZipStep implements Step {
    * @param baseDir working directory for {@code zip} command.
    */
   public ZipStep(
+      ProjectFilesystem filesystem,
       Path pathToZipFile,
       Set<Path> paths,
       boolean junkPaths,
-      int compressionLevel,
+      ZipCompressionLevel compressionLevel,
       Path baseDir) {
-    Preconditions.checkArgument(compressionLevel >= MIN_COMPRESSION_LEVEL &&
-        compressionLevel <= MAX_COMPRESSION_LEVEL, "compressionLevel out of bounds.");
+    this.filesystem = filesystem;
     this.pathToZipFile = pathToZipFile;
     this.paths = ImmutableSet.copyOf(paths);
     this.junkPaths = junkPaths;
@@ -98,12 +93,11 @@ public class ZipStep implements Step {
   }
 
   @Override
-  public int execute(ExecutionContext context) {
-    final ProjectFilesystem filesystem = context.getProjectFilesystem();
+  public StepExecutionResult execute(ExecutionContext context) {
     if (filesystem.exists(pathToZipFile)) {
       context.postEvent(
           ConsoleEvent.severe("Attempting to overwrite an existing zip: %s", pathToZipFile));
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
     // Since filesystem traversals can be non-deterministic, sort the entries we find into
@@ -130,8 +124,12 @@ public class ZipStep implements Step {
         }
 
         CustomZipEntry entry = new CustomZipEntry(entryName);
-        entry.setTime(0);  // We want deterministic ZIP files, so avoid mtimes.
-        entry.setCompressionLevel(compressionLevel);
+        // We want deterministic ZIPs, so avoid mtimes.
+        entry.setFakeTime();
+        entry.setCompressionLevel(
+            isDirectory ?
+                ZipCompressionLevel.MIN_COMPRESSION_LEVEL.getValue() :
+                compressionLevel.getValue());
         // If we're using STORED files, we must manually set the CRC, size, and compressed size.
         if (entry.getMethod() == ZipEntry.STORED && !isDirectory) {
           entry.setSize(attr.size());
@@ -144,19 +142,12 @@ public class ZipStep implements Step {
                 }
               }.hash(Hashing.crc32()).padToLong());
         }
-        // Support executable files.  If we detect this file is executable, store this
-        // information as 0100 in the field typically used in zip implementations for
-        // POSIX file permissions.  We'll use this information when unzipping.
-        if (filesystem.isExecutable(path)) {
-          long mode =
-              MorePosixFilePermissions.toMode(
-                  EnumSet.of(PosixFilePermission.OWNER_EXECUTE));
-          long externalAttributes = mode << 16;
-          LOG.verbose(
-              "Setting mode for entry %s path %s to 0x%08X (0x%08X)",
-              entryName, path, mode, externalAttributes);
-          entry.setExternalAttributes(externalAttributes);
-        }
+
+        long externalAttributes = filesystem.getFileAttributesForZipEntry(path);
+        LOG.verbose(
+            "Setting mode for entry %s path %s to 0x%08X",
+            entryName, path, externalAttributes);
+        entry.setExternalAttributes(externalAttributes);
         return entry;
       }
 
@@ -201,10 +192,10 @@ public class ZipStep implements Step {
 
     } catch (IOException e) {
       context.logError(e, "Error creating zip file %s", pathToZipFile);
-      return 1;
+      return StepExecutionResult.ERROR;
     }
 
-    return 0;
+    return StepExecutionResult.SUCCESS;
   }
 
   @Override

@@ -3,11 +3,10 @@ java_library(
   srcs = [
     'DalvikStatsTool.java',
   ],
-  deps = [
-    '//third-party/java/guava:guava',
-    '//third-party/java/jsr:jsr305',
-    '//third-party/java/asm:asm',
+  tests = [
+    '//test/com/facebook/buck/dalvik:dalvik',
   ],
+  autodeps = True,
   visibility = [
     'PUBLIC',
   ],
@@ -37,16 +36,10 @@ java_library(
     'ZipSplitterFactory.java',
     'ZipSplitter.java',
   ],
-  deps = [
-    ':dalvik_stats_tool',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/java/classes:classes',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/util:util',
-    '//src/com/facebook/buck/zip:stream',
-    '//third-party/java/guava:guava',
-    '//third-party/java/jsr:jsr305',
+  tests = [
+    '//test/com/facebook/buck/dalvik:dalvik',
   ],
+  autodeps = True,
   visibility = [
     'PUBLIC',
   ],
@@ -57,14 +50,10 @@ java_library(
   srcs = [
     'EstimateLinearAllocStep.java',
   ],
-  deps = [
-    ':dalvik_stats_tool',
-    '//third-party/java/guava:guava',
-    '//third-party/java/jsr:jsr305',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/java/classes:classes',
-    '//src/com/facebook/buck/step:step',
+  tests = [
+    '//test/com/facebook/buck/dalvik:dalvik',
   ],
+  autodeps = True,
   visibility = [
     'PUBLIC',
   ],

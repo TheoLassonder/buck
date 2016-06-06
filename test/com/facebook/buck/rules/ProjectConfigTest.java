@@ -19,16 +19,15 @@ package com.facebook.buck.rules;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
 
-import com.facebook.buck.java.JavaLibraryBuilder;
-import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.jvm.java.JavaLibraryBuilder;
 import com.facebook.buck.model.BuildTargetFactory;
+import com.facebook.buck.parser.NoSuchBuildTargetException;
 import com.facebook.buck.step.Step;
 
 import org.easymock.EasyMockSupport;
 import org.junit.After;
 import org.junit.Test;
 
-import java.io.IOException;
 import java.util.List;
 
 /**
@@ -42,7 +41,7 @@ public class ProjectConfigTest extends EasyMockSupport {
   }
 
   @Test
-  public void testBuildIsIdempotent() throws IOException {
+  public void testBuildIsIdempotent() throws Exception {
     BuildContext buildContext = createMock(BuildContext.class);
     BuildableContext buildableContext = createMock(BuildableContext.class);
     replayAll();
@@ -57,14 +56,15 @@ public class ProjectConfigTest extends EasyMockSupport {
     assertSame("build() must be idempotent", result1, result2);
   }
 
-  private ProjectConfig createProjectConfig() {
-    BuildRuleResolver ruleResolver = new BuildRuleResolver();
+  private ProjectConfig createProjectConfig() throws NoSuchBuildTargetException {
+    BuildRuleResolver ruleResolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     BuildRule javaRule = JavaLibraryBuilder
         .createBuilder(BuildTargetFactory.newInstance("//javatests:lib"))
         .build(ruleResolver);
 
     return (ProjectConfig) ProjectConfigBuilder
-        .createBuilder(BuildTarget.builder("//javatests", "project_config").build())
+        .createBuilder(BuildTargetFactory.newInstance("//javatests:project_config"))
         .setSrcRule(javaRule.getBuildTarget())
         .build(ruleResolver);
   }

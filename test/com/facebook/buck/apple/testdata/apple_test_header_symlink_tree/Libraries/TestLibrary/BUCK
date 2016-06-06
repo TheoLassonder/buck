@@ -1,5 +1,0 @@
-apple_test(
-  name = 'Test',
-  extension = 'octest',
-  headers = ['Header.h'],
-)

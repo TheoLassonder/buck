@@ -17,6 +17,7 @@
 package com.facebook.buck.rules.coercer;
 
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.rules.CellPathResolver;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Sets;
@@ -25,7 +26,7 @@ import java.nio.file.Path;
 import java.util.Collection;
 import java.util.SortedSet;
 
-public class SortedSetTypeCoercer<T extends Comparable<T>>
+public class SortedSetTypeCoercer<T extends Comparable<? super T>>
     extends CollectionTypeCoercer<ImmutableSortedSet<T>, T> {
 
   private final TypeCoercer<T> elementTypeCoercer;
@@ -47,6 +48,7 @@ public class SortedSetTypeCoercer<T extends Comparable<T>>
   }
 
   protected void fillSortedSet(
+      CellPathResolver cellRoots,
       ProjectFilesystem filesystem,
       Path pathRelativeToProjectRoot,
       SortedSet<T> builder,
@@ -56,6 +58,7 @@ public class SortedSetTypeCoercer<T extends Comparable<T>>
       for (Object element : (Iterable<?>) object) {
         // if any element failed, the entire collection fails
         T coercedElement = elementTypeCoercer.coerce(
+            cellRoots,
             filesystem,
             pathRelativeToProjectRoot,
             element);
@@ -72,12 +75,14 @@ public class SortedSetTypeCoercer<T extends Comparable<T>>
 
   @Override
   public ImmutableSortedSet<T> coerce(
+      CellPathResolver cellRoots,
       ProjectFilesystem filesystem,
       Path pathRelativeToProjectRoot,
       Object object)
       throws CoerceFailedException {
     final SortedSet<T> builder = Sets.newTreeSet();
     fillSortedSet(
+        cellRoots,
         filesystem,
         pathRelativeToProjectRoot,
         builder,

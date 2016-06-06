@@ -22,12 +22,14 @@ import com.google.common.base.Objects;
 /**
  * Events for timing the starting of android events.
  */
-@SuppressWarnings("PMD.OverrideBothEqualsAndHashcode")
-public abstract class StartActivityEvent extends AbstractBuckEvent implements LeafEvent {
+public abstract class StartActivityEvent
+    extends AbstractBuckEvent
+    implements LeafEvent, WorkAdvanceEvent {
   private final BuildTarget buildTarget;
   private final String activityName;
 
-  protected StartActivityEvent(BuildTarget buildTarget, String activityName) {
+  protected StartActivityEvent(EventKey eventKey, BuildTarget buildTarget, String activityName) {
+    super(eventKey);
     this.buildTarget = buildTarget;
     this.activityName = activityName;
   }
@@ -50,34 +52,17 @@ public abstract class StartActivityEvent extends AbstractBuckEvent implements Le
     return String.format("%s %s", getBuildTarget().getFullyQualifiedName(), getActivityName());
   }
 
-  @Override
-  public boolean isRelatedTo(BuckEvent event) {
-    if (!(event instanceof StartActivityEvent)) {
-      return false;
-    }
-
-    StartActivityEvent that = (StartActivityEvent) event;
-
-    return Objects.equal(getBuildTarget(), that.getBuildTarget()) &&
-        Objects.equal(getActivityName(), that.getActivityName());
-  }
-
-  @Override
-  public int hashCode() {
-    return Objects.hashCode(getActivityName(), getBuildTarget());
-  }
-
   public static Started started(BuildTarget buildTarget, String activityName) {
     return new Started(buildTarget, activityName);
   }
 
-  public static Finished finished(BuildTarget buildTarget, String activityName, boolean success) {
-    return new Finished(buildTarget, activityName, success);
+  public static Finished finished(Started started, boolean success) {
+    return new Finished(started, success);
   }
 
   public static class Started extends StartActivityEvent {
     protected Started(BuildTarget buildTarget, String activityName) {
-      super(buildTarget, activityName);
+      super(EventKey.unique(), buildTarget, activityName);
     }
 
     @Override
@@ -89,8 +74,8 @@ public abstract class StartActivityEvent extends AbstractBuckEvent implements Le
   public static class Finished extends StartActivityEvent {
     private final boolean success;
 
-    protected Finished(BuildTarget buildTarget, String activityName, boolean success) {
-      super(buildTarget, activityName);
+    protected Finished(Started started, boolean success) {
+      super(started.getEventKey(), started.getBuildTarget(), started.getActivityName());
       this.success = success;
     }
 
@@ -108,14 +93,14 @@ public abstract class StartActivityEvent extends AbstractBuckEvent implements Le
       if (!super.equals(o)) {
         return false;
       }
-
-      Finished that = (Finished) o;
-      return isSuccess() == that.isSuccess();
+      // Because super.equals compares the EventKey, getting here means that we've somehow managed
+      // to create 2 Finished events for the same Started event.
+      throw new UnsupportedOperationException("Multiple conflicting Finished events detected.");
     }
 
     @Override
     public int hashCode() {
-      return Objects.hashCode(getActivityName(), getBuildTarget(), isSuccess());
+      return Objects.hashCode(super.hashCode(), isSuccess());
     }
   }
 }

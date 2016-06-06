@@ -16,7 +16,8 @@
 
 package com.facebook.buck.shell;
 
-import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.UnflavoredBuildTarget;
+import com.facebook.buck.rules.AbstractDescriptionArg;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.BuildRuleType;
@@ -24,6 +25,7 @@ import com.facebook.buck.rules.Description;
 import com.facebook.buck.rules.ImplicitInputsInferringDescription;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
@@ -49,6 +51,7 @@ public class ExportFileDescription implements
 
   @Override
   public <A extends Arg> ExportFile createBuildRule(
+      TargetGraph targetGraph,
       BuildRuleParams params,
       BuildRuleResolver resolver,
       A args) {
@@ -60,18 +63,18 @@ public class ExportFileDescription implements
    */
   @Override
   public Iterable<Path> inferInputsFromConstructorArgs(
-      BuildTarget buildTarget,
+      UnflavoredBuildTarget buildTarget,
       ExportFileDescription.Arg constructorArg) {
     ImmutableList.Builder<Path> inputs = ImmutableList.builder();
     if (!constructorArg.src.isPresent()) {
-      String name = buildTarget.getBasePathWithSlash() + buildTarget.getShortNameAndFlavorPostfix();
+      String name = buildTarget.getBasePathWithSlash() + buildTarget.getShortName();
       inputs.add(Paths.get(name));
     }
     return inputs.build();
   }
 
   @SuppressFieldNotInitialized
-  public static class Arg {
+  public static class Arg extends AbstractDescriptionArg {
     public Optional<SourcePath> src;
     public Optional<String> out;
   }

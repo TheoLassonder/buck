@@ -16,12 +16,15 @@
 
 package com.facebook.buck.ocaml;
 
-import com.facebook.buck.rules.RuleKey;
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.rules.RuleKeyAppendable;
+import com.facebook.buck.rules.RuleKeyObjectSink;
+import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.Tool;
 import com.facebook.buck.shell.Shell;
-import com.facebook.buck.shell.ShellStep;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.step.fs.MakeExecutableStep;
 import com.facebook.buck.step.fs.WriteFileStep;
 import com.facebook.buck.util.MoreIterables;
@@ -31,6 +34,7 @@ import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
@@ -40,54 +44,36 @@ import java.util.List;
  */
 public class OCamlDebugLauncherStep implements Step {
 
-  public static class Args implements RuleKeyAppendable {
-    public final Path ocamlDebug;
-    public final Path bytecodeOutput;
-    public final ImmutableList<OCamlLibrary> ocamlInput;
-    public final ImmutableList<String> bytecodeIncludeFlags;
-
-    public Args(
-        Path ocamlDebug,
-        Path bytecodeOutput,
-        List<OCamlLibrary> ocamlInput,
-        List<String> bytecodeIncludeFlags) {
-      this.ocamlDebug = ocamlDebug;
-      this.bytecodeOutput = bytecodeOutput;
-      this.ocamlInput = ImmutableList.copyOf(ocamlInput);
-      this.bytecodeIncludeFlags = ImmutableList.copyOf(bytecodeIncludeFlags);
-    }
-
-    public Path getOutput() {
-      return Paths.get(bytecodeOutput.toString() + ".debug");
-    }
-
-    @Override
-    public RuleKey.Builder appendToRuleKey(RuleKey.Builder builder) {
-      return builder
-          .setReflectively("ocamlDebug", ocamlDebug.toString())
-          .setReflectively("bytecodeOutput", bytecodeOutput.toString())
-          .setReflectively("flags", bytecodeIncludeFlags);
-    }
-  }
-
+  private final ProjectFilesystem filesystem;
+  private final SourcePathResolver resolver;
   private final Args args;
 
-  public OCamlDebugLauncherStep(Args args) {
+  public OCamlDebugLauncherStep(
+      ProjectFilesystem filesystem,
+      SourcePathResolver resolver,
+      Args args) {
+    this.filesystem = filesystem;
+    this.resolver = resolver;
     this.args = args;
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
+  public StepExecutionResult execute(ExecutionContext context)
+      throws InterruptedException, IOException {
     String debugCmdStr = getDebugCmd();
-    String debugLuancherScript = getDebugLauncherScript(debugCmdStr);
+    String debugLauncherScript = getDebugLauncherScript(debugCmdStr);
 
-    WriteFileStep writeFile = new WriteFileStep(debugLuancherScript, args.getOutput());
-    int writeExitCode = writeFile.execute(context);
-    if (writeExitCode != 0) {
-      return writeExitCode;
+    WriteFileStep writeFile = new WriteFileStep(
+        filesystem,
+        debugLauncherScript,
+        args.getOutput(),
+        /* executable */ false);
+    StepExecutionResult writeExecutionResult = writeFile.execute(context);
+    if (!writeExecutionResult.isSuccess()) {
+      return writeExecutionResult;
     }
 
-    ShellStep chmod = new MakeExecutableStep(args.getOutput().toString());
+    Step chmod = new MakeExecutableStep(filesystem, args.getOutput());
     return chmod.execute(context);
   }
 
@@ -102,7 +88,7 @@ public class OCamlDebugLauncherStep implements Step {
   private String getDebugCmd() {
     ImmutableList.Builder<String> debugCmd = ImmutableList.builder();
     debugCmd.add("rlwrap");
-    debugCmd.add(args.ocamlDebug.toString());
+    debugCmd.addAll(args.ocamlDebug.getCommandPrefix(resolver));
 
     Iterable<String> includesBytecodeDirs = FluentIterable.from(args.ocamlInput)
         .transformAndConcat(new Function<OCamlLibrary, Iterable<String>>() {
@@ -134,4 +120,33 @@ public class OCamlDebugLauncherStep implements Step {
     return getShortName();
   }
 
+  public static class Args implements RuleKeyAppendable {
+    public final Tool ocamlDebug;
+    public final Path bytecodeOutput;
+    public final ImmutableList<OCamlLibrary> ocamlInput;
+    public final ImmutableList<String> bytecodeIncludeFlags;
+
+    public Args(
+        Tool ocamlDebug,
+        Path bytecodeOutput,
+        List<OCamlLibrary> ocamlInput,
+        List<String> bytecodeIncludeFlags) {
+      this.ocamlDebug = ocamlDebug;
+      this.bytecodeOutput = bytecodeOutput;
+      this.ocamlInput = ImmutableList.copyOf(ocamlInput);
+      this.bytecodeIncludeFlags = ImmutableList.copyOf(bytecodeIncludeFlags);
+    }
+
+    public Path getOutput() {
+      return Paths.get(bytecodeOutput.toString() + ".debug");
+    }
+
+    @Override
+    public void appendToRuleKey(RuleKeyObjectSink sink) {
+      sink
+          .setReflectively("ocamlDebug", ocamlDebug)
+          .setReflectively("bytecodeOutput", bytecodeOutput.toString())
+          .setReflectively("flags", bytecodeIncludeFlags);
+    }
+  }
 }

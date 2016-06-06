@@ -20,6 +20,8 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 
 import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.rules.FakeSourcePath;
+import com.facebook.buck.rules.SourcePath;
 import com.google.common.base.Optional;
 
 import org.junit.Rule;
@@ -27,7 +29,6 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Set;
 
@@ -54,43 +55,44 @@ public class AndroidResourceDescriptionTest {
     tmpFolder.newFile("res/picasa.ini");
     tmpFolder.newFile("res/file.bak~");
 
-    tmpFolder.newFolder("res/dirs");
-    tmpFolder.newFolder("res/dirs/values");
+    tmpFolder.newFolder("res", "dirs", "values");
     tmpFolder.newFile("res/dirs/values/strings.xml");
     tmpFolder.newFile("res/dirs/values/strings.xml.orig");
 
-    tmpFolder.newFolder("res/dirs/.gitkeep");
+    tmpFolder.newFolder("res", "dirs", ".gitkeep");
     tmpFolder.newFile("res/dirs/.gitkeep/ignore");
-    tmpFolder.newFolder("res/dirs/.svn");
+    tmpFolder.newFolder("res", "dirs", ".svn");
     tmpFolder.newFile("res/dirs/.svn/ignore");
-    tmpFolder.newFolder("res/dirs/.git");
+    tmpFolder.newFolder("res", "dirs", ".git");
     tmpFolder.newFile("res/dirs/.git/ignore");
-    tmpFolder.newFolder("res/dirs/.ds_store");
+    tmpFolder.newFolder("res", "dirs", ".ds_store");
     tmpFolder.newFile("res/dirs/.ds_store/ignore");
-    tmpFolder.newFolder("res/dirs/.scc");
+    tmpFolder.newFolder("res", "dirs", ".scc");
     tmpFolder.newFile("res/dirs/.scc/ignore");
-    tmpFolder.newFolder("res/dirs/CVS");
+    tmpFolder.newFolder("res", "dirs", "CVS");
     tmpFolder.newFile("res/dirs/CVS/ignore");
-    tmpFolder.newFolder("res/dirs/thumbs.db");
+    tmpFolder.newFolder("res", "dirs", "thumbs.db");
     tmpFolder.newFile("res/dirs/thumbs.db/ignore");
-    tmpFolder.newFolder("res/dirs/picasa.ini");
+    tmpFolder.newFolder("res", "dirs", "picasa.ini");
     tmpFolder.newFile("res/dirs/picasa.ini/ignore");
-    tmpFolder.newFolder("res/dirs/file.bak~");
+    tmpFolder.newFolder("res", "dirs", "file.bak~");
     tmpFolder.newFile("res/dirs/file.bak~/ignore");
-    tmpFolder.newFolder("res/dirs/_dir");
+    tmpFolder.newFolder("res", "dirs", "_dir");
     tmpFolder.newFile("res/dirs/_dir/ignore");
 
     AndroidResourceDescription description = new AndroidResourceDescription();
-    Set<Path> inputs = description.collectInputFiles(
-            new ProjectFilesystem(tmpFolder.getRoot().toPath()),
+    ProjectFilesystem filesystem = new ProjectFilesystem(tmpFolder.getRoot().toPath());
+    Set<SourcePath> inputs = description.collectInputFiles(
+        filesystem,
             Optional.of(Paths.get("res")));
 
     assertThat(
         inputs,
         containsInAnyOrder(
-            Paths.get("res/image.png"),
-            Paths.get("res/layout.xml"),
-            Paths.get("res/_file"),
-            Paths.get("res/dirs/values/strings.xml")));
+            // This clever cast saves us mucking around with generics.
+            (SourcePath) new FakeSourcePath(filesystem, "res/image.png"),
+            new FakeSourcePath(filesystem, "res/layout.xml"),
+            new FakeSourcePath(filesystem, "res/_file"),
+            new FakeSourcePath(filesystem, "res/dirs/values/strings.xml")));
   }
 }

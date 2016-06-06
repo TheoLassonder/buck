@@ -17,11 +17,12 @@
 package com.facebook.buck.dalvik;
 
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.classes.AbstractFileLike;
-import com.facebook.buck.java.classes.ClasspathTraversal;
-import com.facebook.buck.java.classes.ClasspathTraverser;
-import com.facebook.buck.java.classes.DefaultClasspathTraverser;
-import com.facebook.buck.java.classes.FileLike;
+import com.facebook.buck.jvm.java.classes.AbstractFileLike;
+import com.facebook.buck.jvm.java.classes.ClasspathTraversal;
+import com.facebook.buck.jvm.java.classes.ClasspathTraverser;
+import com.facebook.buck.jvm.java.classes.DefaultClasspathTraverser;
+import com.facebook.buck.jvm.java.classes.FileLike;
+import com.facebook.buck.log.Logger;
 import com.facebook.buck.util.HumanReadableException;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
@@ -30,8 +31,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.io.ByteStreams;
 
 import java.io.ByteArrayInputStream;
-import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
@@ -64,13 +63,14 @@ import javax.annotation.Nullable;
  * </ul>
  */
 public class DalvikAwareZipSplitter implements ZipSplitter {
+  private static final Logger LOG = Logger.get(DalvikAwareZipSplitter.class);
 
   private final ProjectFilesystem filesystem;
   private final Set<Path> inFiles;
-  private final File outPrimary;
+  private final Path outPrimary;
   private final Predicate<String> requiredInPrimaryZip;
   private final Set<String> wantedInPrimaryZip;
-  private final File reportDir;
+  private final Path reportDir;
   private final long linearAllocLimit;
   private final DalvikStatsCache dalvikStatsCache;
   private final DexSplitStrategy dexSplitStrategy;
@@ -83,15 +83,15 @@ public class DalvikAwareZipSplitter implements ZipSplitter {
   private DalvikAwareOutputStreamHelper primaryOut;
 
   /**
-   * @see ZipSplitterFactory#newInstance(ProjectFilesystem, Set, File, File, String, Predicate,
+   * @see ZipSplitterFactory#newInstance(ProjectFilesystem, Set, Path, Path, String, Predicate,
    *     ImmutableSet, ImmutableSet, com.facebook.buck.dalvik.ZipSplitter.DexSplitStrategy,
-   *     com.facebook.buck.dalvik.ZipSplitter.CanaryStrategy, File)
+   *     com.facebook.buck.dalvik.ZipSplitter.CanaryStrategy, Path)
    */
   private DalvikAwareZipSplitter(
       ProjectFilesystem filesystem,
       Set<Path> inFiles,
-      File outPrimary,
-      File outSecondaryDir,
+      Path outPrimary,
+      Path outSecondaryDir,
       String secondaryPattern,
       long linearAllocLimit,
       Predicate<String> requiredInPrimaryZip,
@@ -100,7 +100,7 @@ public class DalvikAwareZipSplitter implements ZipSplitter {
       ImmutableSet<String> secondaryTailSet,
       DexSplitStrategy dexSplitStrategy,
       ZipSplitter.CanaryStrategy canaryStrategy,
-      File reportDir) {
+      Path reportDir) {
     if (linearAllocLimit <= 0) {
       throw new HumanReadableException("linear_alloc_hard_limit must be greater than zero.");
     }
@@ -122,8 +122,8 @@ public class DalvikAwareZipSplitter implements ZipSplitter {
   public static DalvikAwareZipSplitter splitZip(
       ProjectFilesystem filesystem,
       Set<Path> inFiles,
-      File outPrimary,
-      File outSecondaryDir,
+      Path outPrimary,
+      Path outSecondaryDir,
       String secondaryPattern,
       long linearAllocLimit,
       Predicate<String> requiredInPrimaryZip,
@@ -132,7 +132,7 @@ public class DalvikAwareZipSplitter implements ZipSplitter {
       ImmutableSet<String> secondaryTailSet,
       DexSplitStrategy dexSplitStrategy,
       ZipSplitter.CanaryStrategy canaryStrategy,
-      File reportDir) {
+      Path reportDir) {
     return new DalvikAwareZipSplitter(
         filesystem,
         inFiles,
@@ -150,7 +150,7 @@ public class DalvikAwareZipSplitter implements ZipSplitter {
   }
 
   @Override
-  public List<File> execute() throws IOException {
+  public List<Path> execute() throws IOException {
     ClasspathTraverser classpathTraverser = new DefaultClasspathTraverser();
     final Set<String> secondaryTail = new HashSet<String>();
 
@@ -162,22 +162,32 @@ public class DalvikAwareZipSplitter implements ZipSplitter {
 
     // Iterate over all of the inFiles and add all entries that match the requiredInPrimaryZip
     // predicate.
-    classpathTraverser.traverse(new ClasspathTraversal(inFiles, filesystem) {
-      @Override
-      public void visit(FileLike entry) throws IOException {
-        String relativePath = entry.getRelativePath();
-        Preconditions.checkNotNull(primaryOut);
-        if (requiredInPrimaryZip.apply(relativePath)) {
-          primaryOut.putEntry(entry);
-        } else if (wantedInPrimaryZip.contains(relativePath) ||
-                   (secondaryHeadSet != null && secondaryHeadSet.contains(relativePath))) {
-          entriesBuilder.put(relativePath, new BufferedFileLike(entry));
-        } else if (secondaryTailSet != null && secondaryTailSet.contains(relativePath)) {
-          entriesBuilder.put(relativePath, new BufferedFileLike(entry));
-          secondaryTail.add(relativePath);
-        }
-      }
-    });
+    LOG.debug("Traversing classpath for primary zip");
+
+    classpathTraverser.traverse(
+        new ClasspathTraversal(inFiles, filesystem) {
+          @Override
+          public void visit(FileLike entry) throws IOException {
+            LOG.debug("Visiting " + entry.getRelativePath());
+
+            String relativePath = entry.getRelativePath();
+            if (!relativePath.endsWith(".class")) {
+              // We don't need resources in dex jars, so just drop them.
+              return;
+            }
+
+            Preconditions.checkNotNull(primaryOut);
+            if (requiredInPrimaryZip.apply(relativePath)) {
+              primaryOut.putEntry(entry);
+            } else if (wantedInPrimaryZip.contains(relativePath) ||
+                (secondaryHeadSet != null && secondaryHeadSet.contains(relativePath))) {
+              entriesBuilder.put(relativePath, new BufferedFileLike(entry));
+            } else if (secondaryTailSet != null && secondaryTailSet.contains(relativePath)) {
+              entriesBuilder.put(relativePath, new BufferedFileLike(entry));
+              secondaryTail.add(relativePath);
+            }
+          }
+        });
 
     // Put as many of the items wanted in the primary dex as we can into the primary dex.
     ImmutableMap<String, FileLike> entries = entriesBuilder.build();
@@ -197,6 +207,8 @@ public class DalvikAwareZipSplitter implements ZipSplitter {
       }
     }
 
+    LOG.debug("Traversing classpath for secondary zip");
+
     // Now that all of the required entries have been added to the primary zip, fill the rest of
     // the zip up with the remaining entries.
     classpathTraverser.traverse(new ClasspathTraversal(inFiles, filesystem) {
@@ -206,6 +218,8 @@ public class DalvikAwareZipSplitter implements ZipSplitter {
         if (primaryOut.containsEntry(entry)) {
           return;
         }
+
+        LOG.debug("Visiting " + entry.getRelativePath());
 
         // Even if we have started writing a secondary dex, we still check if there is any leftover
         // room in the primary dex for the current entry in the traversal.
@@ -238,7 +252,7 @@ public class DalvikAwareZipSplitter implements ZipSplitter {
     return secondaryDexWriter.getFiles();
   }
 
-  private DalvikAwareOutputStreamHelper newZipOutput(File file) throws FileNotFoundException {
+  private DalvikAwareOutputStreamHelper newZipOutput(Path file) throws IOException {
     return new DalvikAwareOutputStreamHelper(file, linearAllocLimit, reportDir, dalvikStatsCache);
   }
 
@@ -246,20 +260,20 @@ public class DalvikAwareZipSplitter implements ZipSplitter {
       extends SecondaryDexHelper<DalvikAwareOutputStreamHelper> {
 
     MySecondaryDexHelper(
-        File outSecondaryDir,
+        Path outSecondaryDir,
         String secondaryPattern,
         CanaryStrategy canaryStrategy) {
       super(outSecondaryDir, secondaryPattern, canaryStrategy);
     }
 
     @Override
-    protected DalvikAwareOutputStreamHelper newZipOutput(File file) throws IOException {
+    protected DalvikAwareOutputStreamHelper newZipOutput(Path file) throws IOException {
       return DalvikAwareZipSplitter.this.newZipOutput(file);
     }
   }
 
   private static class BufferedFileLike extends AbstractFileLike {
-    private final File container;
+    private final Path container;
     private final String relativePath;
     private final byte[] contents;
 
@@ -273,7 +287,7 @@ public class DalvikAwareZipSplitter implements ZipSplitter {
     }
 
     @Override
-    public File getContainer() {
+    public Path getContainer() {
       return container;
     }
 

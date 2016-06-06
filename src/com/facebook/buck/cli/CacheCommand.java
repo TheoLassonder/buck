@@ -16,17 +16,19 @@
 
 package com.facebook.buck.cli;
 
-import com.facebook.buck.rules.ArtifactCache;
-import com.facebook.buck.rules.CacheResult;
+import com.facebook.buck.artifact_cache.ArtifactCache;
+import com.facebook.buck.artifact_cache.CacheResult;
+import com.facebook.buck.io.LazyPath;
+import com.facebook.buck.event.ConsoleEvent;
 import com.facebook.buck.rules.RuleKey;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Lists;
-import com.google.common.io.Files;
 
 import org.kohsuke.args4j.Argument;
 
-import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 /**
@@ -50,25 +52,25 @@ public class CacheCommand extends AbstractCommand {
   public int runWithoutHelp(CommandRunnerParams params) throws IOException, InterruptedException {
 
     if (isNoCache()) {
-      params.getConsole().printErrorText("Caching is disabled.");
+      params.getBuckEventBus().post(ConsoleEvent.severe("Caching is disabled."));
       return 1;
     }
 
     List<String> arguments = getArguments();
     if (arguments.isEmpty()) {
-      params.getConsole().printErrorText("No cache keys specified.");
+      params.getBuckEventBus().post(ConsoleEvent.severe("No cache keys specified."));
       return 1;
     }
 
-    ArtifactCache cache = getArtifactCache(params);
+    ArtifactCache cache = params.getArtifactCache();
 
-    File tmpDir = Files.createTempDir();
+    Path tmpDir = Files.createTempDirectory("buck-cache-command");
     int exitCode = 0;
     for (String arg : arguments) {
       // Do the fetch.
       RuleKey ruleKey = new RuleKey(arg);
-      File artifact = new File(tmpDir, arg);
-      CacheResult success = cache.fetch(ruleKey, artifact);
+      Path artifact = tmpDir.resolve(arg);
+      CacheResult success = cache.fetch(ruleKey, LazyPath.ofInstance(artifact));
 
       // Display the result.
       if (success.getType().isSuccess()) {

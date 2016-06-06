@@ -16,26 +16,34 @@
 
 package com.facebook.buck.step.fs;
 
-import com.facebook.buck.shell.ShellStep;
+import com.facebook.buck.io.MoreFiles;
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
-import com.facebook.buck.util.environment.Platform;
-import com.google.common.collect.ImmutableList;
+import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 
-public class MakeExecutableStep extends ShellStep {
-  private final String fileName;
+import java.io.IOException;
+import java.nio.file.Path;
 
-  public MakeExecutableStep(String fileName) {
-    this.fileName = fileName;
+public class MakeExecutableStep implements Step {
+  private final ProjectFilesystem filesystem;
+  private final Path file;
+
+  public MakeExecutableStep(ProjectFilesystem filesystem, Path file) {
+    this.filesystem = filesystem;
+    this.file = file;
   }
 
-  // TODO(user): Refactor to use MoreFiles.makeExecutable(File)
   @Override
-  protected ImmutableList<String> getShellCommandInternal(ExecutionContext context) {
-    if (Platform.detect() != Platform.WINDOWS) {
-      return ImmutableList.of("chmod", "+x", fileName);
-    } else {
-      return ImmutableList.of();
-    }
+  public StepExecutionResult execute(ExecutionContext context)
+      throws IOException, InterruptedException {
+    MoreFiles.makeExecutable(filesystem.resolve(file));
+    return StepExecutionResult.SUCCESS;
+  }
+
+  @Override
+  public String getDescription(ExecutionContext context) {
+    return "chmod +x " + file.toString();
   }
 
   @Override

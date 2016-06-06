@@ -16,18 +16,20 @@
 
 package com.facebook.buck.android;
 
-import com.facebook.buck.java.AnnotationProcessingParams;
-import com.facebook.buck.java.JavacOptions;
-import com.facebook.buck.java.JavacStep;
+import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.jvm.core.SuggestBuildRules;
+import com.facebook.buck.jvm.java.AnnotationProcessingParams;
+import com.facebook.buck.jvm.java.JavacOptions;
+import com.facebook.buck.jvm.java.JavacStep;
+import com.facebook.buck.jvm.java.NoOpClassUsageFileWriter;
+import com.facebook.buck.jvm.java.StandardJavaFileManagerFactory;
 import com.facebook.buck.model.BuildTarget;
-import com.facebook.buck.rules.BuildDependencies;
 import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.step.Step;
 import com.google.common.base.Optional;
-import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedSet;
 
 import java.nio.file.Path;
-import java.util.Set;
 
 /**
  * Creates the {@link Step}s needed to generate an uber {@code R.java} file.
@@ -43,39 +45,47 @@ public class RDotJava {
   private RDotJava() {}
 
   static JavacStep createJavacStepForUberRDotJavaFiles(
-      Set<Path> javaSourceFilePaths,
+      ImmutableSortedSet<Path> javaSourceFilePaths,
+      Path pathToSrcsList,
       Path outputDirectory,
       JavacOptions javacOptions,
       BuildTarget buildTarget,
-      SourcePathResolver resolver) {
+      SourcePathResolver resolver,
+      ProjectFilesystem filesystem) {
     return createJavacStepForDummyRDotJavaFiles(
         javaSourceFilePaths,
+        pathToSrcsList,
         outputDirectory,
         javacOptions,
         buildTarget,
-        resolver);
+        resolver,
+        filesystem);
   }
 
   static JavacStep createJavacStepForDummyRDotJavaFiles(
-      Set<Path> javaSourceFilePaths,
+      ImmutableSortedSet<Path> javaSourceFilePaths,
+      Path pathToSrcsList,
       Path outputDirectory,
       JavacOptions javacOptions,
       BuildTarget buildTarget,
-      SourcePathResolver resolver) {
+      SourcePathResolver resolver,
+      ProjectFilesystem filesystem) {
 
     return new JavacStep(
         outputDirectory,
+        NoOpClassUsageFileWriter.instance(),
+        Optional.<StandardJavaFileManagerFactory>absent(),
         Optional.<Path>absent(),
         javaSourceFilePaths,
-        Optional.<Path>absent(),
-        /* transitive classpath */ ImmutableSet.<Path>of(),
-        /* declared classpath */ ImmutableSet.<Path>of(),
+        pathToSrcsList,
+        /* declared classpath */ ImmutableSortedSet.<Path>of(),
+        javacOptions.getJavac(),
         JavacOptions.builder(javacOptions)
             .setAnnotationProcessingParams(AnnotationProcessingParams.EMPTY)
             .build(),
         buildTarget,
-        BuildDependencies.FIRST_ORDER_ONLY,
-        Optional.<JavacStep.SuggestBuildRules>absent(),
-        resolver);
+        Optional.<SuggestBuildRules>absent(),
+        resolver,
+        filesystem);
   }
 }

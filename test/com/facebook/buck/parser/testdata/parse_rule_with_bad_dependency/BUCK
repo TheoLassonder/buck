@@ -1,6 +1,0 @@
-genrule(
-  name = 'base',
-  deps = [':bad-dep'],
-  srcs = [],
-  out = '',
-)

@@ -1,10 +1,5 @@
-java_library(
-  name = 'xcspec',
-  srcs = glob(['*.java']),
-  deps = [
-    '//third-party/java/jsr:jsr305',
-    '//third-party/java/guava:guava',
-    '//third-party/java/dd-plist:dd-plist',
+standard_java_library(
+  tests = [
+    '//test/com/facebook/buck/apple/xcode/xcspec:xcspec',
   ],
-  visibility = ['PUBLIC'],
 )

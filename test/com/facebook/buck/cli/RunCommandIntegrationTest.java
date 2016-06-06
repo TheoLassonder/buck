@@ -16,7 +16,9 @@
 
 package com.facebook.buck.cli;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
 
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
@@ -35,6 +37,40 @@ public class RunCommandIntegrationTest extends EasyMockSupport {
   public DebuggableTemporaryFolder temporaryFolder = new DebuggableTemporaryFolder();
 
   @Test
+  public void testRunCommandWithNoArguments()
+      throws IOException, InterruptedException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this,
+        "run-command",
+        temporaryFolder);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand("run");
+
+    result.assertFailure();
+    assertThat(result.getStderr(), containsString("buck run <target> <arg1> <arg2>..."));
+    assertThat(result.getStderr(), containsString("No target given to run"));
+  }
+
+  @Test
+  public void testRunCommandWithNonExistentTarget()
+      throws IOException, InterruptedException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this,
+        "run-command",
+        temporaryFolder);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand("run", "//does/not/exist");
+
+    result.assertFailure();
+    assertThat(
+        result.getStderr(),
+        containsString(
+            "No build file at does/not/exist/BUCK when resolving target //does/not/exist:exist."));
+  }
+
+  @Test
   public void testRunCommandWithArguments() throws IOException {
     ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
         this,
@@ -46,9 +82,28 @@ public class RunCommandIntegrationTest extends EasyMockSupport {
         "run",
         "//cmd:command",
         "one_arg",
-        workspace.getFile("output").toPath().toAbsolutePath().toString());
+        workspace.getPath("output").toAbsolutePath().toString());
     result.assertSuccess("buck run should succeed");
     assertEquals("SUCCESS\n", result.getStdout());
+    workspace.verify();
+  }
+
+  @Test
+  public void testRunCommandWithDashArguments() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this,
+        "run-command",
+        temporaryFolder);
+    workspace.setUp();
+
+    ProcessResult result = workspace.runBuckCommand(
+        "run",
+        "//cmd:command",
+        "--",
+        "one_arg",
+        workspace.getPath("output").toAbsolutePath().toString());
+    result.assertSuccess("buck run should succeed");
+    assertThat(result.getStdout(), containsString("SUCCESS"));
     workspace.verify();
   }
 

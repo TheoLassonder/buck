@@ -16,17 +16,21 @@
 
 package com.facebook.buck.cxx;
 
+import com.facebook.buck.cli.FakeBuckConfig;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.FlavorDomain;
 import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.coercer.PatternMatchedCollection;
 import com.facebook.buck.rules.coercer.SourceList;
 import com.google.common.base.Optional;
-import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.ImmutableSortedSet;
 
 import java.util.regex.Pattern;
 
-public class CxxLibraryBuilder extends AbstractCxxSourceBuilder<CxxLibraryDescription.Arg> {
+public class CxxLibraryBuilder extends
+    AbstractCxxSourceBuilder<CxxLibraryDescription.Arg, CxxLibraryBuilder> {
 
   public CxxLibraryBuilder(
       BuildTarget target,
@@ -35,8 +39,9 @@ public class CxxLibraryBuilder extends AbstractCxxSourceBuilder<CxxLibraryDescri
     super(
         new CxxLibraryDescription(
             cxxBuckConfig,
-            cxxPlatforms,
-            CxxPreprocessMode.SEPARATE),
+            DefaultCxxPlatforms.build(cxxBuckConfig),
+            new InferBuckConfig(FakeBuckConfig.builder().build()),
+            cxxPlatforms),
         target);
   }
 
@@ -49,7 +54,7 @@ public class CxxLibraryBuilder extends AbstractCxxSourceBuilder<CxxLibraryDescri
     return this;
   }
 
-  public CxxLibraryBuilder setExportedHeaders(ImmutableMap<String, SourcePath> headers)  {
+  public CxxLibraryBuilder setExportedHeaders(ImmutableSortedMap<String, SourcePath> headers)  {
     arg.exportedHeaders = Optional.of(SourceList.ofNamedSources(headers));
     return this;
   }
@@ -59,6 +64,28 @@ public class CxxLibraryBuilder extends AbstractCxxSourceBuilder<CxxLibraryDescri
     return this;
   }
 
+  public CxxLibraryBuilder setExportedPreprocessorFlags(
+      ImmutableList<String> exportedPreprocessorFlags) {
+    arg.exportedPreprocessorFlags = Optional.of(exportedPreprocessorFlags);
+    return getThis();
+  }
+
+  public CxxLibraryBuilder setExportedPlatformPreprocessorFlags(
+      PatternMatchedCollection<ImmutableList<String>> exportedPlatformPreprocessorFlags) {
+    arg.exportedPlatformPreprocessorFlags = Optional.of(exportedPlatformPreprocessorFlags);
+    return this;
+  }
+
+  public CxxLibraryBuilder setExportedLinkerFlags(ImmutableList<String> exportedLinkerFlags) {
+    arg.exportedLinkerFlags = Optional.of(exportedLinkerFlags);
+    return this;
+  }
+
+  public CxxLibraryBuilder setExportedPlatformLinkerFlags(
+      PatternMatchedCollection<ImmutableList<String>> exportedPlatformLinkerFlags) {
+    arg.exportedPlatformLinkerFlags = Optional.of(exportedPlatformLinkerFlags);
+    return this;
+  }
 
   public CxxLibraryBuilder setSoname(String soname) {
     arg.soname = Optional.of(soname);
@@ -70,6 +97,16 @@ public class CxxLibraryBuilder extends AbstractCxxSourceBuilder<CxxLibraryDescri
     return this;
   }
 
+  public CxxLibraryBuilder setForceStatic(boolean forceStatic) {
+    arg.forceStatic = Optional.of(forceStatic);
+    return this;
+  }
+
+  public CxxLibraryBuilder setPreferredLinkage(NativeLinkable.Linkage linkage) {
+    arg.preferredLinkage = Optional.of(linkage);
+    return this;
+  }
+
   public CxxLibraryBuilder setTests(ImmutableSortedSet<BuildTarget> tests) {
     arg.tests = Optional.of(tests);
     return this;
@@ -77,6 +114,16 @@ public class CxxLibraryBuilder extends AbstractCxxSourceBuilder<CxxLibraryDescri
 
   public CxxLibraryBuilder setSupportedPlatformsRegex(Pattern regex) {
     arg.supportedPlatformsRegex = Optional.of(regex);
+    return this;
+  }
+
+  public CxxLibraryBuilder setExportedDeps(ImmutableSortedSet<BuildTarget> exportedDeps) {
+    arg.exportedDeps = Optional.of(exportedDeps);
+    return this;
+  }
+
+  @Override
+  protected CxxLibraryBuilder getThis() {
     return this;
   }
 

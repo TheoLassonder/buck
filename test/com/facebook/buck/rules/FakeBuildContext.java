@@ -16,15 +16,15 @@
 
 package com.facebook.buck.rules;
 
+import com.facebook.buck.artifact_cache.NoopArtifactCache;
 import com.facebook.buck.event.BuckEventBusFactory;
-import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.FakeJavaPackageFinder;
+import com.facebook.buck.jvm.java.FakeJavaPackageFinder;
 import com.facebook.buck.model.BuildId;
 import com.facebook.buck.step.DefaultStepRunner;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.TestExecutionContext;
-import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.facebook.buck.timing.DefaultClock;
+import com.facebook.buck.util.ObjectMappers;
 import com.google.common.collect.ImmutableList;
 
 /**
@@ -36,33 +36,30 @@ public class FakeBuildContext {
   private FakeBuildContext() {}
 
   /** A BuildContext which doesn't touch the host filesystem or actually execute steps. */
-  public static final BuildContext NOOP_CONTEXT = newBuilder(new FakeProjectFilesystem())
+  public static final BuildContext NOOP_CONTEXT = newBuilder()
       .setActionGraph(new ActionGraph(ImmutableList.<BuildRule>of()))
       .setJavaPackageFinder(new FakeJavaPackageFinder())
       .setArtifactCache(new NoopArtifactCache())
+      .setObjectMapper(ObjectMappers.newDefaultInstance())
       .build();
 
   /**
    * User still needs to invoke {@link ImmutableBuildContext.Builder#setActionGraph(ActionGraph)}
    * and {@link ImmutableBuildContext.Builder#setJavaPackageFinder(
-   * com.facebook.buck.java.JavaPackageFinder)}
+   * com.facebook.buck.jvm.core.JavaPackageFinder)}
    * before the {@link ImmutableBuildContext.Builder#build()} method of the builder can be invoked.
-   * @param projectFilesystem for the {@link BuildContext} and for the {@link ExecutionContext} that
-   *     is passed to the {@link DefaultStepRunner} for the {@link BuildContext}.
    */
-  public static ImmutableBuildContext.Builder newBuilder(ProjectFilesystem projectFilesystem) {
+  public static ImmutableBuildContext.Builder newBuilder() {
     ExecutionContext executionContext = TestExecutionContext
         .newBuilder()
-        .setProjectFilesystem(projectFilesystem)
         .build();
 
     return ImmutableBuildContext.builder()
         .setStepRunner(new DefaultStepRunner(executionContext))
-        .setProjectFilesystem(projectFilesystem)
         .setClock(new DefaultClock())
         .setBuildId(new BuildId())
+        .setObjectMapper(ObjectMappers.newDefaultInstance())
         .setArtifactCache(new NoopArtifactCache())
-        .setEventBus(BuckEventBusFactory.newInstance())
-        .setBuildDependencies(BuildDependencies.FIRST_ORDER_ONLY);
+        .setEventBus(BuckEventBusFactory.newInstance());
   }
 }

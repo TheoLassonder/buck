@@ -20,18 +20,15 @@ import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.util.immutables.BuckStyleImmutable;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ComparisonChain;
 
 import org.immutables.value.Value;
 
 import java.nio.file.Path;
-import java.nio.file.Paths;
-
-import javax.annotation.Nullable;
 
 @BuckStyleImmutable
 @Value.Immutable
-abstract class AbstractUnflavoredBuildTarget
-    implements Comparable<AbstractUnflavoredBuildTarget>, HasUnflavoredBuildTarget {
+abstract class AbstractUnflavoredBuildTarget implements Comparable<AbstractUnflavoredBuildTarget> {
 
   public static final String BUILD_TARGET_PREFIX = "//";
 
@@ -60,7 +57,10 @@ abstract class AbstractUnflavoredBuildTarget
   }
 
   @Value.Parameter
-  public abstract Optional<String> getRepository();
+  public abstract Path getCellPath();
+
+  @Value.Parameter
+  public abstract Optional<String> getCell();
 
   /**
    * If this build target were //third_party/java/guava:guava-latest, then this would return
@@ -69,31 +69,37 @@ abstract class AbstractUnflavoredBuildTarget
   @Value.Parameter
   public abstract String getBaseName();
 
+  @Value.Parameter
+  public abstract String getShortName();
+
   /**
-   * If this build target were //third_party/java/guava:guava-latest, then this would return
-   * "//third_party/java/guava/".
+   * If this build target is //third_party/java/guava:guava-latest, then this would return
+   * "//third_party/java/guava:guava-latest".
    */
-  public String getBaseNameWithSlash() {
-    return getBaseNameWithSlash(getBaseName());
+  public String getFullyQualifiedName() {
+    return (getCell().isPresent() ? getCell().get() : "") +
+        getBaseName() + ":" + getShortName();
   }
 
   /**
    * Helper function for getting BuildTarget base names with a trailing slash if needed.
    *
-   * If baseName were //third_party/java/guava, then this would return  "//third_party/java/guava/".
-   * If it were //, it would return //.
+   * If this build target were //third_party/java/guava:guava-latest, then this would return
+   * "//third_party/java/guava/".
    */
-  public static String getBaseNameWithSlash(String baseName) {
+  public String getBaseNameWithSlash() {
+    String baseName = getBaseName();
     return baseName.equals(BUILD_TARGET_PREFIX) ? baseName : baseName + "/";
   }
 
   /**
-   * If this build target were //third_party/java/guava:guava-latest, then this would return
-   * "third_party/java/guava". This does not contain the "//" prefix so that it can be appended to
-   * a file path.
+   * If this build target were //third_party/java/guava:guava-latest, then this would return the
+   * {@link Path} "third_party/java/guava". This does not contain the "//" prefix so that it can be
+   * appended to a file path.
    */
   public Path getBasePath() {
-    return Paths.get(getBaseName().substring(BUILD_TARGET_PREFIX.length()));
+    return getCellPath().getFileSystem().getPath(
+        getBaseName().substring(BUILD_TARGET_PREFIX.length()));
   }
 
   /**
@@ -106,22 +112,10 @@ abstract class AbstractUnflavoredBuildTarget
     return basePath.isEmpty() ? "" : basePath + "/";
   }
 
-  @Value.Parameter
-  public abstract String getShortName();
-
-  /**
-   * If this build target is //third_party/java/guava:guava-latest, then this would return
-   * "//third_party/java/guava:guava-latest".
-   */
-  public String getFullyQualifiedName() {
-    return (getRepository().isPresent() ? "@" + getRepository().get() : "") +
-        getBaseName() + ":" + getShortName();
-  }
-
   public static UnflavoredBuildTarget.Builder builder(UnflavoredBuildTarget buildTarget) {
     return UnflavoredBuildTarget
         .builder()
-        .setRepository(buildTarget.getRepository())
+        .setCell(buildTarget.getCell())
         .setBaseName(buildTarget.getBaseName())
         .setShortName(buildTarget.getShortName());
   }
@@ -129,7 +123,7 @@ abstract class AbstractUnflavoredBuildTarget
   public static UnflavoredBuildTarget.Builder builder(String baseName, String shortName) {
     return UnflavoredBuildTarget
         .builder()
-        .setRepository(Optional.<String>absent())
+        .setCell(Optional.<String>absent())
         .setBaseName(baseName)
         .setShortName(shortName);
   }
@@ -141,14 +135,19 @@ abstract class AbstractUnflavoredBuildTarget
   }
 
   @Override
-  public int compareTo(@Nullable AbstractUnflavoredBuildTarget target) {
-    Preconditions.checkNotNull(target);
-    return getFullyQualifiedName().compareTo(target.getFullyQualifiedName());
-  }
+  public int compareTo(AbstractUnflavoredBuildTarget o) {
+    if (this == o) {
+      return 0;
+    }
 
-  @Override
-  public UnflavoredBuildTarget getUnflavoredBuildTarget() {
-    return UnflavoredBuildTarget.copyOf(this);
+    ComparisonChain comparison = ComparisonChain.start()
+        .compareTrueFirst(getCell().isPresent(), o.getCell().isPresent());
+    if (getCell().isPresent() && o.getCell().isPresent()) {
+      comparison = comparison.compare(getCell().get(), o.getCell().get());
+    }
+    return comparison
+        .compare(getBaseName(), o.getBaseName())
+        .compare(getShortName(), o.getShortName())
+        .result();
   }
-
 }

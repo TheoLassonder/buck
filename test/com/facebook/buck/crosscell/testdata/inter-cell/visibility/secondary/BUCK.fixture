@@ -1,0 +1,16 @@
+
+export_file(
+  name = 'hello',
+  src = 'hello-world.txt',
+  visibility = [
+    'primary//:visible-target',
+    'primary//sub/...',
+    'primary//sub2:',
+  ],
+)
+
+export_file(
+  name = 'public',
+  src = 'hello-world.txt',
+  visibility = ['PUBLIC'],
+)

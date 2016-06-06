@@ -23,6 +23,10 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.fail;
 
+import com.facebook.buck.io.ProjectFilesystem;
+import com.facebook.buck.model.BuildTarget;
+import com.facebook.buck.model.BuildTargets;
+import com.facebook.buck.testutil.FakeProjectFilesystem;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
 import com.facebook.buck.testutil.integration.TestDataHelper;
@@ -34,6 +38,7 @@ import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
 import java.io.IOException;
+import java.nio.file.Paths;
 
 public class ParserIntegrationTest {
   @Rule
@@ -42,16 +47,21 @@ public class ParserIntegrationTest {
   public ExpectedException thrown = ExpectedException.none();
 
   @Test
-  public void testParserFilesAreSandboxed() throws IOException {
+  public void testParserFilesAreSandboxed() throws Exception {
     ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
         this, "parser_with_method_overrides", temporaryFolder);
     workspace.setUp();
 
+    BuildTarget target = workspace.newBuildTarget("//:base_genrule");
+    ProjectFilesystem filesystem = new FakeProjectFilesystem();
+
     ProjectWorkspace.ProcessResult buildResult = workspace.runBuckCommand(
-        "build", "//:base_genrule", "-v", "2");
+        "build", "", "-v", "2");
     buildResult.assertSuccess();
 
-    workspace.verify();
+    workspace.verify(
+        Paths.get("base_genrule_output.expected"),
+        BuildTargets.getGenPath(filesystem, target, "%s"));
   }
 
   /**
@@ -158,5 +168,46 @@ public class ParserIntegrationTest {
     ProjectWorkspace.ProcessResult result = workspace.runBuckCommand("targets", "//:root");
     result.assertSuccess("buck should parse build files with a different name");
     assertEquals("//:root\n", result.getStdout());
+  }
+
+  @Test
+  public void testUsingAutodeps() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this,
+        "autodeps",
+        temporaryFolder);
+    workspace.setUp();
+
+    ProjectWorkspace.ProcessResult result = workspace.runBuckCommand("build", "//java/bar:bar");
+    result.assertSuccess(
+        "//java/bar:bar should pick up the dependency on //java/foo:foo via BUCK.autodeps");
+  }
+
+  /**
+   * We try to test something very subtle in this test. Specifically, if buckd is running and a
+   * {@code BUCK.autodeps} file is changed, the corresponding build rules should be invalidated and
+   * Buck should know to re-create them if an affected rule is rebuilt.
+   */
+  @Test
+  public void testModifyingAutodepsShouldInvalidateCorrespondingBuildRules() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this,
+        "autodeps",
+        temporaryFolder);
+    workspace.setUp();
+
+    ProjectWorkspace.ProcessResult firstRun = workspace.runBuckdCommand("run", "//java/bar:main");
+    firstRun.assertSuccess();
+    assertThat(firstRun.getStdout(), containsString("I am Foo"));
+
+    // Note that here, the only file being changed is BUCK.autodeps. In practice, this is unlikely
+    // to happen because a change in BUCK.autodeps is often in response to some code that has
+    // changed. Regardless, we change only BUCK.autodeps in this test case to isolate the behavior
+    // we want to verify.
+    workspace.copyFile("java/bar/BUCK.replacement.autodeps", "java/bar/BUCK.autodeps");
+
+    ProjectWorkspace.ProcessResult secondRun = workspace.runBuckdCommand("run", "//java/bar:main");
+    secondRun.assertSuccess();
+    assertThat(secondRun.getStdout(), containsString("I am other Foo"));
   }
 }

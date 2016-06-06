@@ -6,6 +6,7 @@
   <property name="test.dir" value="${basedir}/test" />
   <property name="third-party.dir" value="${basedir}/third-party" />
   <property name="build.dir" value="${basedir}/build" />
+  <property name="build.successful.file" value="${build.dir}/successful-build" />
   <property name="aosp.classes.dir" value="${build.dir}/aosp/classes" />
   <property name="testrunner.classes.dir" value="${build.dir}/testrunner/classes" />
   <property name="bootstrapper.src.dir" value="com/facebook/buck/cli/bootstrapper/" />
@@ -14,23 +15,24 @@
   <property name="tracing-api.src.dir" value="com/facebook/buck/event/api/" />
   <property name="tracing-api.classes.dir" value="${build.dir}/tracing-api/classes" />
   <property name="tracing-api.jar" value="${build.dir}/tracing-api/tracing-api.jar"/>
-  <property name="buck.path_to_compile_asset_catalogs_build_phase_sh" value="${basedir}/src/com/facebook/buck/apple/compile_asset_catalogs_build_phase.sh" />
-  <property name="buck.path_to_pex" value="${basedir}/src/com/facebook/buck/python/pex.py" />
+  <property name="javac-tracing.src.dir" value="com/facebook/buck/jvm/java/tracing" />
+  <property name="javac-tracing.classes.dir" value="${build.dir}/javac-tracing/classes" />
+  <property name="javac-tracing.jar" value="${build.dir}/javac-tracing/javac-tracing-compiler-plugin.jar" />
+  <property name="buck.path_to_pex" value="${basedir}/src/com/facebook/buck/python/make_pex.py" />
   <property name="buck.path_to_python_test_main" value="${basedir}/src/com/facebook/buck/python/__test_main__.py" />
   <property name="buck.path_to_sh_binary_template" value="${basedir}/src/com/facebook/buck/shell/sh_binary_template" />
-  <property name="buck.logging_config_file" value="${basedir}/config/logging.properties" />
+  <property name="buck.logging_config_file" value="${basedir}/config/logging.properties.st" />
   <property name="buck.test_logging_config_file" value="${basedir}/config/logging.test.properties" />
   <property name="classes.dir" value="${build.dir}/classes" />
   <property name="testclasses.dir" value="${build.dir}/testclasses" />
   <property name="javadoc.dir" value="${build.dir}/javadoc" />
   <property name="javadoc-with-android.dir" value="${build.dir}/javadoc-with-android" />
   <property name="javadoc-all.dir" value="${build.dir}/javadoc-all" />
-  <property name="client.dir" value="third-party/nailgun" />
   <property name="test.class" value="Test" />
   <property name="test.debug_port" value="8787" />
   <property name="lint.outputpath" value="${build.dir}/lint.output" />
 
-  <property name="dx.base.dir" value="${basedir}/third-party/java/dx-from-kitkat" />
+  <property name="dx.base.dir" value="${basedir}/third-party/java/dx" />
   <property name="dx.src.dir" value="${dx.base.dir}/src" />
   <property name="dx.test.dir" value="${dx.base.dir}/tests" />
   <property name="dx.etc.dir" value="${dx.base.dir}/etc" />
@@ -40,94 +42,161 @@
 
   <property name="pathlib.dir" value="${third-party.dir}/py/pathlib" />
   <property name="unittest2.dir" value="${third-party.dir}/py/unittest2" />
+  <property name="pywatchman.dir" value="${third-party.dir}/py/pywatchman" />
+  <property name="nailgun.dir" value="${third-party.dir}/nailgun" />
+  <property name="scandir.dir" value="${third-party.dir}/py/scandir" />
+  <property name="testutil.integration.dir" value="${test.dir}/com/facebook/buck/testutil/integration" />
 
-  <property name="immutables-value-standalone.jar" value="${third-party.dir}/java/immutables/value-2.0.11.jar" />
-  <property name="immutables.gensrc.dir" value="${build.dir}/immutables" />
-  <property name="immutables.gensrc.test.dir" value="${build.dir}/immutables-tests" />
+  <property name="buck.pythonpath" value="${pathlib.dir}:${pywatchman.dir}:${nailgun.dir}:${scandir.dir}:${testutil.integration.dir}" />
+
+  <property name="immutables-value-standalone.jar" value="${third-party.dir}/java/immutables/value-2.1.18.jar" />
+
+  <property name="manual.gensrc.dir" value="${basedir}/src-gen" />
+  <property name="manual.gensrc.classes.dir" value="${build.dir}/src-gen/classes" />
+
+  <property name="gensrc.dir" value="${build.dir}/gen" />
+  <property name="test.gensrc.dir" value="${build.dir}/test-gen" />
+  <property name="aosp.gensrc.dir" value="${build.dir}/aosp-gen" />
+
+  <!-- Javadoc in 1.8 became stricter about parsing the docs. This disables some of those checks -->
+  <available property="jdk1.8" classname="java.util.stream.Stream"/>
+  <condition
+          property="javadoc.doclint"
+          value="-Xdoclint:-reference"
+          else="">
+    <and>
+      <isset property="jdk1.8"/>
+    </and>
+  </condition>
 
   <fileset dir="${third-party.dir}/java" id="buck.jars">
     <include name="args4j/args4j-2.0.30.jar" />
     <include name="ddmlib/ddmlib-22.5.3.jar" />
-    <include name="guava/guava-18.0.jar" />
+    <include name="guava/guava-19.0.jar" />
     <include name="ini4j/ini4j-0.5.2.jar" />
-    <include name="jackson/jackson-annotations-2.0.5.jar" />
-    <include name="jackson/jackson-core-2.0.5.jar" />
-    <include name="jackson/jackson-databind-2.0.5.jar" />
+    <include name="jackson/jackson-annotations-2.5.5.jar" />
+    <include name="jackson/jackson-core-2.5.5.jar" />
+    <include name="jackson/jackson-databind-2.5.5.jar" />
     <include name="jackson/jackson-datatype-jdk7-2.5.0.jar" />
+    <include name="jackson-datatype-guava/jackson-datatype-guava-2.5.5.jar" />
     <include name="jsr/jsr305.jar" />
     <include name="android/sdklib.jar" />
     <include name="nailgun/nailgun-server-0.9.2-SNAPSHOT.jar" />
+    <include name="jna/jna-4.2.0.jar" />
   </fileset>
 
   <fileset dir="${third-party.dir}/java" id="third-party.jars">
-    <include name="asm/asm-debug-all-5.0.3.jar" />
+    <include name="ObjCBridge/ObjCBridge.jar" />
+    <include name="android/sdk-common-24.2.3.jar" />
+    <include name="android/common-24.2.3.jar" />
+    <include name="android/layoutlib-api-24.2.3.jar" />
     <include name="aopalliance/aopalliance.jar" />
+    <include name="asm/asm-debug-all-5.0.3.jar" />
     <include name="closure-templates/soy-excluding-deps.jar" />
     <include name="commons-compress/commons-compress-1.8.1.jar" />
+    <include name="commons-lang/commons-lang3/commons-lang3-3.1.jar" />
+    <include name="commons-logging/commons-logging-1.2.jar" />
+    <include name="concurrent-locks/concurrent-locks-1.0.0.jar" />
     <include name="dd-plist/dd-plist.jar" />
-    <include name="eclipse/org.eclipse.core.contenttype_3.4.200.v20140207-1251.jar"/>
-    <include name="eclipse/org.eclipse.core.jobs_3.6.1.v20141014-1248.jar"/>
-    <include name="eclipse/org.eclipse.core.resources_3.9.1.v20140825-1431.jar"/>
-    <include name="eclipse/org.eclipse.core.runtime_3.10.0.v20140318-2214.jar"/>
-    <include name="eclipse/org.eclipse.equinox.common_3.6.200.v20130402-1505.jar"/>
-    <include name="eclipse/org.eclipse.equinox.preferences_3.5.200.v20140224-1527.jar"/>
-    <include name="eclipse/org.eclipse.jdt.core_3.10.2.v20150120-1634.jar"/>
-    <include name="eclipse/org.eclipse.osgi_3.10.2.v20150203-1939.jar"/>
+    <include name="eclipse/org.eclipse.core.contenttype_3.5.100.v20160418-1621.jar"/>
+    <include name="eclipse/org.eclipse.core.jobs_3.8.0.v20160319-0610.jar"/>
+    <include name="eclipse/org.eclipse.core.resources_3.11.0.v20160422-0304.jar"/>
+    <include name="eclipse/org.eclipse.core.runtime_3.12.0.v20160427-1901.jar"/>
+    <include name="eclipse/org.eclipse.equinox.common_3.8.0.v20160422-1942.jar"/>
+    <include name="eclipse/org.eclipse.equinox.preferences_3.6.0.v20160120-1756.jar"/>
+    <include name="eclipse/org.eclipse.jdt.core_3.12.0.v20160426-1326.jar"/>
+    <include name="eclipse/org.eclipse.osgi_3.11.0.v20160427-2120.jar"/>
+    <include name="eden/eden.jar" />
+    <include name="eden/java-thrift-dependencies.jar" />
     <include name="guice/guice-3.0.jar" />
     <include name="guice/guice-assistedinject-3.0.jar" />
     <include name="guice/guice-multibindings-3.0.jar" />
     <include name="gson/gson-2.2.4.jar" />
     <include name="icu4j/icu4j-54.1.1.jar" />
-    <include name="immutables/value-2.0.11.jar" />
+    <include name="immutables/value-2.1.18.jar" />
     <include name="infer-annotations/infer-annotations-1.5.jar" />
+    <include name="nuprocess/nuprocess-1.0.5-SNAPSHOT.jar" />
     <include name="jacoco/org.jacoco.core-0.7.5.201505241946.jar" />
     <include name="jacoco/org.jacoco.report-0.7.5.201505241946.jar" />
     <include name="jetty/jetty-all-9.2.10.v20150310.jar" />
     <include name="jimfs/jimfs-1.0.jar" />
     <include name="jsr/javax.inject-1.jar" />
-    <include name="okhttp/okhttp-2.2.0.jar" />
-    <include name="okio/okio-1.2.0.jar" />
+    <include name="okhttp/okhttp-3.3.0.jar" />
+    <include name="okio/okio-1.8.0.jar" />
     <include name="servlet-api/javax.servlet-api-3.1.0.jar" />
-    <include name="slf4j/slf4j-api-1.7.2.jar" />
-    <include name="slf4j/slf4j-log4j12-1.7.2.jar" />
+    <include name="slf4j/slf4j-jdk14-1.7.5.jar" /><!-- redirect slf4j to java.util.logging -->
     <include name="stringtemplate/ST-4.0.8.jar" />
+    <include name="thrift/libthrift-0.9.3.jar" />
     <include name="xz-java-1.3/xz-1.3.jar" />
+
+    <!-- maven interop -->
+    <include name="aether/aether-api-1.0.2.v20150114.jar" />
+    <include name="aether/aether-connector-basic-1.0.2.v20150114.jar" />
+    <include name="aether/aether-impl-1.0.0.v20140518.jar" />
+    <include name="aether/aether-spi-1.0.2.v20150114.jar" />
+    <include name="aether/aether-transport-http-1.0.2.v20150114.jar" />
+    <include name="aether/aether-util-1.0.2.v20150114.jar" />
+    <include name="httpcomponents/httpclient-4.4.1.jar" />
+    <include name="httpcomponents/httpcore-4.4.1.jar" />
+    <include name="maven/maven-aether-provider-3.2.5.jar" />
+    <include name="maven/maven-model-3.2.5.jar" />
+    <include name="maven/maven-model-builder-3.2.5.jar" />
+    <include name="maven/maven-repository-metadata-3.2.5.jar" />
+    <include name="plexus/plexus-utils-3.0.20.jar" />
+    <include name="plexus/plexus-interpolation-1.21.jar" />
+    <include name="slf4j/jcl-over-slf4j-1.6.2.jar" />
+    <include name="slf4j/slf4j-api-1.7.5.jar" />
   </fileset>
 
-  <path id="classpath-no-src">
+  <path id="classpath-no-src-no-aosp">
     <fileset refid="buck.jars" />
     <fileset refid="third-party.jars" />
     <pathelement location="${classes.dir}" />
     <pathelement location="${dx.classes.dir}" />
     <pathelement location="${bootstrapper.jar}" />
+    <pathelement location="${manual.gensrc.classes.dir}" />
+  </path>
+
+  <path id="classpath-no-src">
+    <path refid="classpath-no-src-no-aosp" />
+    <pathelement location="${aosp.classes.dir}" />
   </path>
 
   <path id="classpath">
     <path refid="classpath-no-src" />
     <pathelement location="${src.dir}" />
-    <pathelement location="${immutables.gensrc.dir}" />
+    <pathelement location="${manual.gensrc.dir}" />
   </path>
 
-  <path id="classpath-generate-immutables">
-    <fileset refid="buck.jars" />
+  <path id="classpath-compile-manual-gen-src">
     <fileset refid="third-party.jars" />
-    <pathelement location="${aosp.classes.dir}" />
   </path>
 
   <path id="junit">
-    <pathelement location="${third-party.dir}/java/junit/junit-4.11.jar" />
+    <pathelement location="${third-party.dir}/java/junit/junit-4.12.jar" />
     <pathelement location="${third-party.dir}/java/hamcrest/hamcrest-junit-2.0.0.0.jar" />
     <pathelement location="${third-party.dir}/java/hamcrest/java-hamcrest-2.0.0.0.jar" />
     <pathelement location="${third-party.dir}/java/testng/testng-6.8.jar" />
+    <pathelement location="${third-party.dir}/java/ddmlib/ddmlib-22.5.3.jar" />
   </path>
 
-  <target name="clean" description="remove all generated files">
+  <target name="clean" description="remove all generated files" depends="clear-successful-build">
     <delete dir="${build.dir}" />
   </target>
 
+  <target name="clear-successful-build">
+    <delete file="${build.successful.file}"/>
+  </target>
+
+  <target name="mark-successful-build">
+    <touch file="${build.successful.file}"/>
+  </target>
+
   <!-- Default target so that a command line build can
-       do more than one thing. -->
-  <target name="default" depends="compile, dx, client, report-generator-jar" />
+       do more than one thing.
+
+       clear-successful-build must be first, and mark-successful-build last, in the list of dependencies.-->
+  <target name="default" depends="clear-successful-build, compile, dx, javac-tracing, report-generator-jar, mark-successful-build" />
 
   <target name="checkversion">
     <!-- The nio Files class was only introduced in Java 7. -->
@@ -135,10 +204,28 @@
     <fail message="Require JDK 7 or higher" unless="jdk7"/>
   </target>
 
+  <target name="python-get-prefix">
+    <exec executable="python" failonerror="true" outputproperty="python.prefix" logError="true">
+      <arg value="-c" />
+      <arg value="import distutils.sysconfig; print(distutils.sysconfig.PREFIX)" />
+    </exec>
+  </target>
+
+  <target name="compile-manual-gen-src" depends="checkversion">
+    <mkdir dir="${manual.gensrc.classes.dir}" />
+    <javac srcdir="${manual.gensrc.dir}"
+           destdir="${manual.gensrc.classes.dir}"
+           classpathref="classpath-compile-manual-gen-src"
+           debug="on"
+           includeAntRuntime="no"
+            >
+    </javac>
+  </target>
+
   <target name="compile-testrunner" depends="checkversion">
     <mkdir dir="${testrunner.classes.dir}" />
     <javac srcdir="${src.dir}"
-           includes="com/facebook/buck/junit/**,src/com/facebook/buck/util/concurrent/MoreExecutors.java,com/facebook/buck/java/runner/**"
+           includes="com/facebook/buck/log/AppendableLogRecord.java,com/facebook/buck/testrunner/**,com/facebook/buck/util/concurrent/MoreExecutors.java,com/facebook/buck/jvm/java/runner/**"
            destdir="${testrunner.classes.dir}"
            classpathref="junit"
            debug="on"
@@ -161,6 +248,9 @@
     <ecj destdir="${bootstrapper.classes.dir}" classpathref="bootstrapper-classpath">
       <javac-params>
         <include name="${bootstrapper.src.dir}/**/*.java" />
+        <include name="${javac-tracing.src.dir}/JavacPhaseTracer.java" />
+        <include name="com/facebook/buck/util/exportedfiles/Nullable.java" />
+        <include name="com/facebook/buck/util/exportedfiles/Preconditions.java" />
       </javac-params>
     </ecj>
     <jar destfile="${bootstrapper.jar}">
@@ -168,7 +258,7 @@
 
       <!-- Be very careful what is added here, and leave comments justifying each addition. See the
       comment in bootstrapper-classpath above for more details on why. -->
-      
+
       <!-- The Tracing API jar must be accessible to both Buck and compiler plugins, so we put it
       in the bootstrapper. Compiler plugins will have their own copy linked in, but the ClassLoaders
       will end up loading this one instead when they are run inside Buck. -->
@@ -193,50 +283,36 @@
     </jar>
   </target>
 
-  <path id="immutables-classpath">
-    <path refid="classpath" />
-    <pathelement location="${immutables-value-standalone.jar}" />
-    <pathelement location="${src.dir}" />
-    <pathelement location="${aosp.classes.dir}" />
+  <path id="javac-tracing.classpath">
+    <!-- This jar is loaded in each compiler class loader, which is unrelated to Buck's class
+    loader. Do not take dependencies on Buck code outside of the bootstrapper here. Compiler
+    code (tools.jar) and third-party libraries are OK, though keep in mind that every class included
+    in the jar will be freshly loaded for each invocation of the compiler. -->
+    <pathelement location="${third-party.dir}/java/jdk/stub-compiler-tree-api.jar" />
+    <pathelement location="${bootstrapper.jar}" />
   </path>
 
-  <!-- The set of Immutables value type source files which have not
-       yet been run through the javac annotation processor. -->
-  <fileset dir="${src.dir}" id="immutables-srcs">
-    <!-- Speed up the build by only running javac on files containing Immutables. -->
-    <contains text="org.immutables" />
-    <exclude name="com/facebook/buck/android/support/**" />
-    <exclude name="com/facebook/buck/cli/quickstart/**" />
-    <exclude name="com/facebook/buck/junit/**" />
-    <!-- Only run javac on immutables files which have changed since the last build. -->
-    <modified>
-      <param name="cache.cachefile" value="${build.dir}/immutables.modified.properties" />
-    </modified>
-  </fileset>
+  <target name="javac-tracing" depends="checkversion, tracing-api">
+    <mkdir dir="${javac-tracing.classes.dir}" />
+    <ecj destdir="${javac-tracing.classes.dir}" classpathref="javac-tracing.classpath">
+      <javac-params>
+        <include name="com/facebook/buck/util/exportedfiles/Nullable.java" />
+        <include name="com/facebook/buck/util/exportedfiles/Preconditions.java" />
+        <include name="${javac-tracing.src.dir}/TracingTaskListener.java" />
+      </javac-params>
+    </ecj>
+    <jar destfile="${javac-tracing.jar}">
+      <fileset dir="${javac-tracing.classes.dir}"/>
+    </jar>
 
-  <target name="check-immutables">
-    <!--
-      javac rules don't support filesets, but they do support comma-separated lists of
-      sources in the includes parameter.
-
-      However, if the includes parameter is empty, the javac rule will build everything,
-      which we don't want. So we have to skip the generate-immutables step entirely
-      in that case.
-
-      This sets ${immutables-srcs-flattened} to a comma-separated list of files to build,
-      then sets ${generate-immutables-needed} to true iff that variable is non-empty.
-    -->
-    <pathconvert property="immutables-srcs-flattened" pathsep="," refid="immutables-srcs">
-      <map from="${src.dir}/" to=""/>
-    </pathconvert>
-    <condition property="generate-immutables-needed">
-      <length string="${immutables-srcs-flattened}" when="greater" length="0" />
-    </condition>
+    <!-- Put the tracing jar in resources so it can be dynamically loaded at runtime. See
+     TranslatingJavacPhaseTracer -->
+    <copy file="${javac-tracing.jar}" todir="${classes.dir}/com/facebook/buck/jvm/java/tracing" />
   </target>
 
   <target name="compile-aosp" depends="checkversion">
     <mkdir dir="${aosp.classes.dir}" />
-    <ecj srcdir="${aosp.src.dir}" destdir="${aosp.classes.dir}">
+    <ecj srcdir="${aosp.src.dir}" destdir="${aosp.classes.dir}" gensrcdir="${aosp.gensrc.dir}">
       <ecj-params>
         <!-- ManifestMerger.java has redundant null checks -->
         <compilerarg value="-err:-null" />
@@ -244,25 +320,11 @@
     </ecj>
   </target>
 
-  <target name="generate-immutables" depends="compile-aosp, check-immutables" if="${generate-immutables-needed}">
-    <mkdir dir="${immutables.gensrc.dir}" />
-    <javac srcdir="${src.dir}:${immutables.gensrc.dir}"
-           classpathref="classpath-generate-immutables"
-           includeAntRuntime="no"
-           includes="${immutables-srcs-flattened}">
-      <compilerarg value="-Werror" />
-      <compilerarg value="-processorpath" />
-      <compilerarg value="${immutables-value-standalone.jar}" />
-      <compilerarg value="-proc:only" />
-      <compilerarg value="-s" />
-      <compilerarg value="${immutables.gensrc.dir}" />
-    </javac>
-  </target>
-
   <macrodef name="ecj" description="Compile Java using the ecj compiler with strict checks.">
     <attribute name="srcdir" default="${src.dir}" />
     <attribute name="classpathref" default="classpath-no-src" />
     <attribute name="destdir" default="${classes.dir}" />
+    <attribute name="gensrcdir" default="${gensrc.dir}" />
     <!--
       javac-params can contain any extra parameters to the javac ant command.
 
@@ -304,59 +366,74 @@
         <compilerarg value="-Xlint:serial" />
         <compilerarg value="-time" />
         <compilerclasspath>
-          <pathelement location="${eclipse.dir}/org.eclipse.jdt.core_3.10.2.v20150120-1634.jar" />
+          <pathelement location="${eclipse.dir}/ecj-4.6M7.jar" />
+          <pathelement location="${eclipse.dir}/org.eclipse.jdt.core_3.12.0.v20160426-1326.jar" />
           <pathelement location="${eclipse.dir}/jdtCompilerAdapter.jar" />
         </compilerclasspath>
+        <compilerarg value="-processorpath" />
+        <compilerarg value="${immutables-value-standalone.jar}" />
+        <compilerarg value="-s" />
+        <compilerarg value="@{gensrcdir}" />
         <ecj-params />
       </javac>
     </sequential>
   </macrodef>
 
+  <target name="package-resources">
+    <mkdir dir="${classes.dir}/com/facebook/buck/cli/quickstart/android"/>
+    <zip basedir="src/com/facebook/buck/cli/quickstart/android"
+         destfile="${classes.dir}/com/facebook/buck/cli/quickstart/android/android-template.zip"
+         excludes="BUCK"
+         defaultexcludes="no"/>
+
+    <mkdir dir="${classes.dir}/com/facebook/buck/cli/quickstart/ios"/>
+    <zip basedir="src/com/facebook/buck/cli/quickstart/ios"
+         destfile="${classes.dir}/com/facebook/buck/cli/quickstart/ios/ios-template.zip"
+         excludes="BUCK"
+         defaultexcludes="no"/>
+    <mkdir dir="${classes.dir}/com/facebook/buck/android"/>
+    <copy file="${third-party.dir}/java/ddmlib/ddmlib-22.5.3.jar"
+          tofile="${classes.dir}/com/facebook/buck/android/ddmlib.jar"/>
+    <copy file="${third-party.dir}/java/kxml2/kxml2-2.3.0.jar"
+          tofile="${classes.dir}/com/facebook/buck/android/kxml2.jar"/>
+  </target>
+
   <target name="compile"
-          depends="compile-testrunner, bootstrapper, tracing-api, dx, generate-immutables"
+          depends="compile-testrunner, compile-aosp, compile-manual-gen-src, bootstrapper, package-resources, tracing-api, dx"
           description="compile Java source code">
     <mkdir dir="${classes.dir}" />
 
     <!-- Copy in scripts we need at run time when using an unpacked buck -->
     <copy file="src/com/facebook/buck/json/buck.py" todir="${classes.dir}/com/facebook/buck/json"/>
 
-    <!--
-      Compile code from AOSP using the default compiler.
-      Using ecj spits out too many warnings that are not our responsibility to fix.
-    -->
-    <javac destdir="${classes.dir}"
-           classpathref="classpath"
-           debug="on"
-           deprecation="on"
-           includeAntRuntime="no"
-           >
-      <src path="${aosp.src.dir}" />
-
-      <compilerarg value="-Xlint:rawtypes" />
-      <compilerarg value="-Xlint:unchecked" />
-      <compilerarg value="-Xlint:serial" />
-    </javac>
-
     <ecj>
       <javac-params>
-        <!--
-          These patterns are excluded because they are compiled elsewhere
-          and are deliberately isolated from Buck's core.
-        -->
-        <exclude name="com/facebook/buck/android/support/**" />
-        <exclude name="com/facebook/buck/cli/bootstrapper/**" />
-        <exclude name="com/facebook/buck/cli/quickstart/**" />
-        <exclude name="com/facebook/buck/event/api/**" />
-        <exclude name="com/facebook/buck/junit/**" />
-        <!-- Excluded since the maven functionality is bolted on later -->
-        <exclude name="com/facebook/buck/maven/**" />
-        <src path="${immutables.gensrc.dir}" />
+        <patternset>
+          <!--
+            These patterns are excluded because they are compiled elsewhere
+            and are deliberately isolated from Buck's core.
+          -->
+          <exclude name="com/facebook/buck/android/support/**" />
+          <exclude name="com/facebook/buck/cli/bootstrapper/**" />
+          <exclude name="com/facebook/buck/cli/quickstart/**" />
+          <exclude name="com/facebook/buck/event/api/**" />
+          <exclude name="com/facebook/buck/intellij/plugin/**" />
+          <exclude name="com/facebook/buck/testrunner/**" />
+        </patternset>
+        <or>
+          <filename name="${javac-tracing.src.dir}/JavacPhaseEvent.java" />
+          <filename name="${javac-tracing.src.dir}/JavacPhaseEventLogger.java" />
+          <filename name="${javac-tracing.src.dir}/TranslatingJavacPhaseTracer.java" />
+          <not>
+            <filename name="${javac-tracing.src.dir}/**" />
+          </not>
+        </or>
       </javac-params>
     </ecj>
   </target>
 
   <fileset dir="${third-party.dir}/java" id="dx.jars">
-    <include name="guava/guava-18.0.jar" />
+    <include name="guava/guava-19.0.jar" />
   </fileset>
 
   <path id="dx.classpath">
@@ -384,8 +461,8 @@
     </javac>
 
     <jar destfile="${build.dir}/dx.jar">
-      <zipfileset includes="**/*.class" src="${third-party.dir}/java/guava/guava-18.0.jar"/>
-      <zipfileset includes="**/*.class" src="${third-party.dir}/java/junit/junit-4.11.jar" />
+      <zipfileset includes="**/*.class" src="${third-party.dir}/java/guava/guava-19.0.jar"/>
+      <zipfileset includes="**/*.class" src="${third-party.dir}/java/junit/junit-4.12.jar" />
       <fileset dir="${dx.classes.dir}" />
       <manifest>
         <attribute name="Main-Class" value="com.android.dx.command.Main" />
@@ -445,30 +522,34 @@
       <zipfileset excludes="**/*SF **/*RSA" src="${third-party.dir}/java/jacoco/org.jacoco.report-0.7.5.201505241946.jar"/>
       <zipfileset excludes="**/*SF **/*RSA" src="${third-party.dir}/java/asm/asm-debug-all-5.0.3.jar"/>
       <fileset dir="${classes.dir}">
-          <include name="com/facebook/buck/java/coverage/ReportGenerator.class"/>
+          <include name="com/facebook/buck/jvm/java/coverage/ReportGenerator.class"/>
       </fileset>
       <manifest>
-        <attribute name="Main-Class" value="com.facebook.buck.java.coverage.ReportGenerator" />
+        <attribute name="Main-Class" value="com.facebook.buck.jvm.java.coverage.ReportGenerator" />
       </manifest>
     </jar>
   </target>
 
-  <path id="tests.classpath">
+  <path id="tests.run.classpath">
     <path refid="classpath" />
     <fileset dir="${third-party.dir}/java">
+      <include name="caliper/caliper-1.0-all.jar" />
       <include name="cglib/cglib-nodep-2.2.jar" />
       <include name="easymock/easymock-3.3.1.jar" />
       <include name="hamcrest/hamcrest-junit-2.0.0.0.jar" />
       <include name="hamcrest/java-hamcrest-2.0.0.0.jar" />
-      <include name="junit/junit-4.11.jar" />
+      <include name="junit/junit-4.12.jar" />
       <include name="objenesis/objenesis-1.2.jar" />
     </fileset>
 
     <pathelement location="${testclasses.dir}" />
     <pathelement location="${test.dir}" />
     <pathelement location="${testrunner.classes.dir}" />
-    <pathelement location="${immutables.gensrc.dir}" />
-    <pathelement location="${immutables.gensrc.test.dir}" />
+  </path>
+
+  <path id="tests.compile.classpath">
+    <path refid="tests.run.classpath" />
+    <pathelement location="${third-party.dir}/java/jdk/stub-compiler-tree-api.jar" />
   </path>
 
   <!-- The set of Immutables value type source files which have not
@@ -483,53 +564,23 @@
     </modified>
   </fileset>
 
-  <target name="check-test-immutables">
-    <!--
-      javac rules don't support filesets, but they do support comma-separated lists of
-      sources in the includes parameter.
-
-      However, if the includes parameter is empty, the javac rule will build everything,
-      which we don't want. So we have to skip the generate-immutables step entirely
-      in that case.
-
-      This sets ${immutables-test-srcs-flattened} to a comma-separated list of files to build,
-      then sets ${generate-test-immutables-needed} to true iff that variable is non-empty.
-    -->
-    <pathconvert property="immutables-test-srcs-flattened" pathsep="," refid="immutables-test-srcs">
-      <map from="${test.dir}/" to=""/>
-    </pathconvert>
-    <condition property="generate-test-immutables-needed">
-      <length string="${immutables-test-srcs-flattened}" when="greater" length="0" />
-    </condition>
-  </target>
-
-  <target name="generate-test-immutables" depends="compile, check-test-immutables" if="${generate-test-immutables-needed}">
-    <mkdir dir="${immutables.gensrc.test.dir}" />
-    <javac srcdir="${test.dir}:${immutables.gensrc.test.dir}"
-           includes="${immutables-test-srcs-flattened}"
-           classpathref="tests.classpath"
-           includeAntRuntime="no">
-      <compilerarg value="-Werror" />
-      <compilerarg value="-processorpath" />
-      <compilerarg value="${immutables-value-standalone.jar}" />
-      <compilerarg value="-proc:only" />
-      <compilerarg value="-s" />
-      <compilerarg value="${immutables.gensrc.test.dir}" />
-    </javac>
-  </target>
-
   <target name="compile-tests"
-          depends="compile, generate-test-immutables"
+          depends="compile"
           >
     <mkdir dir="${testclasses.dir}" />
-    <mkdir dir="${immutables.gensrc.dir}" />
     <ecj srcdir="${test.dir}"
          destdir="${testclasses.dir}"
-         classpathref="tests.classpath"
+         classpathref="tests.compile.classpath"
+         gensrcdir="${test.gensrc.dir}"
          >
       <javac-params>
         <exclude name="**/testdata/**" />
-        <exclude name="com/facebook/buck/maven/**" />
+
+        <!-- This test cannot build with the rest because it is testing TracingTaskListener,
+        which lives in the javac-tracing-compiler-plugin.jar, which is loaded dynamically at
+        runtime. This test is run in the Buck build, which is capable of more isolated testing
+        than the Ant build is. -->
+        <exclude name="com/facebook/buck/jvm/java/tracing/TracingTaskListenerCleanerTest.java" />
       </javac-params>
     </ecj>
   </target>
@@ -547,9 +598,8 @@
     <junit failureproperty="hasFailingTests"
            showoutput="true"
            forkmode="perBatch"
+           haltonfailure="on"
            haltonerror="on">
-      <sysproperty key="buck.path_to_compile_asset_catalogs_py" value="${buck.path_to_compile_asset_catalogs_py}" />
-      <sysproperty key="buck.path_to_compile_asset_catalogs_build_phase_sh" value="${buck.path_to_compile_asset_catalogs_build_phase_sh}" />
       <sysproperty key="buck.path_to_pex" value="${buck.path_to_pex}" />
       <sysproperty key="buck.path_to_python_test_main" value="${buck.path_to_python_test_main}" />
       <sysproperty key="buck.logging_config_file" value="${buck.test_logging_config_file}" />
@@ -559,6 +609,7 @@
       <!-- See DEFS for details on why this property is needed. -->
       <sysproperty key="sun.zip.disableMemoryMapping" value="true" />
 
+      <jvmarg value="-Xmx512M" />
       <jvmarg value="${jvmArgs}" />
 
       <formatter type="plain" usefile="false" />
@@ -566,10 +617,11 @@
       <!-- Java and android -->
       <batchtest fork="yes">
         <fileset dir="${test.dir}">
-          <include name="com/facebook/buck/java/**/*${test.class}.java" />
+          <include name="com/facebook/buck/jvm/java/**/*${test.class}.java" />
           <include name="com/facebook/buck/android/**/*${test.class}.java" />
           <include name="com/facebook/buck/dalvik/**/*${test.class}.java" />
 
+          <exclude name="com/facebook/buck/jvm/java/tracing/TracingTaskListenerCleanerTest.java" />
           <exclude name="**/testdata/**" />
         </fileset>
       </batchtest>
@@ -603,8 +655,7 @@
           <include name="**/*${test.class}.java" />
 
           <exclude name="**/testdata/**" />
-          <exclude name="com/facebook/buck/maven/**" />
-          <exclude name="com/facebook/buck/java/**" />
+          <exclude name="com/facebook/buck/jvm/java/**" />
           <exclude name="com/facebook/buck/android/**" />
           <exclude name="com/facebook/buck/dalvik/**" />
           <exclude name="com/facebook/buck/apple/**" />
@@ -613,30 +664,31 @@
         </fileset>
       </batchtest>
 
-      <classpath refid="tests.classpath" />
+      <classpath refid="tests.run.classpath" />
     </junit>
     <fail if="hasFailingTests" />
   </target>
 
-  <target name="py-test" description="runs the Python tests" depends="buck-py-test, class-loader-py-test, asset-catalogs-py-test, pathlib-py-test, zip-munger-py-test" />
+  <target name="py-test" description="runs the Python tests" depends="buck-py-test, class-loader-py-test, log-rotation-py-test, pathlib-py-test, zip-munger-py-test, buck-tool-py-test, scandir-py-test" />
 
   <target name="buck-py-test" description="tests the BUCK parser">
     <exec executable="python" failonerror="true">
-      <env key="PYTHONPATH" path="${pathlib.dir}" />
+      <env key="PYTHONPATH" path="${buck.pythonpath}" />
       <arg value="src/com/facebook/buck/json/buck_test.py" />
     </exec>
   </target>
 
   <target name="class-loader-py-test" description="tests BUCK's class loader setup">
       <exec executable="python" failonerror="true">
-          <env key="PYTHONPATH" path="${pathlib.dir}" />
+          <env key="PYTHONPATH" path="${buck.pythonpath}" />
           <arg value="test/com/facebook/buck/cli/bootstrapper/class_loader_test.py" />
       </exec>
   </target>
 
-  <target name="asset-catalogs-py-test" description="tests the asset catalogs compiler">
+  <target name="log-rotation-py-test" description="tests BUCK's logger setup">
     <exec executable="python" failonerror="true">
-      <arg value="src/com/facebook/buck/apple/compile_asset_catalogs_test.py" />
+      <env key="PYTHONPATH" path="${buck.pythonpath}" />
+      <arg value="test/com/facebook/buck/log/test_log_rotation.py" />
     </exec>
   </target>
 
@@ -648,6 +700,14 @@
     </exec>
   </target>
 
+  <target name="scandir-py-test" description="tests scandir.py">
+    <exec executable="python" failonerror="true" dir="${scandir.dir}/test">
+      <!-- Needed on Python 2.6. -->
+      <env key="PYTHONPATH" path="${unittest2.dir}" />
+      <arg value="run_tests.py" />
+    </exec>
+  </target>
+
   <target name="zip-munger-py-test" description="tests munger.py">
     <exec executable="python" failonerror="true">
       <env key="PYTHONPATH" path="${basedir}" />
@@ -655,8 +715,16 @@
     </exec>
   </target>
 
+  <target name="buck-tool-py-test" description="tests buck_tool.py">
+    <exec executable="python" failonerror="true">
+      <env key="PYTHONPATH" path="${buck.pythonpath}" />
+      <arg value="programs/test_buck_tool.py" />
+    </exec>
+  </target>
+
   <path id="pmd-classpath">
     <fileset dir="${basedir}/pmd" includes="*.jar" />
+    <pathelement location="${third-party.dir}/java/guava/guava-19.0.jar" />
   </path>
 
   <!--
@@ -706,7 +774,7 @@
   separated by commas.
   -->
   <target name="checkstyle-files-xml" if="lint.files">
-    <taskdef resource="checkstyletask.properties"
+    <taskdef resource="com/puppycrawl/tools/checkstyle/ant/checkstyle-ant-task.properties"
            classpathref="checkstyle-classpath"/>
     <checkstyle config="checkstyle.xml">
       <formatter type="xml" toFile="${lint.outputpath}" />
@@ -721,7 +789,7 @@
   separated by commas.
   -->
   <target name="checkstyle-xml">
-    <taskdef resource="checkstyletask.properties"
+    <taskdef resource="com/puppycrawl/tools/checkstyle/ant/checkstyle-ant-task.properties"
            classpathref="checkstyle-classpath"/>
     <checkstyle config="checkstyle.xml">
       <formatter type="xml" toFile="${lint.outputpath}" />
@@ -739,7 +807,7 @@
   Runs checkstyle on all source and test files.
   -->
   <target name="checkstyle">
-    <taskdef resource="checkstyletask.properties"
+    <taskdef resource="com/puppycrawl/tools/checkstyle/ant/checkstyle-ant-task.properties"
            classpathref="checkstyle-classpath"/>
     <checkstyle config="checkstyle.xml" maxWarnings="0">
       <fileset dir="${src.dir}">
@@ -756,7 +824,7 @@
   <taskdef name="forbiddenapis" classname="de.thetaphi.forbiddenapis.AntTask" classpath="third-party/java/forbiddenapis/forbiddenapis-1.8.jar"/>
 
   <target name="forbidden-checks" depends="compile">
-    <forbiddenapis internalRuntimeForbidden="true" classpathref="classpath" dir="${classes.dir}">
+    <forbiddenapis internalRuntimeForbidden="true" classpathref="classpath" dir="${classes.dir}" suppressAnnotation="**.SuppressForbidden">
       <bundledsignatures name="jdk-unsafe-1.7"/>
       <bundledsignatures name="jdk-deprecated-1.7"/>
       <signaturesFileset file="config/forbiddenapis.txt"/>
@@ -764,7 +832,7 @@
   </target>
 
   <target name="forbidden-checks-tests" depends="compile-tests">
-    <forbiddenapis internalRuntimeForbidden="true" classpathref="tests.classpath" dir="${testclasses.dir}">
+    <forbiddenapis internalRuntimeForbidden="true" classpathref="tests.compile.classpath" dir="${testclasses.dir}" suppressAnnotation="**.SuppressForbidden">
       <bundledsignatures name="jdk-unsafe-1.7"/>
       <bundledsignatures name="jdk-deprecated-1.7"/>
       <signaturesFileset file="config/forbiddenapis.txt"/>
@@ -784,23 +852,32 @@
       <delete dir="@{destdir}" />
       <mkdir dir="@{destdir}" />
       <record name="@{destdir}/javadoc.log" action="start" />
+
       <javadoc destdir="@{destdir}"
                access="@{access}"
                classpathref="@{classpathref}"
                windowtitle="Buck"
                failonerror="true"
+               additionalparam="${javadoc.doclint}"
                >
+        <arg value="-notimestamp"/>
         <fileset dir="${src.dir}">
           <include name="**/*.java" />
           <exclude name="com/facebook/buck/cli/quickstart/**" />
+          <exclude name="com/facebook/buck/android/support/exopackage/**" />
+          <exclude name="com/facebook/buck/intellij/plugin/**" />
         </fileset>
-        <fileset dir="${immutables.gensrc.dir}" />
-        <link href="http://docs.oracle.com/javase/7/docs/api/" />
+        <fileset dir="${gensrc.dir}" />
+        <link href="http://docs.oracle.com/javase/7/docs/api/"
+              offline="true"
+              packagelistloc="third-party/java/javase" />
         <link href="http://docs.guava-libraries.googlecode.com/git-history/v18.0/javadoc/"
               offline="true"
               packagelistloc="third-party/java/guava"/>
-        <!-- The latest version of the javadocs is only for 4.10 -->
-        <link href="https://junit-team.github.io/junit/javadoc/latest/" />
+        <!-- The latest version of the javadocs is only for 4.12 -->
+        <link href="https://junit-team.github.io/junit/javadoc/latest/"
+              offline="true"
+              packagelistloc="third-party/java/junit" />
         <additional-links />
       </javadoc>
       <record name="@{destdir}/javadoc.log" action="stop" />
@@ -812,18 +889,11 @@
   <path id="javadoc.classpath">
     <path refid="classpath" />
     <!-- Buck test runner has references to JUnit and TestNG. -->
-    <pathelement location="${third-party.dir}/java/junit/junit-4.11.jar" />
+    <pathelement location="${third-party.dir}/java/junit/junit-4.12.jar" />
     <pathelement location="${third-party.dir}/java/testng/testng-6.8.jar" />
 
-    <!-- Include the jars required to document the maven interop pieces -->
-    <pathelement location="${third-party.dir}/java/aether/aether-api-1.0.2.v20150114.jar" />
-    <pathelement location="${third-party.dir}/java/aether/aether-connector-basic-1.0.2.v20150114.jar" />
-    <pathelement location="${third-party.dir}/java/aether/aether-impl-1.0.0.v20140518.jar" />
-    <pathelement location="${third-party.dir}/java/aether/aether-spi-1.0.2.v20150114.jar" />
-    <pathelement location="${third-party.dir}/java/aether/aether-transport-http-1.0.2.v20150114.jar" />
-    <pathelement location="${third-party.dir}/java/aether/aether-util-1.0.2.v20150114.jar" />
-    <pathelement location="${third-party.dir}/java/maven/maven-aether-provider-3.2.5.jar" />
-    <pathelement location="${third-party.dir}/java/slf4j/slf4j-api-1.7.5.jar" />
+    <!-- Include the Compiler Tree API stub because its types are used in some places. -->
+    <pathelement location="${third-party.dir}/java/jdk/stub-compiler-tree-api.jar" />
   </path>
 
   <target name="javadoc"
@@ -882,18 +952,8 @@
     </exec>
   </target>
 
-  <target name="travis" depends="test, verify-javadoc, lint" />
-
-  <target name="client" description="install nailgun buckd c client (non Windows only)">
-    <mkdir dir="${build.dir}" />
-    <exec dir="${basedir}"
-          executable="gcc"
-          failonerror="true"
-          osfamily="unix">
-      <arg line="-Wall -pedantic -O3 -o ${build.dir}/ng ${client.dir}/nailgun-client/ng.c" />
-    </exec>
-  </target>
+  <target name="travis" depends="verify-javadoc, lint" />
 
   <target name="pre-checkin" depends="clean, default, compile-tests, lint"/>
-  <target name="all" depends="jar, test, javadoc, client" />
+  <target name="all" depends="jar, test, javadoc" />
 </project>

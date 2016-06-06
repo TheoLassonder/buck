@@ -55,21 +55,22 @@ public final class DefaultStepRunner implements StepRunner {
     String stepShortName = step.getShortName();
     String stepDescription = step.getDescription(context);
     UUID stepUuid = UUID.randomUUID();
+    StepEvent.Started started = StepEvent.started(stepShortName, stepDescription, stepUuid);
     context.getBuckEventBus().logDebugAndPost(
-        LOG, StepEvent.started(stepShortName, stepDescription, stepUuid));
-    int exitCode = 1;
+        LOG, started);
+    StepExecutionResult executionResult = StepExecutionResult.ERROR;
     try {
-      exitCode = step.execute(context);
+      executionResult = step.execute(context);
     } catch (IOException | RuntimeException e) {
       throw StepFailedException.createForFailingStepWithException(step, e, buildTarget);
     } finally {
       context.getBuckEventBus().logDebugAndPost(
-          LOG, StepEvent.finished(stepShortName, stepDescription, stepUuid, exitCode));
+          LOG, StepEvent.finished(started, executionResult.getExitCode()));
     }
-    if (exitCode != 0) {
+    if (!executionResult.isSuccess()) {
       throw StepFailedException.createForFailingStepWithExitCode(step,
           context,
-          exitCode,
+          executionResult,
           buildTarget);
     }
   }

@@ -16,34 +16,53 @@
 
 package com.facebook.buck.apple;
 
+import com.facebook.buck.cxx.BuildRuleWithBinary;
 import com.facebook.buck.cxx.CxxBinaryDescription;
 import com.facebook.buck.cxx.CxxConstructorArg;
+import com.facebook.buck.cxx.CxxDescriptionEnhancer;
 import com.facebook.buck.cxx.CxxLibraryDescription;
-import com.facebook.buck.cxx.CxxSource;
+import com.facebook.buck.cxx.CxxPlatform;
+import com.facebook.buck.cxx.CxxStrip;
 import com.facebook.buck.cxx.HeaderVisibility;
+import com.facebook.buck.cxx.ProvidesLinkedBinaryDeps;
+import com.facebook.buck.cxx.StripStyle;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargets;
+import com.facebook.buck.model.Either;
+import com.facebook.buck.model.Flavor;
+import com.facebook.buck.model.FlavorDomain;
+import com.facebook.buck.model.ImmutableFlavor;
+import com.facebook.buck.parser.NoSuchBuildTargetException;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
+import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.BuildRules;
+import com.facebook.buck.rules.BuildTargetSourcePath;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.SourcePaths;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.rules.TargetNode;
 import com.facebook.buck.rules.Tool;
-import com.facebook.buck.rules.coercer.FrameworkPath;
-import com.facebook.buck.rules.coercer.PatternMatchedCollection;
 import com.facebook.buck.rules.coercer.SourceList;
-import com.facebook.buck.rules.coercer.SourceWithFlagsList;
+import com.facebook.buck.util.HumanReadableException;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
-import com.google.common.base.Functions;
+import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Predicate;
+import com.google.common.base.Predicates;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Ordering;
+import com.google.common.collect.Sets;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -54,26 +73,32 @@ import java.util.Set;
  */
 public class AppleDescriptions {
 
+  public static final Flavor FRAMEWORK_FLAVOR = ImmutableFlavor.of("framework");
+
+  public static final Flavor INCLUDE_FRAMEWORKS_FLAVOR = ImmutableFlavor.of("include-frameworks");
+  public static final Flavor NO_INCLUDE_FRAMEWORKS_FLAVOR =
+      ImmutableFlavor.of("no-include-frameworks");
+  public static final FlavorDomain<Boolean> INCLUDE_FRAMEWORKS =
+      new FlavorDomain<>(
+          "Include frameworks",
+          ImmutableMap.of(
+              INCLUDE_FRAMEWORKS_FLAVOR, Boolean.TRUE,
+              NO_INCLUDE_FRAMEWORKS_FLAVOR, Boolean.FALSE));
+
   private static final SourceList EMPTY_HEADERS = SourceList.ofUnnamedSources(
       ImmutableSortedSet.<SourcePath>of());
-
-  static final String XCASSETS_DIRECTORY_EXTENSION = ".xcassets";
   private static final String MERGED_ASSET_CATALOG_NAME = "Merged";
 
   /** Utility class: do not instantiate. */
   private AppleDescriptions() {}
 
-  public static Optional<Path> getPathToHeaderSymlinkTree(
-      TargetNode<? extends AppleNativeTargetDescriptionArg> targetNode,
+  public static Path getPathToHeaderSymlinkTree(
+      TargetNode<? extends CxxLibraryDescription.Arg> targetNode,
       HeaderVisibility headerVisibility) {
-    if (!targetNode.getConstructorArg().getUseBuckHeaderMaps()) {
-      return Optional.absent();
-    }
-
-    return Optional.of(
-        BuildTargets.getGenPath(
-            targetNode.getBuildTarget().getUnflavoredBuildTarget(),
-            "%s" + AppleHeaderVisibilities.getHeaderSymlinkTreeSuffix(headerVisibility)));
+    return BuildTargets.getGenPath(
+        targetNode.getRuleFactoryParams().getProjectFilesystem(),
+        BuildTarget.of(targetNode.getBuildTarget().getUnflavoredBuildTarget()),
+        "%s" + AppleHeaderVisibilities.getHeaderSymlinkTreeSuffix(headerVisibility));
   }
 
   public static Path getHeaderPathPrefix(
@@ -82,10 +107,10 @@ public class AppleDescriptions {
     return Paths.get(arg.headerPathPrefix.or(buildTarget.getShortName()));
   }
 
-  public static ImmutableMap<String, SourcePath> convertAppleHeadersToPublicCxxHeaders(
+  public static ImmutableSortedMap<String, SourcePath> convertAppleHeadersToPublicCxxHeaders(
       Function<SourcePath, Path> pathResolver,
       Path headerPathPrefix,
-      AppleNativeTargetDescriptionArg arg) {
+      CxxLibraryDescription.Arg arg) {
     // The exported headers in the populated cxx constructor arg will contain exported headers from
     // the apple constructor arg with the public include style.
     return AppleDescriptions.parseAppleHeadersForUseFromOtherTargets(
@@ -94,13 +119,13 @@ public class AppleDescriptions {
                 arg.exportedHeaders.or(EMPTY_HEADERS));
   }
 
-  public static ImmutableMap<String, SourcePath> convertAppleHeadersToPrivateCxxHeaders(
+  public static ImmutableSortedMap<String, SourcePath> convertAppleHeadersToPrivateCxxHeaders(
       Function<SourcePath, Path> pathResolver,
       Path headerPathPrefix,
-      AppleNativeTargetDescriptionArg arg) {
+      CxxLibraryDescription.Arg arg) {
     // The private headers will contain exported headers with the private include style and private
     // headers with both styles.
-    return ImmutableMap.<String, SourcePath>builder()
+    return ImmutableSortedMap.<String, SourcePath>naturalOrder()
         .putAll(
             AppleDescriptions.parseAppleHeadersForUseFromTheSameTarget(
                 pathResolver,
@@ -118,7 +143,7 @@ public class AppleDescriptions {
   }
 
   @VisibleForTesting
-  static ImmutableMap<String, SourcePath> parseAppleHeadersForUseFromOtherTargets(
+  static ImmutableSortedMap<String, SourcePath> parseAppleHeadersForUseFromOtherTargets(
       Function<SourcePath, Path> pathResolver,
       Path headerPathPrefix,
       SourceList headers) {
@@ -154,11 +179,11 @@ public class AppleDescriptions {
   }
 
   @VisibleForTesting
-  static ImmutableMap<String, SourcePath> convertToFlatCxxHeaders(
+  static ImmutableSortedMap<String, SourcePath> convertToFlatCxxHeaders(
       Path headerPathPrefix,
       Function<SourcePath, Path> sourcePathResolver,
       Set<SourcePath> headerPaths) {
-    ImmutableMap.Builder<String, SourcePath> cxxHeaders = ImmutableMap.builder();
+    ImmutableSortedMap.Builder<String, SourcePath> cxxHeaders = ImmutableSortedMap.naturalOrder();
     for (SourcePath headerPath : headerPaths) {
       Path fileName = sourcePathResolver.apply(headerPath).getFileName();
       String key = headerPathPrefix.resolve(fileName).toString();
@@ -176,55 +201,41 @@ public class AppleDescriptions {
     // The resulting cxx constructor arg will have no exported headers and both headers and exported
     // headers specified in the apple arg will be available with both public and private include
     // styles.
-    ImmutableMap<String, SourcePath> headerMap = ImmutableMap.<String, SourcePath>builder()
-        .putAll(
-            convertAppleHeadersToPublicCxxHeaders(
-                resolver.getPathFunction(),
-                headerPathPrefix,
-                arg))
-        .putAll(
-            convertAppleHeadersToPrivateCxxHeaders(
-                resolver.getPathFunction(),
-                headerPathPrefix,
-                arg))
-        .build();
+    ImmutableSortedMap<String, SourcePath> headerMap =
+        ImmutableSortedMap.<String, SourcePath>naturalOrder()
+            .putAll(
+                convertAppleHeadersToPublicCxxHeaders(
+                    resolver.deprecatedPathFunction(),
+                    headerPathPrefix,
+                    arg))
+            .putAll(
+                convertAppleHeadersToPrivateCxxHeaders(
+                    resolver.deprecatedPathFunction(),
+                    headerPathPrefix,
+                    arg))
+            .build();
 
-    output.srcs = Optional.of(SourceWithFlagsList.ofUnnamedSources(arg.srcs.get()));
-    output.platformSrcs = Optional.of(PatternMatchedCollection.<SourceWithFlagsList>of());
+    output.srcs = arg.srcs;
+    output.platformSrcs = arg.platformSrcs;
     output.headers = Optional.of(SourceList.ofNamedSources(headerMap));
-    output.platformHeaders = Optional.of(PatternMatchedCollection.<SourceList>of());
-    output.prefixHeaders = Optional.of(ImmutableList.copyOf(arg.prefixHeader.asSet()));
+    output.platformHeaders = arg.platformHeaders;
+    output.prefixHeader = arg.prefixHeader;
     output.compilerFlags = arg.compilerFlags;
-    output.platformCompilerFlags = Optional.of(
-        PatternMatchedCollection.<ImmutableList<String>>of());
-    output.linkerFlags = Optional.of(
-        FluentIterable
-            .from(arg.frameworks.transform(frameworksToLinkerFlagsFunction(resolver)).get())
-            .append(arg.linkerFlags.get())
-            .toList());
-    output.platformLinkerFlags = Optional.of(PatternMatchedCollection.<ImmutableList<String>>of());
+    output.platformCompilerFlags = arg.platformCompilerFlags;
+    output.langCompilerFlags = arg.langCompilerFlags;
     output.preprocessorFlags = arg.preprocessorFlags;
-    output.platformPreprocessorFlags = Optional.of(
-        PatternMatchedCollection.<ImmutableList<String>>of());
+    output.platformPreprocessorFlags = arg.platformPreprocessorFlags;
     output.langPreprocessorFlags = arg.langPreprocessorFlags;
-    output.frameworkSearchPaths =
-        arg.frameworks.isPresent() ?
-            Optional.of(
-                FluentIterable.from(arg.frameworks.get())
-                    .transform(
-                        FrameworkPath.getUnexpandedSearchPathFunction(
-                            resolver.getPathFunction(),
-                            Functions.<Path>identity()))
-                    .toSet()) :
-            Optional.<ImmutableSet<Path>>absent();
-    output.lexSrcs = Optional.of(ImmutableList.<SourcePath>of());
-    output.yaccSrcs = Optional.of(ImmutableList.<SourcePath>of());
+    output.linkerFlags = arg.linkerFlags;
+    output.platformLinkerFlags = arg.platformLinkerFlags;
+    output.frameworks = arg.frameworks;
+    output.libraries = arg.libraries;
     output.deps = arg.deps;
     // This is intentionally an empty string; we put all prefixes into
     // the header map itself.
     output.headerNamespace = Optional.of("");
+    output.cxxRuntimeType = arg.cxxRuntimeType;
     output.tests = arg.tests;
-    output.cxxRuntimeType = Optional.absent();
   }
 
   public static void populateCxxBinaryDescriptionArg(
@@ -237,15 +248,14 @@ public class AppleDescriptions {
         output,
         arg,
         buildTarget);
-    output.linkStyle = Optional.absent();
+    output.linkStyle = arg.linkStyle;
   }
 
   public static void populateCxxLibraryDescriptionArg(
       SourcePathResolver resolver,
       CxxLibraryDescription.Arg output,
       AppleNativeTargetDescriptionArg arg,
-      BuildTarget buildTarget,
-      boolean linkWhole) {
+      BuildTarget buildTarget) {
     populateCxxConstructorArg(
         resolver,
         output,
@@ -255,68 +265,29 @@ public class AppleDescriptions {
     output.headers = Optional.of(
         SourceList.ofNamedSources(
             convertAppleHeadersToPrivateCxxHeaders(
-                resolver.getPathFunction(),
+                resolver.deprecatedPathFunction(),
                 headerPathPrefix,
                 arg)));
+    output.exportedDeps = arg.exportedDeps;
     output.exportedPreprocessorFlags = arg.exportedPreprocessorFlags;
     output.exportedHeaders = Optional.of(
         SourceList.ofNamedSources(
             convertAppleHeadersToPublicCxxHeaders(
-                resolver.getPathFunction(),
+                resolver.deprecatedPathFunction(),
                 headerPathPrefix,
                 arg)));
-    output.exportedPlatformHeaders = Optional.of(PatternMatchedCollection.<SourceList>of());
-    output.exportedPreprocessorFlags = Optional.of(ImmutableList.<String>of());
-    output.exportedPlatformPreprocessorFlags = Optional.of(
-        PatternMatchedCollection.<ImmutableList<String>>of());
-    output.exportedLangPreprocessorFlags = Optional.of(
-        ImmutableMap.<CxxSource.Type, ImmutableList<String>>of());
-    output.exportedLinkerFlags = Optional.of(
-        FluentIterable
-            .from(arg.frameworks.transform(frameworksToLinkerFlagsFunction(resolver)).get())
-            .append(arg.exportedLinkerFlags.get())
-            .toList());
-    output.exportedPlatformLinkerFlags = Optional.of(
-        PatternMatchedCollection.<ImmutableList<String>>of());
-    output.soname = Optional.absent();
-    output.forceStatic = Optional.of(false);
-    output.linkWhole = Optional.of(linkWhole);
-    output.supportedPlatformsRegex = Optional.absent();
-  }
-
-  @VisibleForTesting
-  static Function<
-      ImmutableSortedSet<FrameworkPath>,
-      ImmutableList<String>> frameworksToLinkerFlagsFunction(final SourcePathResolver resolver) {
-    return new Function<ImmutableSortedSet<FrameworkPath>, ImmutableList<String>>() {
-      @Override
-      public ImmutableList<String> apply(ImmutableSortedSet<FrameworkPath> input) {
-        return FluentIterable
-            .from(input)
-            .transformAndConcat(linkerFlagsForFrameworkPathFunction(resolver.getPathFunction()))
-            .toList();
-      }
-    };
-  }
-
-  @VisibleForTesting
-  static Function<
-      ImmutableSortedSet<FrameworkPath>,
-      ImmutableList<Path>> frameworksToSearchPathsFunction(
-      final SourcePathResolver resolver,
-      final AppleSdkPaths appleSdkPaths) {
-    return new Function<ImmutableSortedSet<FrameworkPath>, ImmutableList<Path>>() {
-      @Override
-      public ImmutableList<Path> apply(ImmutableSortedSet<FrameworkPath> frameworkPaths) {
-        return FluentIterable
-            .from(frameworkPaths)
-            .transform(
-                FrameworkPath.getExpandedSearchPathFunction(
-                    resolver.getPathFunction(),
-                    appleSdkPaths.resolveFunction()))
-            .toList();
-      }
-    };
+    output.exportedPlatformHeaders = arg.exportedPlatformHeaders;
+    output.exportedPlatformPreprocessorFlags = arg.exportedPlatformPreprocessorFlags;
+    output.exportedLangPreprocessorFlags = arg.exportedLangPreprocessorFlags;
+    output.exportedLinkerFlags = arg.exportedLinkerFlags;
+    output.exportedPlatformLinkerFlags = arg.exportedPlatformLinkerFlags;
+    output.soname = arg.soname;
+    output.forceStatic = arg.forceStatic;
+    output.preferredLinkage = arg.preferredLinkage;
+    output.linkWhole = arg.linkWhole;
+    output.supportedPlatformsRegex = arg.supportedPlatformsRegex;
+    output.canBeAsset = arg.canBeAsset;
+    output.exportedDeps = arg.exportedDeps;
   }
 
   @VisibleForTesting
@@ -335,114 +306,462 @@ public class AppleDescriptions {
     };
   }
 
-  private static Function<FrameworkPath, Iterable<String>> linkerFlagsForFrameworkPathFunction(
-      final Function<SourcePath, Path> resolver) {
-    return new Function<FrameworkPath, Iterable<String>>() {
-      @Override
-      public Iterable<String> apply(FrameworkPath input) {
-        FrameworkPath.FrameworkType frameworkType = input.getFrameworkType(resolver);
-        switch (frameworkType) {
-          case FRAMEWORK:
-            return ImmutableList.of("-framework", input.getName(resolver));
-          case LIBRARY:
-            return ImmutableList.of("-l" + input.getName(resolver));
-        }
-
-        throw new RuntimeException("Unsupported framework type: " + frameworkType);
-      }
-    };
-  }
-
-  public static CollectedAssetCatalogs createBuildRulesForTransitiveAssetCatalogDependencies(
+  public static Optional<AppleAssetCatalog> createBuildRuleForTransitiveAssetCatalogDependencies(
+      TargetGraph targetGraph,
       BuildRuleParams params,
       SourcePathResolver sourcePathResolver,
       ApplePlatform applePlatform,
       Tool actool) {
-    TargetNode<?> targetNode = Preconditions.checkNotNull(
-        params.getTargetGraph().get(params.getBuildTarget()));
+    TargetNode<?> targetNode = targetGraph.get(params.getBuildTarget());
 
     ImmutableSet<AppleAssetCatalogDescription.Arg> assetCatalogArgs =
-        AppleBuildRules.collectRecursiveAssetCatalogs(
-            params.getTargetGraph(),
-            ImmutableList.of(targetNode));
+        AppleBuildRules.collectRecursiveAssetCatalogs(targetGraph, ImmutableList.of(targetNode));
 
-    ImmutableSortedSet.Builder<Path> mergeableAssetCatalogDirsBuilder =
+    ImmutableSortedSet.Builder<SourcePath> assetCatalogDirsBuilder =
         ImmutableSortedSet.naturalOrder();
-    ImmutableSortedSet.Builder<Path> unmergeableAssetCatalogDirsBuilder =
-        ImmutableSortedSet.naturalOrder();
+
+    Optional<String> appIcon = Optional.absent();
+    Optional<String> launchImage = Optional.absent();
 
     for (AppleAssetCatalogDescription.Arg arg : assetCatalogArgs) {
-      if (arg.getCopyToBundles()) {
-        unmergeableAssetCatalogDirsBuilder.addAll(arg.dirs);
-      } else {
-        mergeableAssetCatalogDirsBuilder.addAll(arg.dirs);
+      assetCatalogDirsBuilder.addAll(arg.dirs);
+      if (arg.appIcon.isPresent()) {
+        if (appIcon.isPresent()) {
+          throw new HumanReadableException("At most one asset catalog in the dependencies of %s " +
+              "can have a app_icon", params.getBuildTarget());
+        }
+
+        appIcon = arg.appIcon;
+      }
+
+      if (arg.launchImage.isPresent()) {
+        if (launchImage.isPresent()) {
+          throw new HumanReadableException("At most one asset catalog in the dependencies of %s " +
+              "can have a launch_image", params.getBuildTarget());
+        }
+
+        launchImage = arg.launchImage;
       }
     }
 
-    ImmutableSortedSet<Path> mergeableAssetCatalogDirs =
-        mergeableAssetCatalogDirsBuilder.build();
-    ImmutableSortedSet<Path> unmergeableAssetCatalogDirs =
-        unmergeableAssetCatalogDirsBuilder.build();
+    ImmutableSortedSet<SourcePath> assetCatalogDirs =
+        assetCatalogDirsBuilder.build();
 
-    Optional<AppleAssetCatalog> mergedAssetCatalog = Optional.absent();
-    if (!mergeableAssetCatalogDirs.isEmpty()) {
-      BuildRuleParams assetCatalogParams = params.copyWithChanges(
-          BuildTarget.builder(params.getBuildTarget())
-              .addFlavors(AppleAssetCatalog.getFlavor(
-                      ActoolStep.BundlingMode.MERGE_BUNDLES,
-                      MERGED_ASSET_CATALOG_NAME))
-              .build(),
-          Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()),
-          Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()));
-      mergedAssetCatalog = Optional.of(
-          new AppleAssetCatalog(
-              assetCatalogParams,
-              sourcePathResolver,
-              applePlatform.getName(),
-              actool,
-              mergeableAssetCatalogDirs,
-              ActoolStep.BundlingMode.MERGE_BUNDLES,
-              MERGED_ASSET_CATALOG_NAME));
+    if (assetCatalogDirs.isEmpty()) {
+      return Optional.absent();
     }
 
-    ImmutableSet.Builder<AppleAssetCatalog> bundledAssetCatalogsBuilder =
-        ImmutableSet.builder();
-    for (Path assetDir : unmergeableAssetCatalogDirs) {
-      String bundleName = getCatalogNameFromPath(assetDir);
-      BuildRuleParams assetCatalogParams = params.copyWithChanges(
-          BuildTarget.builder(params.getBuildTarget())
-              .addFlavors(AppleAssetCatalog.getFlavor(
-                      ActoolStep.BundlingMode.SEPARATE_BUNDLES,
-                      bundleName))
-              .build(),
-          Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()),
-          Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()));
-      bundledAssetCatalogsBuilder.add(
-          new AppleAssetCatalog(
-              assetCatalogParams,
-              sourcePathResolver,
-              applePlatform.getName(),
-              actool,
-              ImmutableSortedSet.of(assetDir),
-              ActoolStep.BundlingMode.SEPARATE_BUNDLES,
-              bundleName));
-    }
-    ImmutableSet<AppleAssetCatalog> bundledAssetCatalogs =
-        bundledAssetCatalogsBuilder.build();
+    BuildRuleParams assetCatalogParams = params.copyWithChanges(
+        params.getBuildTarget().withAppendedFlavors(AppleAssetCatalog.FLAVOR),
+        Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()),
+        Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()));
 
-    return CollectedAssetCatalogs.of(
-        mergedAssetCatalog,
-        bundledAssetCatalogs);
+    return Optional.of(
+        new AppleAssetCatalog(
+            assetCatalogParams,
+            sourcePathResolver,
+            applePlatform.getName(),
+            actool,
+            assetCatalogDirs,
+            appIcon,
+            launchImage,
+            MERGED_ASSET_CATALOG_NAME));
   }
 
-  private static String getCatalogNameFromPath(Path assetCatalogDir) {
-    String name = assetCatalogDir.getFileName().toString();
-    if (name.endsWith(AppleDescriptions.XCASSETS_DIRECTORY_EXTENSION)) {
-      name = name.substring(
-          0,
-          name.length() - AppleDescriptions.XCASSETS_DIRECTORY_EXTENSION.length());
+  static AppleDebuggableBinary createAppleDebuggableBinary(
+      BuildRuleParams params,
+      BuildRuleResolver resolver,
+      BuildRule strippedBinaryRule,
+      ProvidesLinkedBinaryDeps unstrippedBinaryRule,
+      AppleDebugFormat debugFormat,
+      FlavorDomain<CxxPlatform> cxxPlatformFlavorDomain,
+      CxxPlatform defaultCxxPlatform,
+      FlavorDomain<AppleCxxPlatform> appleCxxPlatforms) {
+    Optional<AppleDsym> appleDsym = createAppleDsymForDebugFormat(
+        debugFormat,
+        params,
+        resolver,
+        unstrippedBinaryRule,
+        cxxPlatformFlavorDomain,
+        defaultCxxPlatform,
+        appleCxxPlatforms);
+    BuildRule buildRuleForDebugFormat;
+    if (debugFormat == AppleDebugFormat.DWARF) {
+      buildRuleForDebugFormat = unstrippedBinaryRule;
+    } else {
+      buildRuleForDebugFormat = strippedBinaryRule;
     }
-    return name;
+    AppleDebuggableBinary rule = new AppleDebuggableBinary(
+        params.copyWithChanges(
+            strippedBinaryRule.getBuildTarget()
+                .withAppendedFlavors(AppleDebuggableBinary.RULE_FLAVOR, debugFormat.getFlavor()),
+            Suppliers.ofInstance(
+                AppleDebuggableBinary.getRequiredRuntimeDeps(
+                    debugFormat,
+                    strippedBinaryRule,
+                    unstrippedBinaryRule,
+                    appleDsym)),
+            Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of())),
+        new SourcePathResolver(resolver),
+        buildRuleForDebugFormat);
+    return rule;
   }
 
+  private static Optional<AppleDsym> createAppleDsymForDebugFormat(
+      AppleDebugFormat debugFormat,
+      BuildRuleParams params,
+      BuildRuleResolver resolver,
+      ProvidesLinkedBinaryDeps unstrippedBinaryRule,
+      FlavorDomain<CxxPlatform> cxxPlatformFlavorDomain,
+      CxxPlatform defaultCxxPlatform,
+      FlavorDomain<AppleCxxPlatform> appleCxxPlatforms) {
+    if (debugFormat == AppleDebugFormat.DWARF_AND_DSYM) {
+      BuildTarget dsymBuildTarget = params.getBuildTarget()
+          .withoutFlavors(ImmutableSet.of(CxxStrip.RULE_FLAVOR))
+          .withoutFlavors(StripStyle.FLAVOR_DOMAIN.getFlavors())
+          .withoutFlavors(AppleDebugFormat.FLAVOR_DOMAIN.getFlavors())
+          .withAppendedFlavors(AppleDsym.RULE_FLAVOR);
+      Optional<BuildRule> dsymRule = resolver.getRuleOptional(dsymBuildTarget);
+      if (!dsymRule.isPresent()) {
+        dsymRule = Optional.<BuildRule>of(
+            createAppleDsym(
+                params.copyWithBuildTarget(dsymBuildTarget),
+                resolver,
+                unstrippedBinaryRule,
+                cxxPlatformFlavorDomain,
+                defaultCxxPlatform,
+                appleCxxPlatforms));
+      }
+      Preconditions.checkArgument(dsymRule.get() instanceof AppleDsym);
+      return Optional.of((AppleDsym) dsymRule.get());
+    }
+    return Optional.absent();
+  }
+
+  static AppleDsym createAppleDsym(
+      BuildRuleParams params,
+      BuildRuleResolver resolver,
+      ProvidesLinkedBinaryDeps unstrippedBinaryBuildRule,
+      FlavorDomain<CxxPlatform> cxxPlatformFlavorDomain,
+      CxxPlatform defaultCxxPlatform,
+      FlavorDomain<AppleCxxPlatform> appleCxxPlatforms) {
+
+    AppleCxxPlatform appleCxxPlatform = ApplePlatforms.getAppleCxxPlatformForBuildTarget(
+        cxxPlatformFlavorDomain,
+        defaultCxxPlatform,
+        appleCxxPlatforms,
+        unstrippedBinaryBuildRule.getBuildTarget(),
+        MultiarchFileInfos.create(appleCxxPlatforms, unstrippedBinaryBuildRule.getBuildTarget()));
+
+    AppleDsym appleDsym = new AppleDsym(
+        params.copyWithDeps(
+            Suppliers.ofInstance(
+                ImmutableSortedSet.<BuildRule>naturalOrder()
+                    .add(unstrippedBinaryBuildRule)
+                    .addAll(unstrippedBinaryBuildRule.getCompileDeps())
+                    .addAll(unstrippedBinaryBuildRule.getStaticLibraryDeps())
+                    .build()),
+            Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of())),
+        new SourcePathResolver(resolver),
+        appleCxxPlatform.getDsymutil(),
+        appleCxxPlatform.getLldb(),
+        new BuildTargetSourcePath(unstrippedBinaryBuildRule.getBuildTarget()),
+        AppleDsym.getDsymOutputPath(params.getBuildTarget(), params.getProjectFilesystem()));
+    resolver.addToIndex(appleDsym);
+    return appleDsym;
+  }
+
+  static AppleBundle createAppleBundle(
+      FlavorDomain<CxxPlatform> cxxPlatformFlavorDomain,
+      CxxPlatform defaultCxxPlatform,
+      FlavorDomain<AppleCxxPlatform> appleCxxPlatforms,
+      TargetGraph targetGraph,
+      BuildRuleParams params,
+      BuildRuleResolver resolver,
+      CodeSignIdentityStore codeSignIdentityStore,
+      ProvisioningProfileStore provisioningProfileStore,
+      BuildTarget binary,
+      Either<AppleBundleExtension, String> extension,
+      Optional<String> productName,
+      final SourcePath infoPlist,
+      Optional<ImmutableMap<String, String>> infoPlistSubstitutions,
+      ImmutableSortedSet<BuildTarget> deps,
+      ImmutableSortedSet<BuildTarget> tests,
+      AppleDebugFormat debugFormat)
+      throws NoSuchBuildTargetException {
+    AppleCxxPlatform appleCxxPlatform = ApplePlatforms.getAppleCxxPlatformForBuildTarget(
+        cxxPlatformFlavorDomain,
+        defaultCxxPlatform,
+        appleCxxPlatforms,
+        params.getBuildTarget(),
+        MultiarchFileInfos.create(appleCxxPlatforms, params.getBuildTarget()));
+
+    AppleBundleDestinations destinations =
+        AppleBundleDestinations.platformDestinations(
+            appleCxxPlatform.getAppleSdk().getApplePlatform());
+
+    AppleBundleResources collectedResources = AppleResources.collectResourceDirsAndFiles(
+        targetGraph,
+        targetGraph.get(params.getBuildTarget()));
+
+    ImmutableSet.Builder<SourcePath> frameworksBuilder = ImmutableSet.builder();
+    if (INCLUDE_FRAMEWORKS.getRequiredValue(params.getBuildTarget())) {
+      for (BuildTarget dep : deps) {
+        Optional<FrameworkDependencies> frameworkDependencies =
+            resolver.requireMetadata(
+                BuildTarget.builder(dep)
+                    .addFlavors(FRAMEWORK_FLAVOR)
+                    .addFlavors(NO_INCLUDE_FRAMEWORKS_FLAVOR)
+                    .addFlavors(appleCxxPlatform.getCxxPlatform().getFlavor())
+                    .build(),
+                FrameworkDependencies.class);
+        if (frameworkDependencies.isPresent()) {
+          frameworksBuilder.addAll(frameworkDependencies.get().getSourcePaths());
+        }
+      }
+    }
+    ImmutableSet<SourcePath> frameworks = frameworksBuilder.build();
+
+    SourcePathResolver sourcePathResolver = new SourcePathResolver(resolver);
+
+    Optional<AppleAssetCatalog> assetCatalog =
+        createBuildRuleForTransitiveAssetCatalogDependencies(
+            targetGraph,
+            params,
+            sourcePathResolver,
+            appleCxxPlatform.getAppleSdk().getApplePlatform(),
+            appleCxxPlatform.getActool());
+
+    // TODO(bhamiltoncx): Sort through the changes needed to make project generation work with
+    // binary being optional.
+    BuildRule flavoredBinaryRule = getFlavoredBinaryRule(
+        cxxPlatformFlavorDomain,
+        defaultCxxPlatform,
+        targetGraph,
+        params.getBuildTarget().getFlavors(),
+        resolver,
+        binary);
+
+    if (!AppleDebuggableBinary.isBuildRuleDebuggable(flavoredBinaryRule)) {
+      debugFormat = AppleDebugFormat.NONE;
+    }
+
+    BuildTarget unstrippedTarget = flavoredBinaryRule.getBuildTarget()
+        .withoutFlavors(ImmutableSet.of(CxxStrip.RULE_FLAVOR))
+        .withoutFlavors(StripStyle.FLAVOR_DOMAIN.getFlavors())
+        .withoutFlavors(ImmutableSet.of(AppleDebuggableBinary.RULE_FLAVOR))
+        .withoutFlavors(AppleDebugFormat.FLAVOR_DOMAIN.getFlavors())
+        .withoutFlavors(ImmutableSet.of(AppleBinaryDescription.APP_FLAVOR));
+    BuildRule unstrippedBinaryRule = resolver.requireRule(unstrippedTarget);
+
+    BuildRule targetDebuggableBinaryRule;
+    Optional<AppleDsym> appleDsym;
+    if (unstrippedBinaryRule instanceof ProvidesLinkedBinaryDeps) {
+      BuildTarget binaryBuildTarget = getBinaryFromBuildRuleWithBinary(flavoredBinaryRule)
+          .getBuildTarget()
+          .withoutFlavors(AppleDebugFormat.FLAVOR_DOMAIN.getFlavors());
+      BuildRuleParams binaryParams = params.copyWithBuildTarget(binaryBuildTarget);
+      targetDebuggableBinaryRule = createAppleDebuggableBinary(
+          binaryParams,
+          resolver,
+          getBinaryFromBuildRuleWithBinary(flavoredBinaryRule),
+          (ProvidesLinkedBinaryDeps) unstrippedBinaryRule,
+          debugFormat,
+          cxxPlatformFlavorDomain,
+          defaultCxxPlatform,
+          appleCxxPlatforms);
+      appleDsym = createAppleDsymForDebugFormat(
+          debugFormat,
+          binaryParams,
+          resolver,
+          (ProvidesLinkedBinaryDeps) unstrippedBinaryRule,
+          cxxPlatformFlavorDomain,
+          defaultCxxPlatform,
+          appleCxxPlatforms);
+    } else {
+      targetDebuggableBinaryRule = unstrippedBinaryRule;
+      appleDsym = Optional.absent();
+    }
+
+    BuildRuleParams bundleParamsWithFlavoredBinaryDep = getBundleParamsWithUpdatedDeps(
+        params,
+        binary,
+        ImmutableSet.<BuildRule>builder()
+            .add(targetDebuggableBinaryRule)
+            .addAll(assetCatalog.asSet())
+            .addAll(
+                BuildRules.toBuildRulesFor(
+                    params.getBuildTarget(),
+                    resolver,
+                    SourcePaths.filterBuildTargetSourcePaths(
+                        Iterables.concat(
+                            ImmutableList.of(
+                                collectedResources.getAll(),
+                                frameworks)))))
+            .addAll(appleDsym.asSet())
+            .build());
+
+    ImmutableMap<SourcePath, String> extensionBundlePaths = collectFirstLevelAppleDependencyBundles(
+        params.getDeps(),
+        destinations);
+
+    return new AppleBundle(
+        bundleParamsWithFlavoredBinaryDep,
+        sourcePathResolver,
+        extension,
+        productName,
+        infoPlist,
+        infoPlistSubstitutions.get(),
+        Optional.of(getBinaryFromBuildRuleWithBinary(flavoredBinaryRule)),
+        Optional.of(unstrippedBinaryRule),
+        appleDsym,
+        destinations,
+        collectedResources,
+        extensionBundlePaths,
+        frameworks,
+        appleCxxPlatform,
+        assetCatalog,
+        tests,
+        codeSignIdentityStore,
+        provisioningProfileStore);
+  }
+
+  private static BuildRule getBinaryFromBuildRuleWithBinary(BuildRule rule) {
+    if (rule instanceof BuildRuleWithBinary) {
+      rule = ((BuildRuleWithBinary) rule).getBinaryBuildRule();
+    }
+    return rule;
+  }
+
+  private static BuildRule getFlavoredBinaryRule(
+      FlavorDomain<CxxPlatform> cxxPlatformFlavorDomain,
+      CxxPlatform defaultCxxPlatform,
+      TargetGraph targetGraph,
+      ImmutableSet<Flavor> flavors,
+      BuildRuleResolver resolver,
+      BuildTarget binary) throws NoSuchBuildTargetException {
+    // Cxx targets must have one Platform Flavor set otherwise nothing gets compiled.
+    if (flavors.contains(AppleDescriptions.FRAMEWORK_FLAVOR)) {
+      flavors = ImmutableSet.<Flavor>builder()
+          .addAll(flavors)
+          .add(CxxDescriptionEnhancer.SHARED_FLAVOR)
+          .build();
+    }
+    flavors =
+        ImmutableSet.copyOf(
+            Sets.difference(
+                flavors,
+                ImmutableSet.of(
+                    AppleDescriptions.FRAMEWORK_FLAVOR,
+                    AppleBinaryDescription.APP_FLAVOR)));
+    if (!cxxPlatformFlavorDomain.containsAnyOf(flavors)) {
+      flavors = new ImmutableSet.Builder<Flavor>()
+          .addAll(flavors)
+          .add(defaultCxxPlatform.getFlavor())
+          .build();
+    }
+
+    BuildTarget.Builder buildTargetBuilder =
+        BuildTarget.builder(binary.getUnflavoredBuildTarget()).addAllFlavors(flavors);
+    if (!(AppleLibraryDescription.LIBRARY_TYPE.getFlavor(flavors).isPresent())) {
+      buildTargetBuilder.addAllFlavors(binary.getFlavors());
+    } else {
+      buildTargetBuilder.addAllFlavors(
+          Sets.difference(
+              binary.getFlavors(),
+              AppleLibraryDescription.LIBRARY_TYPE.getFlavors()));
+    }
+    BuildTarget buildTarget = buildTargetBuilder.build();
+
+    final TargetNode<?> binaryTargetNode = targetGraph.get(buildTarget);
+
+    if (binaryTargetNode.getDescription() instanceof AppleTestDescription) {
+      return resolver.getRule(binary);
+    }
+
+    // If the binary target of the AppleBundle is an AppleLibrary then the build flavor
+    // must be specified.
+    if (binaryTargetNode.getDescription() instanceof AppleLibraryDescription &&
+        (Sets.intersection(
+            AppleBundleDescription.SUPPORTED_LIBRARY_FLAVORS,
+            buildTarget.getFlavors()).size() != 1)) {
+      throw new HumanReadableException(
+          "AppleExtension bundle [%s] must have exactly one of these flavors: [%s].",
+          binaryTargetNode.getBuildTarget().toString(),
+          Joiner.on(", ").join(AppleBundleDescription.SUPPORTED_LIBRARY_FLAVORS));
+    }
+
+    if (!StripStyle.FLAVOR_DOMAIN.containsAnyOf(buildTarget.getFlavors())) {
+      buildTarget = buildTarget.withAppendedFlavors(StripStyle.NON_GLOBAL_SYMBOLS.getFlavor());
+    }
+
+    return resolver.requireRule(buildTarget);
+  }
+
+  private static BuildRuleParams getBundleParamsWithUpdatedDeps(
+      final BuildRuleParams params,
+      final BuildTarget originalBinaryTarget,
+      final Set<BuildRule> newDeps) {
+    // Remove the unflavored binary rule and add the flavored one instead.
+    final Predicate<BuildRule> notOriginalBinaryRule = Predicates.not(
+        BuildRules.isBuildRuleWithTarget(originalBinaryTarget));
+    return params.copyWithDeps(
+        Suppliers.ofInstance(
+            FluentIterable
+                .from(params.getDeclaredDeps().get())
+                .filter(notOriginalBinaryRule)
+                .append(newDeps)
+                .toSortedSet(Ordering.natural())),
+        Suppliers.ofInstance(
+            FluentIterable
+                .from(params.getExtraDeps().get())
+                .filter(notOriginalBinaryRule)
+                .toSortedSet(Ordering.natural())));
+  }
+
+  private static ImmutableMap<SourcePath, String> collectFirstLevelAppleDependencyBundles(
+      ImmutableSortedSet<BuildRule> deps,
+      AppleBundleDestinations destinations) {
+    ImmutableMap.Builder<SourcePath, String> extensionBundlePaths = ImmutableMap.builder();
+    // We only care about the direct layer of dependencies. ExtensionBundles inside ExtensionBundles
+    // do not get pulled in to the top-level Bundle.
+    for (BuildRule rule : deps) {
+      if (rule instanceof BuildRuleWithAppleBundle) {
+        AppleBundle appleBundle = ((BuildRuleWithAppleBundle) rule).getAppleBundle();
+        Path outputPath = Preconditions.checkNotNull(
+            appleBundle.getPathToOutput(),
+            "Path cannot be null for AppleBundle [%s].",
+            appleBundle);
+        SourcePath sourcePath = new BuildTargetSourcePath(
+            appleBundle.getBuildTarget(),
+            outputPath);
+
+        if (AppleBundleExtension.APPEX.toFileExtension().equals(appleBundle.getExtension()) ||
+            AppleBundleExtension.APP.toFileExtension().equals(appleBundle.getExtension())) {
+          Path destinationPath;
+
+          String platformName = appleBundle.getPlatformName();
+
+          if ((platformName.equals(ApplePlatform.WATCHOS.getName()) ||
+              platformName.equals(ApplePlatform.WATCHSIMULATOR.getName())) &&
+              appleBundle.getExtension().equals(AppleBundleExtension.APP.toFileExtension())) {
+            destinationPath = destinations.getWatchAppPath();
+          } else if (appleBundle.isLegacyWatchApp()) {
+            destinationPath = destinations.getResourcesPath();
+          } else {
+            destinationPath = destinations.getPlugInsPath();
+          }
+
+          extensionBundlePaths.put(sourcePath, destinationPath.toString());
+        } else if (
+            AppleBundleExtension.FRAMEWORK.toFileExtension().equals(appleBundle.getExtension())) {
+          extensionBundlePaths.put(
+              sourcePath,
+              destinations.getFrameworksPath().toString());
+        }
+      }
+    }
+
+    return extensionBundlePaths.build();
+  }
 }

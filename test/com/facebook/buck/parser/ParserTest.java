@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-present Facebook, Inc.
+ * Copyright 2015-present Facebook, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
  * not use this file except in compliance with the License. You may obtain
@@ -16,308 +16,415 @@
 
 package com.facebook.buck.parser;
 
-import static com.facebook.buck.testutil.WatchEvents.createPathEvent;
-import static org.easymock.EasyMock.expect;
-import static org.easymock.EasyMock.replay;
-import static org.easymock.EasyMock.verify;
+import static com.facebook.buck.parser.ParserConfig.DEFAULT_BUILD_FILE_NAME;
+import static com.facebook.buck.testutil.WatchEventsForTests.createPathEvent;
+import static com.google.common.base.Charsets.UTF_8;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasItems;
+import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
 import com.facebook.buck.cli.BuckConfig;
-import com.facebook.buck.cli.BuildTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.cli.FakeBuckConfig;
-import com.facebook.buck.event.BuckEvent;
 import com.facebook.buck.event.BuckEventBus;
 import com.facebook.buck.event.BuckEventBusFactory;
 import com.facebook.buck.event.FakeBuckEventListener;
-import com.facebook.buck.event.TestEventConfigerator;
-import com.facebook.buck.io.ExecutableFinder;
 import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.io.ProjectFilesystem;
-import com.facebook.buck.java.JavaLibrary;
 import com.facebook.buck.json.BuildFileParseException;
-import com.facebook.buck.json.DefaultProjectBuildFileParserFactory;
-import com.facebook.buck.json.ProjectBuildFileParser;
-import com.facebook.buck.json.ProjectBuildFileParserFactory;
-import com.facebook.buck.model.BuildFileTree;
-import com.facebook.buck.model.BuildId;
+import com.facebook.buck.json.ParseBuckFileEvent;
+import com.facebook.buck.jvm.java.JavaLibrary;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.BuildTargetException;
-import com.facebook.buck.model.FilesystemBackedBuildFileTree;
+import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.model.HasBuildTarget;
 import com.facebook.buck.model.ImmutableFlavor;
-import com.facebook.buck.python.PythonBuckConfig;
-import com.facebook.buck.rules.ActionGraph;
+import com.facebook.buck.model.UnflavoredBuildTarget;
+import com.facebook.buck.rules.ActionGraphCache;
 import com.facebook.buck.rules.BuildRule;
-import com.facebook.buck.rules.KnownBuildRuleTypes;
-import com.facebook.buck.rules.Repository;
+import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.Cell;
+import com.facebook.buck.rules.ConstructorArgMarshaller;
 import com.facebook.buck.rules.TargetGraph;
-import com.facebook.buck.rules.TargetGraphToActionGraph;
 import com.facebook.buck.rules.TargetNode;
-import com.facebook.buck.rules.TestRepositoryBuilder;
-import com.facebook.buck.testutil.TestConsole;
-import com.facebook.buck.testutil.WatchEvents;
-import com.facebook.buck.util.Console;
+import com.facebook.buck.rules.TestCellBuilder;
+import com.facebook.buck.rules.coercer.DefaultTypeCoercerFactory;
+import com.facebook.buck.shell.GenruleDescription;
+import com.facebook.buck.testutil.WatchEventsForTests;
+import com.facebook.buck.testutil.integration.TemporaryPaths;
 import com.facebook.buck.util.HumanReadableException;
-import com.facebook.buck.util.NullFileHashCache;
+import com.facebook.buck.util.ObjectMappers;
 import com.facebook.buck.util.environment.Platform;
-import com.google.common.base.Charsets;
+import com.google.common.base.Function;
+import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
+import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
-import com.google.common.base.Supplier;
-import com.google.common.base.Suppliers;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Iterables;
-import com.google.common.collect.Sets;
+import com.google.common.eventbus.Subscribe;
 import com.google.common.hash.HashCode;
-import com.google.common.io.Files;
+import com.google.common.util.concurrent.ListeningExecutorService;
+import com.google.common.util.concurrent.MoreExecutors;
 
-import org.easymock.EasyMockSupport;
+import org.hamcrest.Matchers;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
-import org.junit.rules.TemporaryFolder;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
-import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchEvent;
-import java.util.List;
-import java.util.Map;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.SortedMap;
+import java.util.concurrent.Executors;
 
-public class ParserTest extends EasyMockSupport {
-
-  private Path testBuildFile;
-  private Path includedByBuildFile;
-  private Path includedByIncludeFile;
-  private Path defaultIncludeFile;
-  private Parser testParser;
-  private KnownBuildRuleTypes buildRuleTypes;
-  private ProjectFilesystem filesystem;
-  private BuckEventBus eventBus;
+@RunWith(Parameterized.class)
+public class ParserTest {
 
   @Rule
-  public TemporaryFolder tempDir = new TemporaryFolder();
+  public TemporaryPaths tempDir = new TemporaryPaths();
   @Rule
   public ExpectedException thrown = ExpectedException.none();
-  private Repository repository;
+
+  private final int threads;
+  private final boolean parallelParsing;
+  private Path defaultIncludeFile;
+  private Path includedByIncludeFile;
+  private Path includedByBuildFile;
+  private Path testBuildFile;
+  private Parser parser;
+  private ProjectFilesystem filesystem;
+  private Path cellRoot;
+  private BuckEventBus eventBus;
+  private Cell cell;
+  private ParseEventStartedCounter counter;
+  private ListeningExecutorService executorService;
+
+  public ParserTest(int threads, boolean parallelParsing) {
+    this.threads = threads;
+    this.parallelParsing = parallelParsing;
+  }
+
+  @Parameterized.Parameters
+  public static Collection<Object[]> generateData() {
+    return Arrays.asList(new Object[][] {
+        { 1, false, },
+        { 1, true, },
+        { 2, true, },
+    });
+  }
 
   @Before
-  public void setUp() throws IOException, InterruptedException  {
+  public void setUp() throws IOException, InterruptedException {
     tempDir.newFolder("java", "com", "facebook");
 
     defaultIncludeFile = tempDir.newFile(
-        "java/com/facebook/defaultIncludeFile").toPath().toRealPath();
-    Files.write(
-        "\n",
-        defaultIncludeFile.toFile(),
-        Charsets.UTF_8);
+        "java/com/facebook/defaultIncludeFile").toRealPath();
+    Files.write(defaultIncludeFile, "\n".getBytes(UTF_8));
 
     includedByIncludeFile = tempDir.newFile(
-        "java/com/facebook/includedByIncludeFile").toPath().toRealPath();
-    Files.write(
-        "\n",
-        includedByIncludeFile.toFile(),
-        Charsets.UTF_8);
+        "java/com/facebook/includedByIncludeFile").toRealPath();
+    Files.write(includedByIncludeFile, "\n".getBytes(UTF_8));
 
     includedByBuildFile = tempDir.newFile(
-        "java/com/facebook/includedByBuildFile").toPath().toRealPath();
+        "java/com/facebook/includedByBuildFile").toRealPath();
     Files.write(
-        "include_defs('//java/com/facebook/includedByIncludeFile')\n",
-        includedByBuildFile.toFile(),
-        Charsets.UTF_8);
+        includedByBuildFile,
+        "include_defs('//java/com/facebook/includedByIncludeFile')\n".getBytes(UTF_8));
 
-    testBuildFile = tempDir.newFile("java/com/facebook/BUCK").toPath().toRealPath();
+    testBuildFile = tempDir.newFile("java/com/facebook/BUCK").toRealPath();
     Files.write(
-        "include_defs('//java/com/facebook/includedByBuildFile')\n" +
-        "java_library(name = 'foo')\n" +
-        "java_library(name = 'bar')\n" +
-        "genrule(name = 'baz', out = '')\n",
-        testBuildFile.toFile(),
-        Charsets.UTF_8);
+        testBuildFile,
+        ("include_defs('//java/com/facebook/includedByBuildFile')\n" +
+            "java_library(name = 'foo')\n" +
+            "java_library(name = 'bar')\n" +
+            "genrule(name = 'baz', out = '')\n").getBytes(UTF_8));
 
     tempDir.newFile("bar.py");
 
     // Create a temp directory with some build files.
-    File root = tempDir.getRoot();
-    filesystem = new ProjectFilesystem(root.toPath().toRealPath());
-    BuckConfig config = new FakeBuckConfig();
-    repository = new TestRepositoryBuilder()
+    Path root = tempDir.getRoot().toRealPath();
+    filesystem = new ProjectFilesystem(root);
+    cellRoot = filesystem.getRootPath();
+    eventBus = BuckEventBusFactory.newInstance();
+
+    ImmutableMap.Builder<String, ImmutableMap<String, String>> configSectionsBuilder =
+        ImmutableMap.builder();
+    configSectionsBuilder
+        .put("buildfile", ImmutableMap.of("includes", "//java/com/facebook/defaultIncludeFile"));
+    if (parallelParsing) {
+      configSectionsBuilder.put(
+          "project",
+          ImmutableMap.of(
+              "temp_files", ".*\\.swp$",
+              "parallel_parsing", "true",
+              "parsing_threads", Integer.toString(threads)));
+    } else {
+      configSectionsBuilder.put("project", ImmutableMap.of("temp_files", ".*\\.swp$"));
+    }
+
+    configSectionsBuilder.put("unknown_flavors_messages",
+        ImmutableMap.of("macosx*", "This is an error message read by the .buckconfig"));
+
+    BuckConfig config = FakeBuckConfig.builder()
+        .setFilesystem(filesystem)
+        .setSections(configSectionsBuilder.build())
+        .build();
+
+    cell = new TestCellBuilder()
         .setFilesystem(filesystem)
         .setBuckConfig(config)
         .build();
-    eventBus = BuckEventBusFactory.newInstance();
 
-    buildRuleTypes = repository.getKnownBuildRuleTypes();
+    DefaultTypeCoercerFactory typeCoercerFactory = new DefaultTypeCoercerFactory(
+        ObjectMappers.newDefaultInstance());
+    parser = new Parser(
+        new ParserConfig(cell.getBuckConfig()),
+        typeCoercerFactory,
+        new ConstructorArgMarshaller(typeCoercerFactory));
 
-    ParserConfig parserConfig = new ParserConfig(config);
-    PythonBuckConfig pythonBuckConfig = new PythonBuckConfig(
-        config,
-        new ExecutableFinder());
-    DefaultProjectBuildFileParserFactory testBuildFileParserFactory =
-        new DefaultProjectBuildFileParserFactory(
-            filesystem.getRootPath(),
-            pythonBuckConfig.getPythonInterpreter(),
-            parserConfig.getAllowEmptyGlobs(),
-            parserConfig.getBuildFileName(),
-            parserConfig.getDefaultIncludes(),
-            buildRuleTypes.getAllDescriptions());
-    testParser = createParser(emptyBuildTargets(), testBuildFileParserFactory);
+    counter = new ParseEventStartedCounter();
+    eventBus.register(counter);
+
+    executorService = MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(threads));
   }
 
-  private Parser createParser(Iterable<Map<String, Object>> rules)
-      throws IOException, InterruptedException {
-    return createParser(
-        ofInstance(
-            new FilesystemBackedBuildFileTree(filesystem, "BUCK")),
-        rules,
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes));
-  }
-
-  private Parser createParser(
-      Iterable<Map<String, Object>> rules,
-      ProjectBuildFileParserFactory buildFileParserFactory)
-      throws IOException, InterruptedException {
-    return createParser(
-        ofInstance(
-            new FilesystemBackedBuildFileTree(filesystem, "BUCK")),
-        rules,
-        buildFileParserFactory,
-        repository);
-  }
-
-  private Parser createParser(
-          Supplier<BuildFileTree> buildFileTreeSupplier,
-      Iterable<Map<String, Object>> rules,
-      ProjectBuildFileParserFactory buildFileParserFactory)
-      throws IOException, InterruptedException {
-    return createParser(
-        buildFileTreeSupplier,
-        rules,
-        buildFileParserFactory,
-        repository);
-  }
-
-    private Parser createParser(
-        Supplier<BuildFileTree> buildFileTreeSupplier,
-        Iterable<Map<String, Object>> rules,
-        ProjectBuildFileParserFactory buildFileParserFactory,
-        Repository repository)
-        throws IOException, InterruptedException {
-      ParserConfig parserConfig = new ParserConfig(
-          new FakeBuckConfig(
-              ImmutableMap.of(
-                  "project", ImmutableMap.of("temp_files", ".*\\.swp$"))));
-    Parser parser = new Parser(
-        repository,
-        parserConfig.getEnforceBuckPackageBoundary(),
-        parserConfig.getTempFilePatterns(),
-        parserConfig.getBuildFileName(),
-        buildFileTreeSupplier,
-        buildFileParserFactory);
-
-    try {
-      parser.parseRawRulesInternal(rules);
-    } catch (BuildTargetException|IOException e) {
-      throw new RuntimeException(e);
-    }
-
-    return parser;
+  @After
+  public void tearDown() {
+    executorService.shutdown();
   }
 
   @Test
-  public void testParseBuildFilesForTargetsWithOverlappingTargets()
-      throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
+  @SuppressWarnings("unchecked")
+  public void testParseBuildFilesForTargetsWithOverlappingTargets() throws Exception {
     // Execute buildTargetGraphForBuildTargets() with multiple targets that require parsing the same
     // build file.
-    BuildTarget fooTarget = BuildTarget.builder("//java/com/facebook", "foo").build();
-    BuildTarget barTarget = BuildTarget.builder("//java/com/facebook", "bar").build();
+    BuildTarget fooTarget = BuildTarget.builder(cellRoot, "//java/com/facebook", "foo").build();
+    BuildTarget barTarget = BuildTarget.builder(cellRoot, "//java/com/facebook", "bar").build();
     Iterable<BuildTarget> buildTargets = ImmutableList.of(fooTarget, barTarget);
 
     // The EventBus should be updated with events indicating how parsing ran.
     FakeBuckEventListener listener = new FakeBuckEventListener();
     eventBus.register(listener);
 
-    TargetGraph targetGraph = testParser.buildTargetGraphForBuildTargets(
-        buildTargets,
-        new ParserConfig(new FakeBuckConfig()),
+    TargetGraph targetGraph = parser.buildTargetGraph(
         eventBus,
-        new TestConsole(),
-        ImmutableMap.<String, String>of(),
-        /* enableProfiling */ false);
-    ActionGraph actionGraph = buildActionGraph(eventBus, targetGraph);
-    BuildRule fooRule = actionGraph.findBuildRuleByTarget(fooTarget);
+        cell,
+        false,
+        executorService,
+        buildTargets);
+    BuildRuleResolver resolver = buildActionGraph(eventBus, targetGraph);
+    BuildRule fooRule = resolver.requireRule(fooTarget);
     assertNotNull(fooRule);
-    BuildRule barRule = actionGraph.findBuildRuleByTarget(barTarget);
+    BuildRule barRule = resolver.requireRule(barTarget);
     assertNotNull(barRule);
 
-    ImmutableList<ParseEvent> expected = ImmutableList.of(
-        TestEventConfigerator.configureTestEvent(ParseEvent.started(buildTargets), eventBus),
-        TestEventConfigerator.configureTestEvent(ParseEvent.finished(buildTargets,
-            Optional.of(targetGraph)),
-            eventBus));
-
     Iterable<ParseEvent> events = Iterables.filter(listener.getEvents(), ParseEvent.class);
-    assertEquals(expected, ImmutableList.copyOf(events));
+    assertThat(events, Matchers.contains(
+            Matchers.hasProperty("buildTargets", equalTo(buildTargets)),
+            Matchers.allOf(
+                Matchers.hasProperty("buildTargets", equalTo(buildTargets)),
+                Matchers.hasProperty("graph", equalTo(Optional.of(targetGraph)))
+            )));
   }
 
   @Test
   public void testMissingBuildRuleInValidFile()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
     // Execute buildTargetGraphForBuildTargets() with a target in a valid file but a bad rule name.
-    BuildTarget fooTarget = BuildTarget.builder("//java/com/facebook", "foo").build();
-    BuildTarget razTarget = BuildTarget.builder("//java/com/facebook", "raz").build();
+    BuildTarget fooTarget = BuildTarget.builder(cellRoot, "//java/com/facebook", "foo").build();
+    BuildTarget razTarget = BuildTarget.builder(cellRoot, "//java/com/facebook", "raz").build();
     Iterable<BuildTarget> buildTargets = ImmutableList.of(fooTarget, razTarget);
 
-    thrown.expect(HumanReadableException.class);
     thrown.expectMessage(
         "No rule found when resolving target //java/com/facebook:raz in build file " +
             "//java/com/facebook/BUCK");
+    thrown.expectMessage(
+        "Defined in file: " +
+            filesystem.resolve(razTarget.getBasePath()).resolve(DEFAULT_BUILD_FILE_NAME));
 
-    testParser.buildTargetGraphForBuildTargets(
-        buildTargets,
-        new ParserConfig(new FakeBuckConfig()),
-        BuckEventBusFactory.newInstance(),
-        new TestConsole(),
-        ImmutableMap.<String, String>of(),
-        /* enableProfiling */ false);
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        buildTargets);
+  }
+
+  @Test
+  public void testMissingBuildFile()
+      throws InterruptedException, BuildFileParseException, IOException, BuildTargetException {
+    BuildTarget target = BuildTarget.builder(cellRoot, "//path/to/nowhere", "nowhere").build();
+    Iterable<BuildTarget> buildTargets = ImmutableList.of(target);
+
+    thrown.expect(Cell.MissingBuildFileException.class);
+    thrown.expectMessage(
+        "No build file at path/to/nowhere/BUCK when resolving target " +
+            "//path/to/nowhere:nowhere");
+
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        buildTargets);
+  }
+
+  @Test
+  public void shouldThrowAnExceptionIfConstructorArgMashallingFails()
+      throws IOException, BuildFileParseException, InterruptedException {
+    thrown.expect(HumanReadableException.class);
+    thrown.expectMessage("found ////cake:walk");
+
+    Path buckFile = cellRoot.resolve("BUCK");
+    Files.write(
+        buckFile,
+        "genrule(name = 'cake', out = 'file.txt', cmd = '$(exe ////cake:walk) > $OUT')"
+            .getBytes(UTF_8));
+
+    parser.getAllTargetNodes(eventBus, cell, false, executorService, buckFile);
+  }
+
+  @Test
+  public void shouldThrowAnExceptionIfADepIsInAFileThatCannotBeParsed()
+      throws IOException, InterruptedException, BuildTargetException, BuildFileParseException {
+    thrown.expectMessage("Parse error for build file");
+    thrown.expectMessage(Paths.get("foo/BUCK").toString());
+
+    Path buckFile = cellRoot.resolve("BUCK");
+    Files.write(
+        buckFile,
+        "genrule(name = 'cake', out = 'foo.txt', cmd = '$(exe //foo:bar) > $OUT')".getBytes(UTF_8));
+
+    buckFile = cellRoot.resolve("foo/BUCK");
+    Files.createDirectories(buckFile.getParent());
+    Files.write(
+        buckFile,
+        "I do not parse as python".getBytes(UTF_8));
+
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        Collections.singleton(BuildTargetFactory.newInstance(cell.getFilesystem(), "//:cake")));
+  }
+
+  @Test
+  public void shouldThrowAnExceptionIfMultipleTargetsAreDefinedWithTheSameName()
+      throws IOException, BuildFileParseException, InterruptedException {
+    thrown.expect(BuildFileParseException.class);
+    thrown.expectMessage("Duplicate rule definition found.");
+
+    Path buckFile = cellRoot.resolve("BUCK");
+    Files.write(
+        buckFile,
+        ("export_file(name = 'cake', src = 'hello.txt')\n" +
+        "genrule(name = 'cake', out = 'file.txt', cmd = 'touch $OUT')\n").getBytes(UTF_8));
+
+    parser.getAllTargetNodes(eventBus, cell, false, executorService, buckFile);
+  }
+
+  @Test
+  public void shouldThrowAnExceptionIfNameIsNone()
+      throws IOException, BuildFileParseException, InterruptedException {
+    thrown.expect(BuildFileParseException.class);
+    thrown.expectMessage("rules 'name' field must be a string.  Found None.");
+
+    Path buckFile = cellRoot.resolve("BUCK");
+    Files.write(
+        buckFile,
+        ("genrule(name = None, out = 'file.txt', cmd = 'touch $OUT')\n").getBytes(UTF_8));
+
+    parser.getAllTargetNodes(eventBus, cell, false, executorService, buckFile);
   }
 
   @Test
   public void shouldThrowAnExceptionWhenAnUnknownFlavorIsSeen()
       throws BuildFileParseException, BuildTargetException, InterruptedException, IOException {
-    BuildTarget flavored = BuildTarget.builder("//java/com/facebook", "foo")
+    BuildTarget flavored = BuildTarget.builder(cellRoot, "//java/com/facebook", "foo")
         .addFlavors(ImmutableFlavor.of("doesNotExist"))
         .build();
 
     thrown.expect(HumanReadableException.class);
     thrown.expectMessage(
         "Unrecognized flavor in target //java/com/facebook:foo#doesNotExist while parsing " +
-            "//java/com/facebook/BUCK.");
-    testParser.buildTargetGraphForBuildTargets(
-        ImmutableSortedSet.of(flavored),
-        new ParserConfig(new FakeBuckConfig()),
-        BuckEventBusFactory.newInstance(),
-        new TestConsole(),
-        ImmutableMap.<String, String>of(),
-        /* enableProfiling */ false);
+            "//java/com/facebook/BUCK");
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        ImmutableSortedSet.of(flavored));
+  }
+
+  @Test
+  public void shouldThrowAnExceptionWhenAnUnknownFlavorIsSeenAndShowSuggestionsDefault()
+      throws BuildFileParseException, BuildTargetException, InterruptedException, IOException {
+    BuildTarget flavored = BuildTarget.builder(cellRoot, "//java/com/facebook", "foo")
+        .addFlavors(ImmutableFlavor.of("android-unknown"))
+        .build();
+
+    thrown.expect(HumanReadableException.class);
+    thrown.expectMessage(
+        "Unrecognized flavor in target //java/com/facebook:foo#android-unknown while parsing " +
+            "//java/com/facebook/BUCK\nHere are some things you can try to get the following " +
+            "flavors to work::\nandroid-unknown : Make sure you have the Android SDK/NDK " +
+            "installed and set up. " +
+            "See https://buckbuild.com/setup/install.html#locate-android-sdk\n");
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        ImmutableSortedSet.of(flavored));
+  }
+
+  @Test
+  public void shouldThrowAnExceptionWhenAnUnknownFlavorIsSeenAndShowSuggestionsFromConfig()
+      throws BuildFileParseException, BuildTargetException, InterruptedException, IOException {
+    BuildTarget flavored = BuildTarget.builder(cellRoot, "//java/com/facebook", "foo")
+        .addFlavors(ImmutableFlavor.of("macosx109sdk"))
+        .build();
+
+    thrown.expect(HumanReadableException.class);
+    thrown.expectMessage(
+        "Unrecognized flavor in target //java/com/facebook:foo#macosx109sdk while parsing " +
+            "//java/com/facebook/BUCK\nHere are some things you can try to get the following " +
+            "flavors to work::\nmacosx109sdk : This is an error message read by the .buckconfig");
+
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        ImmutableSortedSet.of(flavored));
   }
 
   @Test
   public void shouldThrowAnExceptionWhenAFlavorIsAskedOfATargetThatDoesntSupportFlavors()
-    throws BuildFileParseException, BuildTargetException, InterruptedException, IOException {
-    BuildTarget flavored = BuildTarget.builder("//java/com/facebook", "baz")
+      throws BuildFileParseException, BuildTargetException, InterruptedException, IOException {
+    BuildTarget flavored = BuildTarget.builder(cellRoot, "//java/com/facebook", "baz")
         .addFlavors(JavaLibrary.SRC_JAR)
         .build();
 
@@ -325,13 +432,12 @@ public class ParserTest extends EasyMockSupport {
     thrown.expectMessage(
         "Target //java/com/facebook:baz (type genrule) does not currently support flavors " +
             "(tried [src])");
-    testParser.buildTargetGraphForBuildTargets(
-        ImmutableSortedSet.of(flavored),
-        new ParserConfig(new FakeBuckConfig()),
-        BuckEventBusFactory.newInstance(),
-        new TestConsole(),
-        ImmutableMap.<String, String>of(),
-        /* enableProfiling */ false);
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        ImmutableSortedSet.of(flavored));
   }
 
   @Test
@@ -341,496 +447,611 @@ public class ParserTest extends EasyMockSupport {
     thrown.expect(HumanReadableException.class);
     thrown.expectMessage(
         "Couldn't get dependency '//java/com/facebook/invalid/lib:missing_rule' of target " +
-        "'//java/com/facebook/invalid:foo'");
+            "'//java/com/facebook/invalid:foo'");
 
     // Execute buildTargetGraphForBuildTargets() with a target in a valid file but a bad rule name.
     tempDir.newFolder("java", "com", "facebook", "invalid");
 
-    File testInvalidBuildFile = tempDir.newFile("java/com/facebook/invalid/BUCK");
+    Path testInvalidBuildFile = tempDir.newFile("java/com/facebook/invalid/BUCK");
     Files.write(
-        "java_library(name = 'foo', deps = ['//java/com/facebook/invalid/lib:missing_rule'])\n" +
-        "java_library(name = 'bar')\n",
         testInvalidBuildFile,
-        Charsets.UTF_8);
+        ("java_library(name = 'foo', deps = ['//java/com/facebook/invalid/lib:missing_rule'])\n" +
+            "java_library(name = 'bar')\n").getBytes(UTF_8));
 
     tempDir.newFolder("java", "com", "facebook", "invalid", "lib");
     tempDir.newFile("java/com/facebook/invalid/lib/BUCK");
 
-    BuildTarget fooTarget = BuildTarget.builder("//java/com/facebook/invalid", "foo").build();
+    BuildTarget fooTarget =
+        BuildTarget.builder(cellRoot, "//java/com/facebook/invalid", "foo").build();
     Iterable<BuildTarget> buildTargets = ImmutableList.of(fooTarget);
 
-    testParser.buildTargetGraphForBuildTargets(
-        buildTargets,
-        new ParserConfig(new FakeBuckConfig()),
-        BuckEventBusFactory.newInstance(),
-        new TestConsole(),
-        ImmutableMap.<String, String>of(),
-        /* enableProfiling */ false);
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        buildTargets);
   }
 
   @Test
   public void whenAllRulesRequestedWithTrueFilterThenMultipleRulesReturned()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
     ImmutableSet<BuildTarget> targets = filterAllTargetsInProject(
-        testParser, filesystem,
-        new ParserConfig(new FakeBuckConfig()),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        ImmutableMap.<String, String>of(),
         BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
+        executorService);
 
     ImmutableSet<BuildTarget> expectedTargets = ImmutableSet.of(
-        BuildTarget.builder("//java/com/facebook", "foo").build(),
-        BuildTarget.builder("//java/com/facebook", "bar").build(),
-        BuildTarget.builder("//java/com/facebook", "baz").build());
+        BuildTarget.builder(cellRoot, "//java/com/facebook", "foo").build(),
+        BuildTarget.builder(cellRoot, "//java/com/facebook", "bar").build(),
+        BuildTarget.builder(cellRoot, "//java/com/facebook", "baz").build());
     assertEquals("Should have returned all rules.", expectedTargets, targets);
   }
 
   @Test
   public void whenAllRulesAreRequestedMultipleTimesThenRulesAreOnlyParsedOnce()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets(), buildFileParserFactory);
-
-    BuckConfig config = new FakeBuckConfig();
     filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(config),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        config.getEnvironment(),
-        BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
+        eventBus,
+        executorService);
     filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(config),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        config.getEnvironment(),
-        BuckEventBusFactory.newInstance(),
-        false);
+        eventBus,
+        executorService);
 
-    assertEquals("Should have cached build rules.", 1, buildFileParserFactory.calls);
+    assertEquals("Should have cached build rules.", 1, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfNonPathEventThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets(), buildFileParserFactory);
-
     // Call filterAllTargetsInProject to populate the cache.
-    BuckConfig config = new FakeBuckConfig();
     filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(config),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        config.getEnvironment(),
-        BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
+        eventBus,
+        executorService);
 
     // Process event.
-    WatchEvent<Object> event = WatchEvents.createOverflowEvent();
+    WatchEvent<Object> event = WatchEventsForTests.createOverflowEvent();
     parser.onFileSystemChange(event);
 
     // Call filterAllTargetsInProject to request cached rules.
     filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(config),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        config.getEnvironment(),
-        BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
+        eventBus,
+        executorService);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
+  }
+
+  @Test
+  public void pathInvalidationWorksAfterOverflow() throws Exception {
+    // Call filterAllTargetsInProject to populate the cache.
+    filterAllTargetsInProject(
+        parser,
+        cell,
+        Predicates.<TargetNode<?>>alwaysTrue(),
+        eventBus,
+        executorService);
+
+    // Send overflow event.
+    parser.onFileSystemChange(WatchEventsForTests.createOverflowEvent());
+
+    // Call filterAllTargetsInProject to request cached rules.
+    filterAllTargetsInProject(
+        parser,
+        cell,
+        Predicates.<TargetNode<?>>alwaysTrue(),
+        eventBus,
+        executorService);
+
+    // Test that the second parseBuildFile call repopulated the cache.
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
+
+    // Send a "file added" event.
+    parser.onFileSystemChange(
+        createPathEvent(
+            Paths.get("java/com/facebook/Something.java"),
+            StandardWatchEventKinds.ENTRY_CREATE));
+
+    // Call filterAllTargetsInProject to request cached rules.
+    filterAllTargetsInProject(
+        parser,
+        cell,
+        Predicates.<TargetNode<?>>alwaysTrue(),
+        eventBus,
+        executorService);
+
+    // Test that the third parseBuildFile call repopulated the cache.
+    assertEquals("Should have invalidated cache.", 3, counter.calls);
   }
 
   @Test
   public void whenEnvironmentChangesThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets(), buildFileParserFactory);
+    BuckConfig config = FakeBuckConfig.builder()
+        .setFilesystem(filesystem)
+        .setEnvironment(ImmutableMap.of("Some Key", "Some Value", "PATH", System.getenv("PATH")))
+        .build();
 
-    BuckConfig config = new FakeBuckConfig();
+    Cell cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
 
     // Call filterAllTargetsInProject to populate the cache.
     filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(config),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        ImmutableMap.<String, String>builder()
-            .putAll(config.getEnvironment())
-            .put("Some Key", "Some Value")
-            .build(),
-        BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
+        eventBus,
+        executorService);
 
     // Call filterAllTargetsInProject to request cached rules.
+    config = FakeBuckConfig.builder()
+        .setFilesystem(filesystem)
+        .setEnvironment(
+            ImmutableMap.of("Some Key", "Some Other Value", "PATH", System.getenv("PATH")))
+        .build();
+
+    cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+
     filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(config),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        ImmutableMap.<String, String>builder()
-            .putAll(config.getEnvironment())
-            .put("Some Key", "Some Other Value")
-            .build(),
-        BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
+        eventBus,
+        executorService);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
-
 
   @Test
   public void whenEnvironmentNotChangedThenCacheRulesAreNotInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets(), buildFileParserFactory);
+    BuckConfig config = FakeBuckConfig.builder()
+        .setFilesystem(filesystem)
+        .setEnvironment(ImmutableMap.of("Some Key", "Some Value", "PATH", System.getenv("PATH")))
+        .build();
 
-    BuckConfig config = new FakeBuckConfig();
+    Cell cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
 
     // Call filterAllTargetsInProject to populate the cache.
     filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(config),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        config.getEnvironment(),
-        BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
+        eventBus,
+        executorService);
 
     // Call filterAllTargetsInProject to request cached rules with identical environment.
     filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(new FakeBuckConfig()),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        config.getEnvironment(),
-        BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
+        eventBus,
+        executorService);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should not have invalidated cache.", 1, buildFileParserFactory.calls);
-  }
-
-
-  // TODO(jimp/devjasta): clean up the horrible ProjectBuildFileParserFactory mess.
-  private void parseBuildFile(
-      Path buildFile,
-      Parser parser,
-      ProjectBuildFileParserFactory buildFileParserFactory)
-      throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    BuckConfig config = new FakeBuckConfig();
-    try (ProjectBuildFileParser projectBuildFileParser = buildFileParserFactory.createParser(
-        new TestConsole(),
-        config.getEnvironment(),
-        BuckEventBusFactory.newInstance())) {
-      parser.parseBuildFile(
-          buildFile,
-          new ParserConfig(config),
-          projectBuildFileParser,
-          config.getEnvironment());
-    }
+    assertEquals("Should not have invalidated cache.", 1, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfBuildFileAddThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), testBuildFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), testBuildFile),
         StandardWatchEventKinds.ENTRY_CREATE);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfBuildFileChangeThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), testBuildFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), testBuildFile),
         StandardWatchEventKinds.ENTRY_MODIFY);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfBuildFileDeleteThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), testBuildFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), testBuildFile),
         StandardWatchEventKinds.ENTRY_DELETE);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfIncludeFileAddThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), includedByBuildFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), includedByBuildFile),
         StandardWatchEventKinds.ENTRY_CREATE);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfIncludeFileChangeThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), includedByBuildFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), includedByBuildFile),
         StandardWatchEventKinds.ENTRY_MODIFY);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfIncludeFileDeleteThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), includedByBuildFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), includedByBuildFile),
         StandardWatchEventKinds.ENTRY_DELETE);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOf2ndOrderIncludeFileAddThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), includedByIncludeFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), includedByIncludeFile),
         StandardWatchEventKinds.ENTRY_CREATE);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOf2ndOrderIncludeFileChangeThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), includedByIncludeFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), includedByIncludeFile),
         StandardWatchEventKinds.ENTRY_MODIFY);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOf2ndOrderIncludeFileDeleteThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), includedByIncludeFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), includedByIncludeFile),
         StandardWatchEventKinds.ENTRY_DELETE);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfDefaultIncludeFileAddThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), defaultIncludeFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), defaultIncludeFile),
         StandardWatchEventKinds.ENTRY_CREATE);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfDefaultIncludeFileChangeThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), defaultIncludeFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), defaultIncludeFile),
         StandardWatchEventKinds.ENTRY_MODIFY);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
-
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfDefaultIncludeFileDeleteThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
-        MorePaths.relativize(tempDir.getRoot().toPath().toRealPath(), defaultIncludeFile),
+        MorePaths.relativize(tempDir.getRoot().toRealPath(), defaultIncludeFile),
         StandardWatchEventKinds.ENTRY_DELETE);
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
-  // TODO(user): avoid invalidation when arbitrary contained (possibly backup) files are added.
+  // TODO(shs96c): avoid invalidation when arbitrary contained (possibly backup) files are added.
   public void whenNotifiedOfContainedFileAddThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
+    // Call parseBuildFile to populate the cache.
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
+
+    // Process event.
+    WatchEvent<Path> event = createPathEvent(
+        Paths.get("java/com/facebook/SomeClass.java"),
+        StandardWatchEventKinds.ENTRY_CREATE);
+    parser.onFileSystemChange(event);
+
+    // Call parseBuildFile to request cached rules.
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
+
+    // Test that the second parseBuildFile call repopulated the cache.
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
+  }
+
+  @Test
+  public void whenNotifiedOfContainedFileAddCachedAncestorsAreInvalidatedWithoutBoundaryChecks()
+      throws Exception {
+    BuckConfig config = FakeBuckConfig.builder()
+        .setFilesystem(filesystem)
+        .setSections(
+            "[buildfile]",
+            "includes = //java/com/facebook/defaultIncludeFile",
+            "[project]",
+            "check_package_boundary = false",
+            "temp_files = ''")
+        .build();
+    Cell cell = new TestCellBuilder()
+        .setFilesystem(filesystem)
+        .setBuckConfig(config)
+        .build();
+
+    Path testAncestorBuildFile = tempDir.newFile("java/BUCK").toRealPath();
+    Files.write(testAncestorBuildFile, "java_library(name = 'root')\n".getBytes(UTF_8));
 
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testAncestorBuildFile);
+
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(Paths.get("java/com/facebook/SomeClass.java"),
@@ -838,21 +1059,27 @@ public class ParserTest extends EasyMockSupport {
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testAncestorBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfContainedFileChangeThenCacheRulesAreNotInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(Paths.get("java/com/facebook/SomeClass.java"),
@@ -860,22 +1087,28 @@ public class ParserTest extends EasyMockSupport {
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call did not repopulate the cache.
-    assertEquals("Should have not invalidated cache.", 1, buildFileParserFactory.calls);
+    assertEquals("Should have not invalidated cache.", 1, counter.calls);
   }
 
   @Test
-  // TODO(user): avoid invalidation when arbitrary contained (possibly backup) files are deleted.
+  // TODO(shs96c): avoid invalidation when arbitrary contained (possibly backup) files are deleted.
   public void whenNotifiedOfContainedFileDeleteThenCacheRulesAreInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(Paths.get("java/com/facebook/SomeClass.java"),
@@ -883,22 +1116,27 @@ public class ParserTest extends EasyMockSupport {
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
-
 
   @Test
   public void whenNotifiedOfContainedTempFileAddThenCachedRulesAreNotInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(Paths.get("java/com/facebook/MumbleSwp.Java.swp"),
@@ -906,21 +1144,27 @@ public class ParserTest extends EasyMockSupport {
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should not have invalidated cache.", 1, buildFileParserFactory.calls);
+    assertEquals("Should not have invalidated cache.", 1, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfContainedTempFileChangeThenCachedRulesAreNotInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(Paths.get("java/com/facebook/MumbleSwp.Java.swp"),
@@ -928,21 +1172,27 @@ public class ParserTest extends EasyMockSupport {
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should not have invalidated cache.", 1, buildFileParserFactory.calls);
+    assertEquals("Should not have invalidated cache.", 1, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfContainedTempFileDeleteThenCachedRulesAreNotInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(Paths.get("java/com/facebook/MumbleSwp.Java.swp"),
@@ -950,21 +1200,27 @@ public class ParserTest extends EasyMockSupport {
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call repopulated the cache.
-    assertEquals("Should not have invalidated cache.", 1, buildFileParserFactory.calls);
+    assertEquals("Should not have invalidated cache.", 1, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfUnrelatedFileAddThenCacheRulesAreNotInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(Paths.get("SomeClass.java__backup"),
@@ -972,21 +1228,27 @@ public class ParserTest extends EasyMockSupport {
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call did not repopulate the cache.
-    assertEquals("Should have not invalidated cache.", 1, buildFileParserFactory.calls);
+    assertEquals("Should have not invalidated cache.", 1, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfUnrelatedFileChangeThenCacheRulesAreNotInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(Paths.get("SomeClass.java__backup"),
@@ -994,21 +1256,27 @@ public class ParserTest extends EasyMockSupport {
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call did not repopulate the cache.
-    assertEquals("Should have not invalidated cache.", 1, buildFileParserFactory.calls);
+    assertEquals("Should have not invalidated cache.", 1, counter.calls);
   }
 
   @Test
   public void whenNotifiedOfUnrelatedFileDeleteThenCacheRulesAreNotInvalidated()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets());
-
     // Call parseBuildFile to populate the cache.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Process event.
     WatchEvent<Path> event = createPathEvent(
@@ -1017,254 +1285,124 @@ public class ParserTest extends EasyMockSupport {
     parser.onFileSystemChange(event);
 
     // Call parseBuildFile to request cached rules.
-    parseBuildFile(testBuildFile, parser, buildFileParserFactory);
+    parser.getRawTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testBuildFile);
 
     // Test that the second parseBuildFile call did not repopulate the cache.
-    assertEquals("Should have not invalidated cache.", 1, buildFileParserFactory.calls);
-  }
-
-  @Test
-  public void testGeneratedDeps()
-      throws IOException, BuildFileParseException, BuildTargetException, InterruptedException {
-    // Execute buildTargetGraphForBuildTargets() with a target in a valid file but a bad rule name.
-    tempDir.newFolder("java", "com", "facebook", "generateddeps");
-
-    File testGeneratedDepsBuckFile = tempDir.newFile("java/com/facebook/generateddeps/BUCK");
-    Files.write(
-        "java_library(name = 'foo')\n" +
-            "java_library(name = 'bar')\n" +
-            "add_deps(name = 'foo', deps = [':bar'])\n",
-        testGeneratedDepsBuckFile,
-        Charsets.UTF_8);
-
-    BuildTarget fooTarget = BuildTarget.builder("//java/com/facebook/generateddeps", "foo").build();
-
-    BuildTarget barTarget = BuildTarget.builder("//java/com/facebook/generateddeps", "bar").build();
-    Iterable<BuildTarget> buildTargets = ImmutableList.of(fooTarget, barTarget);
-
-    BuckEventBus eventBus = BuckEventBusFactory.newInstance();
-    TargetGraph targetGraph = testParser.buildTargetGraphForBuildTargets(
-        buildTargets,
-        new ParserConfig(new FakeBuckConfig()),
-        eventBus,
-        new TestConsole(),
-        ImmutableMap.<String, String>of(),
-        /* enableProfiling */ false);
-    ActionGraph graph = buildActionGraph(eventBus, targetGraph);
-
-    BuildRule fooRule = graph.findBuildRuleByTarget(fooTarget);
-    assertNotNull(fooRule);
-    BuildRule barRule = graph.findBuildRuleByTarget(barTarget);
-    assertNotNull(barRule);
-
-    assertEquals(ImmutableSet.of(barRule), fooRule.getDeps());
+    assertEquals("Should have not invalidated cache.", 1, counter.calls);
   }
 
   @Test
   public void whenAllRulesAreRequestedWithDifferingIncludesThenRulesAreParsedTwice()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets(), buildFileParserFactory);
-
-    BuckConfig config = new FakeBuckConfig();
     filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(config),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        config.getEnvironment(),
-        BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
-    filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(
-            new FakeBuckConfig(
-                ImmutableMap.of(
-                    ParserConfig.BUILDFILE_SECTION_NAME,
-                    ImmutableMap.of(ParserConfig.INCLUDES_PROPERTY_NAME, "//bar.py")))),
-        Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        config.getEnvironment(),
-        BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
+        eventBus,
+        executorService);
 
-    assertEquals("Should have invalidated cache.", 2, buildFileParserFactory.calls);
+    BuckConfig config = FakeBuckConfig.builder()
+        .setFilesystem(filesystem)
+        .setSections(
+            ImmutableMap.of(
+                ParserConfig.BUILDFILE_SECTION_NAME,
+                ImmutableMap.of(ParserConfig.INCLUDES_PROPERTY_NAME, "//bar.py")))
+        .build();
+    Cell cell = new TestCellBuilder()
+        .setFilesystem(filesystem)
+        .setBuckConfig(config)
+        .build();
+
+    filterAllTargetsInProject(
+        parser,
+        cell,
+        Predicates.<TargetNode<?>>alwaysTrue(),
+        eventBus,
+        executorService);
+
+    assertEquals("Should have invalidated cache.", 2, counter.calls);
   }
 
   @Test
   public void whenAllRulesThenSingleTargetRequestedThenRulesAreParsedOnce()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets(), buildFileParserFactory);
-
-    BuckConfig config = new FakeBuckConfig();
     filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(config),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        config.getEnvironment(),
-        BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
-    BuildTarget foo = BuildTarget.builder("//java/com/facebook", "foo").build();
-    parser.buildTargetGraphForBuildTargets(
-        ImmutableList.of(foo),
-        new ParserConfig(config),
-        BuckEventBusFactory.newInstance(),
-        new TestConsole(),
-        config.getEnvironment(),
-        /* enableProfiling */ false);
+        eventBus,
+        executorService);
+    BuildTarget foo = BuildTarget.builder(cellRoot, "//java/com/facebook", "foo").build();
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        ImmutableList.of(foo));
 
-    assertEquals("Should have cached build rules.", 1, buildFileParserFactory.calls);
+    assertEquals("Should have cached build rules.", 1, counter.calls);
   }
 
   @Test
   public void whenSingleTargetThenAllRulesRequestedThenRulesAreParsedOnce()
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    Parser parser = createParser(emptyBuildTargets(), buildFileParserFactory);
-
-    BuildTarget foo = BuildTarget.builder("//java/com/facebook", "foo").build();
-    BuckConfig config = new FakeBuckConfig();
-    parser.buildTargetGraphForBuildTargets(
-        ImmutableList.of(foo),
-        new ParserConfig(config),
-        BuckEventBusFactory.newInstance(),
-        new TestConsole(),
-        config.getEnvironment(),
-        /* enableProfiling */ false);
+    BuildTarget foo = BuildTarget.builder(cellRoot, "//java/com/facebook", "foo").build();
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        ImmutableList.of(foo));
     filterAllTargetsInProject(
-        parser, filesystem,
-        new ParserConfig(config),
+        parser,
+        cell,
         Predicates.<TargetNode<?>>alwaysTrue(),
-        new TestConsole(),
-        config.getEnvironment(),
-        BuckEventBusFactory.newInstance(),
-        false /* enableProfiling */);
+        eventBus,
+        executorService);
 
-    assertEquals("Should have replaced build rules", 1, buildFileParserFactory.calls);
-  }
-
-  @Test
-  @SuppressWarnings("unchecked") // Needed to mock generic class.
-  public void whenBuildFileTreeCacheInvalidatedTwiceDuringASingleBuildThenBuildFileTreeBuiltOnce()
-      throws IOException {
-    BuckEvent mockEvent = createMock(BuckEvent.class);
-    expect(mockEvent.getEventName()).andReturn("CommandStarted").anyTimes();
-    expect(mockEvent.getBuildId()).andReturn(new BuildId("BUILD1"));
-    BuildFileTree mockBuildFileTree = createMock(BuildFileTree.class);
-    Supplier<BuildFileTree> mockSupplier = createMock(Supplier.class);
-    expect(mockSupplier.get()).andReturn(mockBuildFileTree).once();
-    replay(mockEvent, mockSupplier, mockBuildFileTree);
-    Parser.BuildFileTreeCache cache = new Parser.BuildFileTreeCache(mockSupplier);
-    cache.onCommandStartedEvent(mockEvent);
-    cache.invalidateIfStale();
-    cache.get();
-    cache.invalidateIfStale();
-    cache.get();
-    verify(mockEvent, mockSupplier);
-  }
-
-  @Test
-  @SuppressWarnings("unchecked") // Needed to mock generic class.
-  public void whenBuildFileTreeCacheInvalidatedDuringTwoBuildsThenBuildFileTreeBuiltTwice()
-      throws IOException {
-    BuckEvent mockEvent = createMock(BuckEvent.class);
-    expect(mockEvent.getEventName()).andReturn("CommandStarted").anyTimes();
-    expect(mockEvent.getBuildId()).andReturn(new BuildId("BUILD1"));
-    expect(mockEvent.getBuildId()).andReturn(new BuildId("BUILD2"));
-    BuildFileTree mockBuildFileTree = createMock(BuildFileTree.class);
-    Supplier<BuildFileTree> mockSupplier = createMock(Supplier.class);
-    expect(mockSupplier.get()).andReturn(mockBuildFileTree).times(2);
-    replay(mockEvent, mockSupplier, mockBuildFileTree);
-    Parser.BuildFileTreeCache cache = new Parser.BuildFileTreeCache(mockSupplier);
-    cache.onCommandStartedEvent(mockEvent);
-    cache.invalidateIfStale();
-    cache.get();
-    cache.onCommandStartedEvent(mockEvent);
-    cache.invalidateIfStale();
-    cache.get();
-    verify(mockEvent, mockSupplier);
-  }
-
-  @Test(expected = BuildFileParseException.class)
-  public void whenSubprocessReturnsFailureThenProjectBuildFileParserThrowsOnClose()
-      throws IOException, BuildFileParseException, InterruptedException {
-    // This test depends on unix utilities that don't exist on Windows.
-    assumeTrue(Platform.detect() != Platform.WINDOWS);
-
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    try (ProjectBuildFileParser buildFileParser =
-        buildFileParserFactory.createNoopParserThatAlwaysReturnsError()) {
-      buildFileParser.initIfNeeded();
-      // close() is called implicitly at the end of this block. It must throw.
-    }
-  }
-
-  @Test
-  public void whenSubprocessReturnsSuccessThenProjectBuildFileParserClosesCleanly()
-      throws IOException, BuildFileParseException, InterruptedException {
-    // This test depends on unix utilities that don't exist on Windows.
-    assumeTrue(Platform.detect() != Platform.WINDOWS);
-
-    TestProjectBuildFileParserFactory buildFileParserFactory =
-        new TestProjectBuildFileParserFactory(filesystem.getRootPath(), buildRuleTypes);
-    try (ProjectBuildFileParser buildFileParser =
-        buildFileParserFactory.createNoopParserThatAlwaysReturnsSuccess()) {
-      buildFileParser.initIfNeeded();
-      // close() is called implicitly at the end of this block. It must not throw.
-    }
+    assertEquals("Should have replaced build rules", 1, counter.calls);
   }
 
   @Test
   public void whenBuildFilePathChangedThenFlavorsOfTargetsInPathAreInvalidated() throws Exception {
-    Parser parser = createParser(emptyBuildTargets());
-
     tempDir.newFolder("foo");
     tempDir.newFolder("bar");
 
-    File testFooBuckFile = tempDir.newFile("foo/BUCK");
+    Path testFooBuckFile = tempDir.newFile("foo/BUCK");
     Files.write(
-        "java_library(name = 'foo', visibility=['PUBLIC'])\n",
         testFooBuckFile,
-        Charsets.UTF_8);
+        "java_library(name = 'foo', visibility=['PUBLIC'])\n".getBytes(UTF_8));
 
-    File testBarBuckFile = tempDir.newFile("bar/BUCK");
+    Path testBarBuckFile = tempDir.newFile("bar/BUCK");
     Files.write(
-            "java_library(name = 'bar',\n" +
-            "  deps = ['//foo:foo'])\n",
         testBarBuckFile,
-        Charsets.UTF_8);
+        ("java_library(name = 'bar',\n" +
+            "  deps = ['//foo:foo'])\n").getBytes(UTF_8));
 
     // Fetch //bar:bar#src to put it in cache.
     BuildTarget barTarget = BuildTarget
-        .builder("//bar", "bar")
+        .builder(cellRoot, "//bar", "bar")
         .addFlavors(ImmutableFlavor.of("src"))
         .build();
     Iterable<BuildTarget> buildTargets = ImmutableList.of(barTarget);
 
-    BuckConfig config = new FakeBuckConfig();
-
-    parser.buildTargetGraphForBuildTargets(
-        buildTargets,
-        new ParserConfig(config),
-        BuckEventBusFactory.newInstance(),
-        new TestConsole(),
-        config.getEnvironment(),
-        /* enableProfiling */ false);
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        buildTargets);
 
     // Rewrite //bar:bar so it doesn't depend on //foo:foo any more.
     // Delete foo/BUCK and invalidate the cache, which should invalidate
     // the cache entry for //bar:bar#src.
-    testFooBuckFile.delete();
-    Files.write(
-            "java_library(name = 'bar')\n",
-        testBarBuckFile,
-        Charsets.UTF_8);
+    Files.delete(testFooBuckFile);
+    Files.write(testBarBuckFile, "java_library(name = 'bar')\n".getBytes(UTF_8));
     WatchEvent<Path> deleteEvent = createPathEvent(
         Paths.get("foo").resolve("BUCK"),
         StandardWatchEventKinds.ENTRY_DELETE);
@@ -1274,230 +1412,34 @@ public class ParserTest extends EasyMockSupport {
         StandardWatchEventKinds.ENTRY_MODIFY);
     parser.onFileSystemChange(modifyEvent);
 
-    parser.buildTargetGraphForBuildTargets(
-        buildTargets,
-        new ParserConfig(config),
-        BuckEventBusFactory.newInstance(),
-        new TestConsole(),
-        config.getEnvironment(),
-        /* enableProfiling */ false);
-  }
-
-  @Test
-  public void whenBuildFileContainsSourcesUnderSymLinkNewSourcesNotAddedUntilCacheCleaned()
-      throws Exception {
-    // This test depends on creating symbolic links which we cannot do on Windows.
-    assumeTrue(Platform.detect() != Platform.WINDOWS);
-
-    Parser parser = createParser(emptyBuildTargets());
-
-    tempDir.newFolder("bar");
-    tempDir.newFile("bar/Bar.java");
-    tempDir.newFolder("foo");
-    Path rootPath = tempDir.getRoot().toPath().toRealPath();
-    java.nio.file.Files.createSymbolicLink(rootPath.resolve("foo/bar"), rootPath.resolve("bar"));
-
-    Path testBuckFile = rootPath.resolve("foo").resolve("BUCK");
-    Files.write(
-        "java_library(name = 'lib', srcs=glob(['bar/*.java']))\n",
-        testBuckFile.toFile(),
-        Charsets.UTF_8);
-
-    // Fetch //:lib to put it in cache.
-    BuildTarget libTarget = BuildTarget.builder("//foo", "lib").build();
-    Iterable<BuildTarget> buildTargets = ImmutableList.of(libTarget);
-
-    BuckEventBus eventBus = BuckEventBusFactory.newInstance();
-    BuckConfig config = new FakeBuckConfig();
-
-    {
-      TargetGraph targetGraph = parser.buildTargetGraphForBuildTargets(
-          buildTargets,
-          new ParserConfig(config),
-          eventBus,
-          new TestConsole(),
-          config.getEnvironment(),
-          /* enableProfiling */ false);
-      ActionGraph graph = buildActionGraph(eventBus, targetGraph);
-
-      JavaLibrary libRule = (JavaLibrary) graph.findBuildRuleByTarget(libTarget);
-      assertEquals(ImmutableSet.of(Paths.get("foo/bar/Bar.java")), libRule.getJavaSrcs());
-    }
-
-    tempDir.newFile("bar/Baz.java");
-    WatchEvent<Path> createEvent = createPathEvent(
-        Paths.get("bar/Baz.java"),
-        StandardWatchEventKinds.ENTRY_CREATE);
-    parser.onFileSystemChange(createEvent);
-
-    {
-      // Even though we've created this new file, the parser can't know it
-      // has anything to do with our lib (which looks in foo/*.java)
-      // until we clean the parser cache.
-      TargetGraph targetGraph = parser.buildTargetGraphForBuildTargets(
-          buildTargets,
-          new ParserConfig(config),
-          eventBus,
-          new TestConsole(),
-          config.getEnvironment(),
-          /* enableProfiling */ false);
-      ActionGraph graph = buildActionGraph(eventBus, targetGraph);
-
-      JavaLibrary libRule = (JavaLibrary) graph.findBuildRuleByTarget(libTarget);
-      assertEquals(ImmutableSet.of(Paths.get("foo/bar/Bar.java")), libRule.getJavaSrcs());
-    }
-
-    // Now tell the parser to forget about build files with inputs under symlinks.
-    parser.cleanCache();
-
-    {
-      TargetGraph targetGraph = parser.buildTargetGraphForBuildTargets(
-          buildTargets,
-          new ParserConfig(config),
-          eventBus,
-          new TestConsole(),
-          config.getEnvironment(),
-          /* enableProfiling */ false);
-      ActionGraph graph = buildActionGraph(eventBus, targetGraph);
-
-      JavaLibrary libRule = (JavaLibrary) graph.findBuildRuleByTarget(libTarget);
-      assertEquals(
-          ImmutableSet.of(Paths.get("foo/bar/Bar.java"), Paths.get("foo/bar/Baz.java")),
-          libRule.getJavaSrcs());
-    }
-  }
-
-  @Test
-  public void whenBuildFileContainsSourcesUnderSymLinkDeletedSourcesNotRemovedUntilCacheCleaned()
-      throws Exception {
-    // This test depends on creating symbolic links which we cannot do on Windows.
-    assumeTrue(Platform.detect() != Platform.WINDOWS);
-
-    Parser parser = createParser(emptyBuildTargets());
-
-    tempDir.newFolder("bar");
-    tempDir.newFile("bar/Bar.java");
-    tempDir.newFolder("foo");
-    File bazSourceFile = tempDir.newFile("bar/Baz.java");
-    Path rootPath = tempDir.getRoot().toPath().toRealPath();
-    java.nio.file.Files.createSymbolicLink(rootPath.resolve("foo/bar"), rootPath.resolve("bar"));
-
-    Path testBuckFile = rootPath.resolve("foo").resolve("BUCK");
-    Files.write(
-        "java_library(name = 'lib', srcs=glob(['bar/*.java']))\n",
-        testBuckFile.toFile(),
-        Charsets.UTF_8);
-
-    // Fetch //:lib to put it in cache.
-    BuildTarget libTarget = BuildTarget.builder("//foo", "lib").build();
-    Iterable<BuildTarget> buildTargets = ImmutableList.of(libTarget);
-
-    BuckEventBus eventBus = BuckEventBusFactory.newInstance();
-    BuckConfig config = new FakeBuckConfig();
-
-    {
-      TargetGraph targetGraph = parser.buildTargetGraphForBuildTargets(
-          buildTargets,
-          new ParserConfig(config),
-          eventBus,
-          new TestConsole(),
-          config.getEnvironment(),
-          /* enableProfiling */ false);
-      ActionGraph graph = buildActionGraph(eventBus, targetGraph);
-
-      JavaLibrary libRule = (JavaLibrary) graph.findBuildRuleByTarget(libTarget);
-
-      assertEquals(
-          ImmutableSortedSet.of(Paths.get("foo/bar/Bar.java"), Paths.get("foo/bar/Baz.java")),
-          libRule.getJavaSrcs());
-    }
-
-    bazSourceFile.delete();
-    WatchEvent<Path> deleteEvent = createPathEvent(
-        Paths.get("bar/Baz.java"),
-        StandardWatchEventKinds.ENTRY_DELETE);
-    parser.onFileSystemChange(deleteEvent);
-
-    {
-      // Even though we've deleted a source file, the parser can't know it
-      // has anything to do with our lib (which looks in foo/*.java)
-      // until we clean the parser cache.
-      TargetGraph targetGraph = parser.buildTargetGraphForBuildTargets(
-          buildTargets,
-          new ParserConfig(config),
-          eventBus,
-          new TestConsole(),
-          config.getEnvironment(),
-          /* enableProfiling */ false);
-      ActionGraph graph = buildActionGraph(eventBus, targetGraph);
-
-      JavaLibrary libRule = (JavaLibrary) graph.findBuildRuleByTarget(libTarget);
-      assertEquals(
-          ImmutableSet.of(Paths.get("foo/bar/Bar.java"), Paths.get("foo/bar/Baz.java")),
-          libRule.getJavaSrcs());
-    }
-
-    // Now tell the parser to forget about build files with inputs under symlinks.
-    parser.cleanCache();
-
-    {
-      TargetGraph targetGraph = parser.buildTargetGraphForBuildTargets(
-          buildTargets,
-          new ParserConfig(config),
-          eventBus,
-          new TestConsole(),
-          config.getEnvironment(),
-          /* enableProfiling */ false);
-      ActionGraph graph = buildActionGraph(eventBus, targetGraph);
-
-      JavaLibrary libRule = (JavaLibrary) graph.findBuildRuleByTarget(libTarget);
-      assertEquals(
-          ImmutableSet.of(Paths.get("foo/bar/Bar.java")),
-          libRule.getJavaSrcs());
-    }
-  }
-
-  @Test
-  public void buildTargetHashCodePopulatesCorrectly() throws Exception {
-    Parser parser = createParser(emptyBuildTargets());
-
-    tempDir.newFolder("foo");
-
-    File testFooBuckFile = tempDir.newFile("foo/BUCK");
-    Files.write(
-        "java_library(name = 'lib', visibility=['PUBLIC'])\n",
-        testFooBuckFile,
-        Charsets.UTF_8);
-
-    BuildTarget fooLibTarget = BuildTarget.builder("//foo", "lib").build();
-
-    // We can't precalculate the hash, since it depends on the buck version. Check for the presence
-    // of a hash for the right key.
-    HashCode hashCode = buildTargetGraphAndGetHashCodes(parser, fooLibTarget).get(fooLibTarget);
-
-    assertNotNull(hashCode);
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        buildTargets);
   }
 
   @Test
   public void targetWithSourceFileChangesHash() throws Exception {
-    Parser parser = createParser(emptyBuildTargets());
-
     tempDir.newFolder("foo");
 
-    File testFooBuckFile = tempDir.newFile("foo/BUCK");
+    Path testFooBuckFile = tempDir.newFile("foo/BUCK");
     Files.write(
-        "java_library(name = 'lib', srcs=glob(['*.java']), visibility=['PUBLIC'])\n",
         testFooBuckFile,
-        Charsets.UTF_8);
-    BuildTarget fooLibTarget = BuildTarget.builder("//foo", "lib").build();
+        "java_library(name = 'lib', srcs=glob(['*.java']), visibility=['PUBLIC'])\n"
+            .getBytes(UTF_8));
+    BuildTarget fooLibTarget = BuildTarget.builder(cellRoot, "//foo", "lib").build();
     HashCode original = buildTargetGraphAndGetHashCodes(parser, fooLibTarget).get(fooLibTarget);
 
-    parser = createParser(emptyBuildTargets());
-    File testFooJavaFile = tempDir.newFile("foo/Foo.java");
-    Files.write(
-        "// Ceci n'est pas une Javafile\n",
-        testFooJavaFile,
-        Charsets.UTF_8);
+    DefaultTypeCoercerFactory typeCoercerFactory = new DefaultTypeCoercerFactory(
+        ObjectMappers.newDefaultInstance());
+    parser = new Parser(
+        new ParserConfig(cell.getBuckConfig()),
+        typeCoercerFactory,
+        new ConstructorArgMarshaller(typeCoercerFactory));
+    Path testFooJavaFile = tempDir.newFile("foo/Foo.java");
+    Files.write(testFooJavaFile, "// Ceci n'est pas une Javafile\n".getBytes(UTF_8));
     HashCode updated = buildTargetGraphAndGetHashCodes(parser, fooLibTarget).get(fooLibTarget);
 
     assertNotEquals(original, updated);
@@ -1505,32 +1447,24 @@ public class ParserTest extends EasyMockSupport {
 
   @Test
   public void deletingSourceFileChangesHash() throws Exception {
-    Parser parser = createParser(emptyBuildTargets());
-
     tempDir.newFolder("foo");
 
-    File testFooBuckFile = tempDir.newFile("foo/BUCK");
+    Path testFooBuckFile = tempDir.newFile("foo/BUCK");
     Files.write(
-        "java_library(name = 'lib', srcs=glob(['*.java']), visibility=['PUBLIC'])\n",
         testFooBuckFile,
-        Charsets.UTF_8);
+        "java_library(name = 'lib', srcs=glob(['*.java']), visibility=['PUBLIC'])\n"
+            .getBytes(UTF_8));
 
-    File testFooJavaFile = tempDir.newFile("foo/Foo.java");
-    Files.write(
-        "// Ceci n'est pas une Javafile\n",
-        testFooJavaFile,
-        Charsets.UTF_8);
+    Path testFooJavaFile = tempDir.newFile("foo/Foo.java");
+    Files.write(testFooJavaFile, "// Ceci n'est pas une Javafile\n".getBytes(UTF_8));
 
-    File testBarJavaFile = tempDir.newFile("foo/Bar.java");
-    Files.write(
-        "// Seriously, no Java here\n",
-        testBarJavaFile,
-        Charsets.UTF_8);
+    Path testBarJavaFile = tempDir.newFile("foo/Bar.java");
+    Files.write(testBarJavaFile, "// Seriously, no Java here\n".getBytes(UTF_8));
 
-    BuildTarget fooLibTarget = BuildTarget.builder("//foo", "lib").build();
+    BuildTarget fooLibTarget = BuildTarget.builder(cellRoot, "//foo", "lib").build();
     HashCode originalHash = buildTargetGraphAndGetHashCodes(parser, fooLibTarget).get(fooLibTarget);
 
-    assertTrue(testBarJavaFile.delete());
+    Files.delete(testBarJavaFile);
     WatchEvent<Path> deleteEvent = createPathEvent(
         Paths.get("foo/Bar.java"),
         StandardWatchEventKinds.ENTRY_DELETE);
@@ -1543,28 +1477,22 @@ public class ParserTest extends EasyMockSupport {
 
   @Test
   public void renamingSourceFileChangesHash() throws Exception {
-    Parser parser = createParser(emptyBuildTargets());
-
     tempDir.newFolder("foo");
 
-    File testFooBuckFile = tempDir.newFile("foo/BUCK");
+    Path testFooBuckFile = tempDir.newFile("foo/BUCK");
     Files.write(
-        "java_library(name = 'lib', srcs=glob(['*.java']), visibility=['PUBLIC'])\n",
         testFooBuckFile,
-        Charsets.UTF_8);
+        "java_library(name = 'lib', srcs=glob(['*.java']), visibility=['PUBLIC'])\n"
+            .getBytes(UTF_8));
 
-    File testFooJavaFile = tempDir.newFile("foo/Foo.java");
-    Files.write(
-        "// Ceci n'est pas une Javafile\n",
-        testFooJavaFile,
-        Charsets.UTF_8);
+    Path testFooJavaFile = tempDir.newFile("foo/Foo.java");
+    Files.write(testFooJavaFile, "// Ceci n'est pas une Javafile\n".getBytes(UTF_8));
 
-    BuildTarget fooLibTarget = BuildTarget.builder("//foo", "lib").build();
+    BuildTarget fooLibTarget = BuildTarget.builder(cellRoot, "//foo", "lib").build();
 
     HashCode originalHash = buildTargetGraphAndGetHashCodes(parser, fooLibTarget).get(fooLibTarget);
 
-    Path testFooJavaFilePath = testFooJavaFile.toPath();
-    java.nio.file.Files.move(testFooJavaFilePath, testFooJavaFilePath.resolveSibling("Bar.java"));
+    Files.move(testFooJavaFile, testFooJavaFile.resolveSibling("Bar.java"));
     WatchEvent<Path> deleteEvent = createPathEvent(
         Paths.get("foo/Foo.java"),
         StandardWatchEventKinds.ENTRY_DELETE);
@@ -1581,19 +1509,16 @@ public class ParserTest extends EasyMockSupport {
 
   @Test
   public void twoBuildTargetHashCodesPopulatesCorrectly() throws Exception {
-    Parser parser = createParser(emptyBuildTargets());
-
     tempDir.newFolder("foo");
 
-    File testFooBuckFile = tempDir.newFile("foo/BUCK");
+    Path testFooBuckFile = tempDir.newFile("foo/BUCK");
     Files.write(
-        "java_library(name = 'lib', visibility=['PUBLIC'])\n" +
-        "java_library(name = 'lib2', visibility=['PUBLIC'])\n",
         testFooBuckFile,
-        Charsets.UTF_8);
+        ("java_library(name = 'lib', visibility=['PUBLIC'])\n" +
+            "java_library(name = 'lib2', visibility=['PUBLIC'])\n").getBytes(UTF_8));
 
-    BuildTarget fooLibTarget = BuildTarget.builder("//foo", "lib").build();
-    BuildTarget fooLib2Target = BuildTarget.builder("//foo", "lib2").build();
+    BuildTarget fooLibTarget = BuildTarget.builder(cellRoot, "//foo", "lib").build();
+    BuildTarget fooLib2Target = BuildTarget.builder(cellRoot, "//foo", "lib2").build();
 
     ImmutableMap<BuildTarget, HashCode> hashes = buildTargetGraphAndGetHashCodes(
         parser,
@@ -1608,19 +1533,17 @@ public class ParserTest extends EasyMockSupport {
 
   @Test
   public void addingDepToTargetChangesHashOfDependingTargetOnly() throws Exception {
-    Parser parser = createParser(emptyBuildTargets());
-
     tempDir.newFolder("foo");
 
-    File testFooBuckFile = tempDir.newFile("foo/BUCK");
+    Path testFooBuckFile = tempDir.newFile("foo/BUCK");
     Files.write(
-        "java_library(name = 'lib', deps = [], visibility=['PUBLIC'])\n" +
-        "java_library(name = 'lib2', deps = [], visibility=['PUBLIC'])\n",
         testFooBuckFile,
-        Charsets.UTF_8);
+        ("java_library(name = 'lib', deps = [], visibility=['PUBLIC'])\n" +
+            "java_library(name = 'lib2', deps = [], visibility=['PUBLIC'])\n")
+            .getBytes(UTF_8));
 
-    BuildTarget fooLibTarget = BuildTarget.builder("//foo", "lib").build();
-    BuildTarget fooLib2Target = BuildTarget.builder("//foo", "lib2").build();
+    BuildTarget fooLibTarget = BuildTarget.builder(cellRoot, "//foo", "lib").build();
+    BuildTarget fooLib2Target = BuildTarget.builder(cellRoot, "//foo", "lib2").build();
     ImmutableMap<BuildTarget, HashCode> hashes = buildTargetGraphAndGetHashCodes(
         parser,
         fooLibTarget,
@@ -1628,12 +1551,16 @@ public class ParserTest extends EasyMockSupport {
     HashCode libKey = hashes.get(fooLibTarget);
     HashCode lib2Key = hashes.get(fooLib2Target);
 
-    parser = createParser(emptyBuildTargets());
+    DefaultTypeCoercerFactory typeCoercerFactory = new DefaultTypeCoercerFactory(
+        ObjectMappers.newDefaultInstance());
+    parser = new Parser(
+        new ParserConfig(cell.getBuckConfig()),
+        typeCoercerFactory,
+        new ConstructorArgMarshaller(typeCoercerFactory));
     Files.write(
-        "java_library(name = 'lib', deps = [], visibility=['PUBLIC'])\n" +
-        "java_library(name = 'lib2', deps = [':lib'], visibility=['PUBLIC'])\n",
         testFooBuckFile,
-        Charsets.UTF_8);
+        ("java_library(name = 'lib', deps = [], visibility=['PUBLIC'])\n" +
+         "java_library(name = 'lib2', deps = [':lib'], visibility=['PUBLIC'])\n").getBytes(UTF_8));
 
     hashes = buildTargetGraphAndGetHashCodes(
         parser,
@@ -1644,149 +1571,755 @@ public class ParserTest extends EasyMockSupport {
     assertNotEquals(lib2Key, hashes.get(fooLib2Target));
   }
 
-  private ImmutableMap<BuildTarget, HashCode> buildTargetGraphAndGetHashCodes(
-      Parser parser,
-      BuildTarget... buildTargets) throws Exception {
-    // Build the target graph so we can access the hash code cache.
-    //
-    // TODO(user): It'd be really nice if parser.getBuildTargetHashCodeCache()
-    // knew how to run the parser for targets that weren't yet parsed, but
-    // then we'd need to pass in the BuckEventBusFactory, Console, etc.
-    // to every call to get()..
-    ImmutableList<BuildTarget> buildTargetsList = ImmutableList.copyOf(buildTargets);
-    BuckConfig config = new FakeBuckConfig();
-    parser.buildTargetGraphForBuildTargets(
-        buildTargetsList,
-        new ParserConfig(config),
-        BuckEventBusFactory.newInstance(),
-        new TestConsole(),
-        config.getEnvironment(),
-        /* enableProfiling */ false);
+  @Test
+  public void loadedBuildFileWithoutLoadedTargetNodesLoadsAdditionalTargetNodes()
+      throws IOException, InterruptedException, BuildFileParseException, BuildTargetException {
+    tempDir.newFolder("foo");
 
-    return parser.getBuildTargetHashCodeCache().getAll(buildTargetsList);
-  }
+    Path testFooBuckFile = tempDir.newFile("foo/BUCK").toRealPath();
+    Files.write(
+        testFooBuckFile,
+        "java_library(name = 'lib1')\njava_library(name = 'lib2')\n".getBytes(UTF_8));
+    BuildTarget fooLib1Target = BuildTarget.builder(cellRoot, "//foo", "lib1").build();
+    BuildTarget fooLib2Target = BuildTarget.builder(cellRoot, "//foo", "lib2").build();
 
-  private ActionGraph buildActionGraph(BuckEventBus eventBus, TargetGraph targetGraph) {
-    return new TargetGraphToActionGraph(
+    // First, only load one target from the build file so the file is parsed, but only one of the
+    // TargetNodes will be cached.
+    TargetNode<?> targetNode = parser.getTargetNode(
         eventBus,
-        new BuildTargetNodeToBuildRuleTransformer(),
-        new NullFileHashCache())
-        .apply(targetGraph);
+        cell,
+        false,
+        executorService,
+        fooLib1Target);
+    assertThat(targetNode.getBuildTarget(), equalTo(fooLib1Target));
+
+    // Now, try to load the entire build file and get all TargetNodes.
+    ImmutableSet<TargetNode<?>> targetNodes = parser.getAllTargetNodes(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        testFooBuckFile);
+    assertThat(targetNodes.size(), equalTo(2));
+    assertThat(
+        FluentIterable.from(targetNodes)
+            .transform(
+                new Function<TargetNode<?>, BuildTarget>() {
+                  @Override
+                  public BuildTarget apply(TargetNode<?> targetNode) {
+                    return targetNode.getBuildTarget();
+                  }
+                })
+            .toList(),
+        hasItems(fooLib1Target, fooLib2Target));
   }
 
-  private Iterable<Map<String, Object>> emptyBuildTargets() {
-    return Sets.newHashSet();
+  @Test
+  public void getOrLoadTargetNodeRules()
+      throws IOException, InterruptedException, BuildFileParseException, BuildTargetException {
+    tempDir.newFolder("foo");
+
+    Path testFooBuckFile = tempDir.newFile("foo/BUCK");
+    Files.write(
+        testFooBuckFile,
+        "java_library(name = 'lib')\n".getBytes(UTF_8));
+    BuildTarget fooLibTarget = BuildTarget.builder(cellRoot, "//foo", "lib").build();
+
+    TargetNode<?> targetNode = parser.getTargetNode(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        fooLibTarget);
+    assertThat(targetNode.getBuildTarget(), equalTo(fooLibTarget));
+
+      SortedMap<String, Object> rules = parser.getRawTargetNode(
+          eventBus,
+          cell,
+          false,
+          executorService,
+          targetNode);
+    assertThat(rules, Matchers.hasKey("name"));
+    assertThat(
+        (String) rules.get("name"),
+        equalTo(targetNode.getBuildTarget().getShortName()));
   }
 
-  /**
-   * ProjectBuildFileParser test double which counts the number of times rules are parsed to test
-   * caching logic in Parser.
-   */
-  private static class TestProjectBuildFileParserFactory implements ProjectBuildFileParserFactory {
-    private final Path projectRoot;
-    private final KnownBuildRuleTypes buildRuleTypes;
-    public int calls = 0;
+  @Test
+  public void whenBuildFileContainsSourcesUnderSymLinkNewSourcesNotAddedUntilCacheCleaned()
+      throws Exception {
+    // This test depends on creating symbolic links which we cannot do on Windows.
+    assumeTrue(Platform.detect() != Platform.WINDOWS);
 
-    public TestProjectBuildFileParserFactory(
-        Path projectRoot,
-        KnownBuildRuleTypes buildRuleTypes) {
-      this.projectRoot = projectRoot;
-      this.buildRuleTypes = buildRuleTypes;
+    tempDir.newFolder("bar");
+    tempDir.newFile("bar/Bar.java");
+    tempDir.newFolder("foo");
+    Path rootPath = tempDir.getRoot().toRealPath();
+    Files.createSymbolicLink(rootPath.resolve("foo/bar"), rootPath.resolve("bar"));
+
+    Path testBuckFile = rootPath.resolve("foo").resolve("BUCK");
+    Files.write(
+        testBuckFile,
+        "java_library(name = 'lib', srcs=glob(['bar/*.java']))\n".getBytes(UTF_8));
+
+    // Fetch //:lib to put it in cache.
+    BuildTarget libTarget = BuildTarget.builder(cellRoot, "//foo", "lib").build();
+    Iterable<BuildTarget> buildTargets = ImmutableList.of(libTarget);
+
+    {
+      TargetGraph targetGraph = parser.buildTargetGraph(
+          eventBus,
+          cell,
+          false,
+          executorService,
+          buildTargets);
+      BuildRuleResolver resolver = buildActionGraph(eventBus, targetGraph);
+
+      JavaLibrary libRule = (JavaLibrary) resolver.requireRule(libTarget);
+      assertEquals(ImmutableSet.of(Paths.get("foo/bar/Bar.java")), libRule.getJavaSrcs());
     }
 
-    @Override
-    public ProjectBuildFileParser createParser(
-        Console console,
-        ImmutableMap<String, String> environment,
-        BuckEventBus buckEventBus) {
-      PythonBuckConfig config = new PythonBuckConfig(
-          new FakeBuckConfig(ImmutableMap.<String, ImmutableMap<String, String>>of(), environment),
-          new ExecutableFinder());
-      return new TestProjectBuildFileParser(config.getPythonInterpreter());
-    }
+    tempDir.newFile("bar/Baz.java");
+    WatchEvent<Path> createEvent = createPathEvent(
+        Paths.get("bar/Baz.java"),
+        StandardWatchEventKinds.ENTRY_CREATE);
+    parser.onFileSystemChange(createEvent);
 
-    public ProjectBuildFileParser createNoopParserThatAlwaysReturnsError() {
-      // "false" is a unix utility that always returns error code 1 (failure).
-      return new TestProjectBuildFileParser("false" /* pythonInterpreter */);
-    }
+    {
+      TargetGraph targetGraph = parser.buildTargetGraph(
+          eventBus,
+          cell,
+          false,
+          executorService,
+          buildTargets);
+      BuildRuleResolver resolver = buildActionGraph(eventBus, targetGraph);
 
-    public ProjectBuildFileParser createNoopParserThatAlwaysReturnsSuccess() {
-      // "true" is a unix utility that always returns error code 0 (success).
-      return new TestProjectBuildFileParser("true" /* pythonInterpreter */);
-    }
-
-    private class TestProjectBuildFileParser extends ProjectBuildFileParser {
-      public TestProjectBuildFileParser(String pythonInterpreter) {
-        super(
-            projectRoot,
-            pythonInterpreter,
-            ParserConfig.DEFAULT_ALLOW_EMPTY_GLOBS,
-            ParserConfig.DEFAULT_BUILD_FILE_NAME,
-            ImmutableSet.of("//java/com/facebook/defaultIncludeFile"),
-            buildRuleTypes.getAllDescriptions(),
-            new TestConsole(),
-            ImmutableMap.<String, String>of(),
-            BuckEventBusFactory.newInstance());
-      }
-
-      @Override
-      protected List<Map<String, Object>> getAllRulesInternal(Path buildFile)
-          throws IOException {
-        calls += 1;
-        return super.getAllRulesInternal(buildFile);
-      }
+      JavaLibrary libRule = (JavaLibrary) resolver.requireRule(libTarget);
+      assertEquals(
+          ImmutableSet.of(Paths.get("foo/bar/Bar.java"), Paths.get("foo/bar/Baz.java")),
+          libRule.getJavaSrcs());
     }
   }
 
+  @Test
+  public void whenBuildFileContainsSourcesUnderSymLinkDeletedSourcesNotRemovedUntilCacheCleaned()
+      throws Exception {
+    // This test depends on creating symbolic links which we cannot do on Windows.
+    assumeTrue(Platform.detect() != Platform.WINDOWS);
+
+    tempDir.newFolder("bar");
+    tempDir.newFile("bar/Bar.java");
+    tempDir.newFolder("foo");
+    Path bazSourceFile = tempDir.newFile("bar/Baz.java");
+    Path rootPath = tempDir.getRoot().toRealPath();
+    Files.createSymbolicLink(rootPath.resolve("foo/bar"), rootPath.resolve("bar"));
+
+    Path testBuckFile = rootPath.resolve("foo").resolve("BUCK");
+    Files.write(
+        testBuckFile,
+        "java_library(name = 'lib', srcs=glob(['bar/*.java']))\n".getBytes(UTF_8));
+
+    // Fetch //:lib to put it in cache.
+    BuildTarget libTarget = BuildTarget.builder(cellRoot, "//foo", "lib").build();
+    Iterable<BuildTarget> buildTargets = ImmutableList.of(libTarget);
+
+    {
+      TargetGraph targetGraph = parser.buildTargetGraph(
+          eventBus,
+          cell,
+          false,
+          executorService,
+          buildTargets);
+      BuildRuleResolver resolver = buildActionGraph(eventBus, targetGraph);
+
+      JavaLibrary libRule = (JavaLibrary) resolver.requireRule(libTarget);
+
+      assertEquals(
+          ImmutableSortedSet.of(Paths.get("foo/bar/Bar.java"), Paths.get("foo/bar/Baz.java")),
+          libRule.getJavaSrcs());
+    }
+
+    Files.delete(bazSourceFile);
+    WatchEvent<Path> deleteEvent = createPathEvent(
+        Paths.get("bar/Baz.java"),
+        StandardWatchEventKinds.ENTRY_DELETE);
+    parser.onFileSystemChange(deleteEvent);
+
+    {
+      TargetGraph targetGraph = parser.buildTargetGraph(
+          eventBus,
+          cell,
+          false,
+          executorService,
+          buildTargets);
+      BuildRuleResolver resolver = buildActionGraph(eventBus, targetGraph);
+
+      JavaLibrary libRule = (JavaLibrary) resolver.requireRule(libTarget);
+      assertEquals(
+          ImmutableSet.of(Paths.get("foo/bar/Bar.java")),
+          libRule.getJavaSrcs());
+    }
+  }
+
+  @Test
+  public void whenSymlinksForbiddenThenParseFailsOnSymlinkInSources()
+      throws Exception {
+    // This test depends on creating symbolic links which we cannot do on Windows.
+    assumeTrue(Platform.detect() != Platform.WINDOWS);
+
+    thrown.expect(HumanReadableException.class);
+    thrown.expectMessage(
+        "Target //foo:lib contains input files under a path which contains a symbolic link (" +
+        "{foo/bar=bar}). To resolve this, use separate rules and declare dependencies instead of " +
+        "using symbolic links.");
+
+    BuckConfig config = FakeBuckConfig.builder()
+        .setFilesystem(filesystem)
+        .setSections(
+            "[project]",
+            "allow_symlinks = forbid")
+        .build();
+    cell = new TestCellBuilder().setBuckConfig(config).setFilesystem(filesystem).build();
+
+    tempDir.newFolder("bar");
+    tempDir.newFile("bar/Bar.java");
+    tempDir.newFolder("foo");
+    Path rootPath = tempDir.getRoot().toRealPath();
+    Files.createSymbolicLink(rootPath.resolve("foo/bar"), rootPath.resolve("bar"));
+
+    Path testBuckFile = rootPath.resolve("foo").resolve("BUCK");
+    Files.write(
+        testBuckFile,
+        "java_library(name = 'lib', srcs=glob(['bar/*.java']))\n".getBytes(UTF_8));
+
+    BuildTarget libTarget = BuildTarget.builder(cellRoot, "//foo", "lib").build();
+    Iterable<BuildTarget> buildTargets = ImmutableList.of(libTarget);
+
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        buildTargets);
+  }
+
+  @Test
+  public void whenSymlinksAreInReadOnlyPathsCachingIsNotDisabled()
+      throws Exception {
+    // This test depends on creating symbolic links which we cannot do on Windows.
+    assumeTrue(Platform.detect() != Platform.WINDOWS);
+
+    Path rootPath = tempDir.getRoot().toRealPath();
+    BuckConfig config = FakeBuckConfig.builder()
+        .setFilesystem(filesystem)
+        .setSections(
+            "[project]",
+            "read_only_paths = " + rootPath.resolve("foo"))
+        .build();
+    cell = new TestCellBuilder().setBuckConfig(config).setFilesystem(filesystem).build();
+
+    tempDir.newFolder("bar");
+    tempDir.newFile("bar/Bar.java");
+    tempDir.newFolder("foo");
+
+    Files.createSymbolicLink(rootPath.resolve("foo/bar"), rootPath.resolve("bar"));
+
+    Path testBuckFile = rootPath.resolve("foo").resolve("BUCK");
+    Files.write(
+        testBuckFile,
+        "java_library(name = 'lib', srcs=glob(['bar/*.java']))\n".getBytes(UTF_8));
+
+    BuildTarget libTarget = BuildTarget.builder(cellRoot, "//foo", "lib").build();
+    Iterable<BuildTarget> buildTargets = ImmutableList.of(libTarget);
+
+    parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        buildTargets);
+
+    DaemonicParserState permState = parser.getPermState();
+    for (BuildTarget target : buildTargets) {
+      assertTrue(permState.lookupTargetNode(cell, target).isPresent());
+    }
+  }
+
+  @Test
+  public void buildTargetHashCodePopulatesCorrectly() throws Exception {
+    tempDir.newFolder("foo");
+
+    Path testFooBuckFile = tempDir.newFile("foo/BUCK");
+    Files.write(
+        testFooBuckFile,
+        "java_library(name = 'lib', visibility=['PUBLIC'])\n".getBytes(UTF_8));
+
+    BuildTarget fooLibTarget = BuildTarget.builder(cellRoot, "//foo", "lib").build();
+
+    // We can't precalculate the hash, since it depends on the buck version. Check for the presence
+    // of a hash for the right key.
+    HashCode hashCode = buildTargetGraphAndGetHashCodes(parser, fooLibTarget).get(fooLibTarget);
+
+    assertNotNull(hashCode);
+  }
+
+  @Test
+  public void readConfigReadsConfig() throws Exception {
+    Path buckFile = cellRoot.resolve("BUCK");
+    BuildTarget buildTarget = BuildTarget.of(
+        UnflavoredBuildTarget.of(
+            filesystem.getRootPath(),
+            Optional.<String>absent(),
+            "//",
+            "cake"));
+    Files.write(
+        buckFile,
+        Joiner.on("").join(
+            ImmutableList.of(
+                "genrule(\n" +
+                    "name = 'cake',\n" +
+                    "out = read_config('foo', 'bar', 'default') + '.txt',\n" +
+                    "cmd = 'touch $OUT'\n" +
+                    ")\n"))
+            .getBytes(UTF_8));
+
+    BuckConfig config =
+        FakeBuckConfig.builder()
+            .setFilesystem(filesystem)
+            .build();
+
+    Cell cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+    TargetNode<GenruleDescription.Arg> node = parser
+        .getTargetNode(eventBus, cell, false, executorService, buildTarget)
+        .castArg(GenruleDescription.Arg.class)
+        .get();
+
+    assertThat(node.getConstructorArg().out, is(equalTo("default.txt")));
+
+    config =
+        FakeBuckConfig.builder()
+            .setSections(ImmutableMap.of("foo", ImmutableMap.of("bar", "value")))
+            .setFilesystem(filesystem)
+            .build();
+    cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+    node = parser
+        .getTargetNode(eventBus, cell, false, executorService, buildTarget)
+        .castArg(GenruleDescription.Arg.class)
+        .get();
+
+    assertThat(node.getConstructorArg().out, is(equalTo("value.txt")));
+
+    config =
+        FakeBuckConfig.builder()
+            .setFilesystem(filesystem)
+            .setSections(ImmutableMap.of("foo", ImmutableMap.of("bar", "other value")))
+            .build();
+    cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+    node = parser
+        .getTargetNode(eventBus, cell, false, executorService, buildTarget)
+        .castArg(GenruleDescription.Arg.class)
+        .get();
+
+    assertThat(node.getConstructorArg().out, is(equalTo("other value.txt")));
+  }
+
+  @Test
+  public void whenBuckConfigEntryChangesThenCachedRulesAreInvalidated() throws Exception {
+    Path buckFile = cellRoot.resolve("BUCK");
+    Files.write(
+        buckFile,
+        Joiner.on("").join(
+            ImmutableList.of(
+                "read_config('foo', 'bar')\n",
+                "genrule(name = 'cake', out = 'file.txt', cmd = 'touch $OUT')\n"))
+            .getBytes(UTF_8));
+
+    BuckConfig config =
+        FakeBuckConfig.builder()
+            .setSections(ImmutableMap.of("foo", ImmutableMap.of("bar", "value")))
+            .setFilesystem(filesystem)
+            .build();
+
+    Cell cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+
+    parser.getAllTargetNodes(eventBus, cell, false, executorService, buckFile);
+
+    // Call filterAllTargetsInProject to request cached rules.
+    config =
+        FakeBuckConfig.builder()
+            .setFilesystem(filesystem)
+            .setSections(ImmutableMap.of("foo", ImmutableMap.of("bar", "other value")))
+            .build();
+
+    cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+
+    parser.getAllTargetNodes(eventBus, cell, false, executorService, buckFile);
+
+    // Test that the second parseBuildFile call repopulated the cache.
+    assertEquals("Should have invalidated.", 2, counter.calls);
+  }
+
+  @Test
+  public void whenBuckConfigAddedThenCachedRulesAreInvalidated() throws Exception {
+    Path buckFile = cellRoot.resolve("BUCK");
+    Files.write(
+        buckFile,
+        Joiner.on("").join(
+            ImmutableList.of(
+                "read_config('foo', 'bar')\n",
+                "genrule(name = 'cake', out = 'file.txt', cmd = 'touch $OUT')\n"))
+            .getBytes(UTF_8));
+
+    BuckConfig config =
+        FakeBuckConfig.builder()
+            .setFilesystem(filesystem)
+            .build();
+
+    Cell cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+
+    parser.getAllTargetNodes(eventBus, cell, false, executorService, buckFile);
+
+    // Call filterAllTargetsInProject to request cached rules.
+    config =
+        FakeBuckConfig.builder()
+            .setFilesystem(filesystem)
+            .setSections(ImmutableMap.of("foo", ImmutableMap.of("bar", "other value")))
+            .build();
+
+    cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+
+    parser.getAllTargetNodes(eventBus, cell, false, executorService, buckFile);
+
+    // Test that the second parseBuildFile call repopulated the cache.
+    assertEquals("Should have invalidated.", 2, counter.calls);
+  }
+
+  @Test
+  public void whenBuckConfigEntryRemovedThenCachedRulesAreInvalidated() throws Exception {
+    Path buckFile = cellRoot.resolve("BUCK");
+    Files.write(
+        buckFile,
+        Joiner.on("").join(
+            ImmutableList.of(
+                "read_config('foo', 'bar')\n",
+                "genrule(name = 'cake', out = 'file.txt', cmd = 'touch $OUT')\n"))
+            .getBytes(UTF_8));
+
+    BuckConfig config =
+        FakeBuckConfig.builder()
+            .setSections(ImmutableMap.of("foo", ImmutableMap.of("bar", "value")))
+            .setFilesystem(filesystem)
+            .build();
+
+    Cell cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+
+    parser.getAllTargetNodes(eventBus, cell, false, executorService, buckFile);
+
+    // Call filterAllTargetsInProject to request cached rules.
+    config =
+        FakeBuckConfig.builder()
+            .setFilesystem(filesystem)
+            .build();
+
+    cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+
+    parser.getAllTargetNodes(eventBus, cell, false, executorService, buckFile);
+
+    // Test that the second parseBuildFile call repopulated the cache.
+    assertEquals("Should have invalidated.", 2, counter.calls);
+  }
+
+  @Test
+  public void whenUnrelatedBuckConfigEntryChangesThenCachedRulesAreNotInvalidated()
+      throws Exception {
+    Path buckFile = cellRoot.resolve("BUCK");
+    Files.write(
+        buckFile,
+        Joiner.on("").join(
+            ImmutableList.of(
+                "read_config('foo', 'bar')\n",
+                "genrule(name = 'cake', out = 'file.txt', cmd = 'touch $OUT')\n"))
+            .getBytes(UTF_8));
+
+    BuckConfig config =
+        FakeBuckConfig.builder()
+            .setSections(
+                ImmutableMap.of(
+                    "foo",
+                    ImmutableMap.of(
+                        "bar", "value",
+                        "dead", "beef")))
+            .setFilesystem(filesystem)
+            .build();
+
+    Cell cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+
+    parser.getAllTargetNodes(eventBus, cell, false, executorService, buckFile);
+
+    // Call filterAllTargetsInProject to request cached rules.
+    config =
+        FakeBuckConfig.builder()
+            .setSections(
+                ImmutableMap.of(
+                    "foo",
+                    ImmutableMap.of(
+                        "bar", "value",
+                        "dead", "beef different")))
+            .setFilesystem(filesystem)
+            .build();
+
+    cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+
+    parser.getAllTargetNodes(eventBus, cell, false, executorService, buckFile);
+
+    // Test that the second parseBuildFile call repopulated the cache.
+    assertEquals("Should not have invalidated.", 1, counter.calls);
+  }
+
+  @Test(timeout = 20000)
+  public void resolveTargetSpecsDoesNotHangOnException() throws Exception {
+    Path buckFile = cellRoot.resolve("foo/BUCK");
+    Files.createDirectories(buckFile.getParent());
+    Files.write(buckFile, "# empty".getBytes(UTF_8));
+
+    buckFile = cellRoot.resolve("bar/BUCK");
+    Files.createDirectories(buckFile.getParent());
+    Files.write(
+        buckFile,
+        "I do not parse as python".getBytes(UTF_8));
+
+    thrown.expect(BuildFileParseException.class);
+    thrown.expectMessage("Parse error for build file");
+    thrown.expectMessage(Paths.get("bar/BUCK").toString());
+
+    parser.resolveTargetSpecs(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        ImmutableList.of(
+            TargetNodePredicateSpec.of(
+                Predicates.alwaysTrue(),
+                BuildFileSpec.fromRecursivePath(
+                    Paths.get("bar"),
+                    cell.getRoot())),
+            TargetNodePredicateSpec.of(
+                Predicates.alwaysTrue(),
+                BuildFileSpec.fromRecursivePath(
+                    Paths.get("foo"),
+                    cell.getRoot()))),
+        SpeculativeParsing.of(true),
+        Parser.ApplyDefaultFlavorsMode.ENABLED);
+  }
+
+  @Test
+  public void defaultFlavorsInRuleArgsAppliedToTarget() throws Exception {
+    // We depend on Xcode platforms for this test.
+    assumeTrue(Platform.detect() == Platform.MACOS);
+
+    Path buckFile = cellRoot.resolve("lib/BUCK");
+    Files.createDirectories(buckFile.getParent());
+    Files.write(
+        buckFile,
+        ("cxx_library(" +
+        "  name = 'lib', " +
+        "  srcs=glob(['*.c']), " +
+        "  defaults={'platform':'iphonesimulator-x86_64'}" +
+        ")").getBytes(UTF_8));
+
+    ImmutableSet<BuildTarget> result =
+        parser.buildTargetGraphForTargetNodeSpecs(
+            eventBus,
+            cell,
+            false,
+            executorService,
+            ImmutableList.of(
+                AbstractBuildTargetSpec.from(
+                    BuildTarget.builder(cellRoot, "//lib", "lib").build())),
+            /* ignoreBuckAutodepsFiles */ false,
+            Parser.ApplyDefaultFlavorsMode.ENABLED).getBuildTargets();
+
+    assertThat(
+        result,
+        hasItems(
+            BuildTarget.builder(cellRoot, "//lib", "lib")
+                .addFlavors(
+                    ImmutableFlavor.of("iphonesimulator-x86_64"),
+                    ImmutableFlavor.of("static"))
+                .build()));
+  }
+
+  @Test
+  public void defaultFlavorsInConfigAppliedToTarget() throws Exception {
+    // We depend on Xcode platforms for this test.
+    assumeTrue(Platform.detect() == Platform.MACOS);
+
+    Path buckFile = cellRoot.resolve("lib/BUCK");
+    Files.createDirectories(buckFile.getParent());
+    Files.write(
+        buckFile,
+        ("cxx_library(" +
+        "  name = 'lib', " +
+        "  srcs=glob(['*.c']) " +
+        ")").getBytes(UTF_8));
+
+    BuckConfig config = FakeBuckConfig.builder()
+        .setFilesystem(filesystem)
+        .setSections(
+            ImmutableMap.of(
+                "defaults.cxx_library",
+                ImmutableMap.of(
+                    "platform",
+                    "iphoneos-arm64",
+                    "type",
+                    "shared")))
+        .build();
+
+    cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+
+    ImmutableSet<BuildTarget> result =
+        parser.buildTargetGraphForTargetNodeSpecs(
+            eventBus,
+            cell,
+            false,
+            executorService,
+            ImmutableList.of(
+                AbstractBuildTargetSpec.from(
+                    BuildTarget.builder(cellRoot, "//lib", "lib").build())),
+            /* ignoreBuckAutodepsFiles */ false,
+            Parser.ApplyDefaultFlavorsMode.ENABLED).getBuildTargets();
+
+    assertThat(
+        result,
+        hasItems(
+            BuildTarget.builder(cellRoot, "//lib", "lib")
+                .addFlavors(
+                    ImmutableFlavor.of("iphoneos-arm64"),
+                    ImmutableFlavor.of("shared"))
+                .build()));
+  }
+
+  @Test
+  public void defaultFlavorsInArgsOverrideDefaultsFromConfig() throws Exception {
+    // We depend on Xcode platforms for this test.
+    assumeTrue(Platform.detect() == Platform.MACOS);
+
+    Path buckFile = cellRoot.resolve("lib/BUCK");
+    Files.createDirectories(buckFile.getParent());
+    Files.write(
+        buckFile,
+        ("cxx_library(" +
+        "  name = 'lib', " +
+        "  srcs=glob(['*.c']), " +
+        "  defaults={'platform':'macosx-x86_64'}" +
+        ")").getBytes(UTF_8));
+
+    BuckConfig config = FakeBuckConfig.builder()
+        .setFilesystem(filesystem)
+        .setSections(
+            ImmutableMap.of(
+                "defaults.cxx_library",
+                ImmutableMap.of(
+                    "platform",
+                    "iphoneos-arm64",
+                    "type",
+                    "shared")))
+        .build();
+
+    cell = new TestCellBuilder().setFilesystem(filesystem).setBuckConfig(config).build();
+
+    ImmutableSet<BuildTarget> result =
+        parser.buildTargetGraphForTargetNodeSpecs(
+            eventBus,
+            cell,
+            false,
+            executorService,
+            ImmutableList.of(
+                AbstractBuildTargetSpec.from(
+                    BuildTarget.builder(cellRoot, "//lib", "lib").build())),
+            /* ignoreBuckAutodepsFiles */ false,
+            Parser.ApplyDefaultFlavorsMode.ENABLED).getBuildTargets();
+
+    assertThat(
+        result,
+        hasItems(
+            BuildTarget.builder(cellRoot, "//lib", "lib")
+                .addFlavors(
+                    ImmutableFlavor.of("macosx-x86_64"),
+                    ImmutableFlavor.of("shared"))
+                .build()));
+  }
+
+  private BuildRuleResolver buildActionGraph(BuckEventBus eventBus, TargetGraph targetGraph) {
+    return Preconditions.checkNotNull(
+        ActionGraphCache.getFreshActionGraph(eventBus, targetGraph)).getResolver();
+  }
 
   /**
    * Populates the collection of known build targets that this Parser will use to construct an
    * action graph using all build files inside the given project root and returns an optionally
    * filtered set of build targets.
    *
-   * @param filesystem The project filesystem.
    * @param filter if specified, applied to each rule in rules. All matching rules will be included
    *     in the List returned by this method. If filter is null, then this method returns null.
    * @return The build targets in the project filtered by the given filter.
    */
   public static synchronized ImmutableSet<BuildTarget> filterAllTargetsInProject(
       Parser parser,
-      ProjectFilesystem filesystem,
-      ParserConfig parserConfig,
+      Cell cell,
       Predicate<TargetNode<?>> filter,
-      Console console,
-      ImmutableMap<String, String> environment,
       BuckEventBus buckEventBus,
-      boolean enableProfiling)
+      ListeningExecutorService executor)
       throws BuildFileParseException, BuildTargetException, IOException, InterruptedException {
     return FluentIterable
         .from(
             parser.buildTargetGraphForTargetNodeSpecs(
+                buckEventBus,
+                cell,
+                false,
+                executor,
                 ImmutableList.of(
                     TargetNodePredicateSpec.of(
                         filter,
                         BuildFileSpec.fromRecursivePath(
                             Paths.get(""),
-                            filesystem.getIgnorePaths()))),
-                parserConfig,
-                buckEventBus,
-                console,
-                environment,
-                enableProfiling).getSecond().getNodes())
+                            cell.getRoot()))),
+                /* ignoreBuckAutodepsFiles */ false)
+                .getTargetGraph().getNodes())
         .filter(filter)
         .transform(HasBuildTarget.TO_TARGET)
         .toSet();
   }
 
-  /**
-   * Analogue to {@link Suppliers#ofInstance(Object)}.
-   */
-  private static Supplier<BuildFileTree> ofInstance(final BuildFileTree buildFileTree) {
-    return new Supplier<BuildFileTree>() {
-      @Override
-      public BuildFileTree get() {
-        return buildFileTree;
-      }
-    };
+  private ImmutableMap<BuildTarget, HashCode> buildTargetGraphAndGetHashCodes(
+      Parser parser,
+      BuildTarget... buildTargets) throws Exception {
+    // Build the target graph so we can access the hash code cache.
+
+    ImmutableList<BuildTarget> buildTargetsList = ImmutableList.copyOf(buildTargets);
+    TargetGraph targetGraph = parser.buildTargetGraph(
+        eventBus,
+        cell,
+        false,
+        executorService,
+        buildTargetsList);
+
+    ImmutableMap.Builder<BuildTarget, HashCode> toReturn = ImmutableMap.builder();
+    for (TargetNode<?> node : targetGraph.getNodes()) {
+      toReturn.put(node.getBuildTarget(), node.getRawInputsHashCode());
+    }
+
+    return toReturn.build();
+  }
+
+  private static class ParseEventStartedCounter {
+    int calls = 0;
+
+    // We know that the ProjectBuildFileParser emits a Started event when it parses a build file.
+    @Subscribe
+    @SuppressWarnings("unused")
+    public void call(ParseBuckFileEvent.Started parseEvent) {
+      calls++;
+    }
   }
 }

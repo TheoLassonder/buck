@@ -1,50 +1,51 @@
 /*
  * Copyright 2014-present Facebook, Inc.
  *
- *  Licensed under the Apache License, Version 2.0 (the "License"); you may
- *  not use this file except in compliance with the License. You may obtain
- *  a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may
+ * not use this file except in compliance with the License. You may obtain
+ * a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- *  WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- *  License for the specific language governing permissions and limitations
- *  under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
  */
 
 package com.facebook.buck.android;
 
 import com.android.common.SdkConstants;
 import com.facebook.buck.android.NdkCxxPlatforms.TargetCpuType;
-import com.facebook.buck.cxx.StripStep;
 import com.facebook.buck.io.MorePaths;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTargets;
-import com.facebook.buck.model.Pair;
 import com.facebook.buck.rules.AbstractBuildRule;
 import com.facebook.buck.rules.AddToRuleKey;
 import com.facebook.buck.rules.BuildContext;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildableContext;
-import com.facebook.buck.rules.RuleKey;
 import com.facebook.buck.rules.RuleKeyAppendable;
+import com.facebook.buck.rules.RuleKeyObjectSink;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.step.AbstractExecutionStep;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.step.fs.CopyStep;
 import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
 import com.facebook.buck.step.fs.MkdirStep;
+import com.facebook.buck.util.immutables.BuckStyleImmutable;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.ImmutableSortedMap;
+
+import org.immutables.value.Value;
 
 import java.io.IOException;
 import java.nio.file.FileVisitResult;
@@ -52,7 +53,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.Map;
 
 import javax.annotation.Nullable;
 
@@ -62,34 +62,32 @@ import javax.annotation.Nullable;
  * the shared objects collected and stores this metadata in a text file, to be used later by
  * {@link ExopackageInstaller}.
  */
-public class CopyNativeLibraries extends AbstractBuildRule implements RuleKeyAppendable {
+public class CopyNativeLibraries extends AbstractBuildRule {
 
   private final ImmutableSet<SourcePath> nativeLibDirectories;
   @AddToRuleKey
   private final ImmutableSet<TargetCpuType> cpuFilters;
-
-  /**
-   * A map of native libraries to copy in which are already filtered using the above CPU filter.
-   * The keys of the map are the tuple of {@link TargetCpuType} and shared library SONAME
-   * (e.g. <"x86", "libtest.so">), and the values of the map are the full paths to the libraries.
-   */
-  private final ImmutableMap<TargetCpuType, NdkCxxPlatform> nativePlatforms;
-  private final ImmutableMap<Pair<TargetCpuType, String>, SourcePath> filteredNativeLibraries;
+  @AddToRuleKey
+  private final ImmutableSet<StrippedObjectDescription> stripLibRules;
+  @AddToRuleKey
+  private final ImmutableSet<StrippedObjectDescription> stripLibAssetRules;
 
   protected CopyNativeLibraries(
       BuildRuleParams buildRuleParams,
       SourcePathResolver resolver,
       ImmutableSet<SourcePath> nativeLibDirectories,
-      ImmutableSet<TargetCpuType> cpuFilters,
-      ImmutableMap<TargetCpuType, NdkCxxPlatform> nativePlatforms,
-      ImmutableMap<Pair<TargetCpuType, String>, SourcePath> filteredNativeLibraries) {
+      ImmutableSet<StrippedObjectDescription> stripLibRules,
+      ImmutableSet<StrippedObjectDescription> stripLibAssetRules,
+      ImmutableSet<TargetCpuType> cpuFilters) {
     super(buildRuleParams, resolver);
     this.nativeLibDirectories = nativeLibDirectories;
+    this.stripLibRules = stripLibRules;
+    this.stripLibAssetRules = stripLibAssetRules;
     this.cpuFilters = cpuFilters;
-    this.filteredNativeLibraries = filteredNativeLibraries;
-    this.nativePlatforms = nativePlatforms;
     Preconditions.checkArgument(
-        !nativeLibDirectories.isEmpty() || !filteredNativeLibraries.isEmpty(),
+        !nativeLibDirectories.isEmpty() ||
+            !stripLibRules.isEmpty() ||
+            !stripLibAssetRules.isEmpty(),
         "There should be at least one native library to copy.");
   }
 
@@ -97,30 +95,64 @@ public class CopyNativeLibraries extends AbstractBuildRule implements RuleKeyApp
     return getBinPath().resolve("libs");
   }
 
+  public Path getPathToNativeLibsAssetsDir() {
+    return getBinPath().resolve("assetLibs");
+  }
+
+  /**
+   * Returns the path that is the immediate parent of {@link #getPathToNativeLibsAssetsDir()} and
+   * {@link #getPathToNativeLibsDir()}.
+   */
+  public Path getPathToAllLibsDir() {
+    return getBinPath();
+  }
+
   public Path getPathToMetadataTxt() {
     return getBinPath().resolve("metadata.txt");
   }
 
   private Path getBinPath() {
-    return BuildTargets.getScratchPath(getBuildTarget(), "__native_libs_%s__");
+    return BuildTargets.getScratchPath(
+        getProjectFilesystem(),
+        getBuildTarget(),
+        "__native_libs_%s__");
   }
 
-  @Override
-  public RuleKey.Builder appendToRuleKey(RuleKey.Builder builder) {
-    // Hash in the pre-filtered native libraries we're pulling in.
-    ImmutableSortedMap<Pair<TargetCpuType, String>, SourcePath> sortedLibs =
-        ImmutableSortedMap.<Pair<TargetCpuType, String>, SourcePath>orderedBy(
-            Pair.<TargetCpuType, String>comparator())
-            .putAll(filteredNativeLibraries)
-            .build();
-    for (Map.Entry<Pair<TargetCpuType, String>, SourcePath> entry : sortedLibs.entrySet()) {
-      Pair<TargetCpuType, String> entryKey = entry.getKey();
-      builder.setReflectively(
-          String.format("lib(%s, %s)", entryKey.getFirst(), entryKey.getSecond()),
-          entry.getValue());
-    }
+  @VisibleForTesting
+  ImmutableSet<SourcePath> getNativeLibDirectories() {
+    return nativeLibDirectories;
+  }
 
-    return builder;
+  @VisibleForTesting
+  ImmutableSet<StrippedObjectDescription> getStrippedObjectDescriptions() {
+    return ImmutableSet.<StrippedObjectDescription>builder()
+        .addAll(stripLibRules)
+        .addAll(stripLibAssetRules)
+        .build();
+  }
+
+  private void addStepsForCopyingStrippedNativeLibrariesOrAssets(
+      ProjectFilesystem filesystem,
+      ImmutableSet<StrippedObjectDescription> strippedNativeLibrariesOrAssets,
+      Path destinationRootDir,
+      ImmutableList.Builder<Step> steps) {
+    for (StrippedObjectDescription strippedObject : strippedNativeLibrariesOrAssets) {
+      Optional<String> abiDirectoryComponent =
+          getAbiDirectoryComponent(strippedObject.getTargetCpuType());
+      Preconditions.checkState(abiDirectoryComponent.isPresent());
+
+      Path destination =
+          destinationRootDir
+              .resolve(abiDirectoryComponent.get())
+              .resolve(strippedObject.getStrippedObjectName());
+
+      steps.add(new MkdirStep(getProjectFilesystem(), destination.getParent()));
+      steps.add(
+          CopyStep.forFile(
+              filesystem,
+              getResolver().getAbsolutePath(strippedObject.getSourcePath()),
+              destination));
+    }
   }
 
   @Override
@@ -129,56 +161,53 @@ public class CopyNativeLibraries extends AbstractBuildRule implements RuleKeyApp
       BuildableContext buildableContext) {
     ImmutableList.Builder<Step> steps = ImmutableList.builder();
 
+    steps.add(new MakeCleanDirectoryStep(getProjectFilesystem(), getBinPath()));
+
     final Path pathToNativeLibs = getPathToNativeLibsDir();
-    steps.add(new MakeCleanDirectoryStep(pathToNativeLibs));
+    steps.add(new MakeCleanDirectoryStep(getProjectFilesystem(), pathToNativeLibs));
+
+    final Path pathToNativeLibsAssets = getPathToNativeLibsAssetsDir();
+    steps.add(new MakeCleanDirectoryStep(getProjectFilesystem(), pathToNativeLibsAssets));
 
     for (SourcePath nativeLibDir : nativeLibDirectories.asList().reverse()) {
-      copyNativeLibrary(getResolver().getPath(nativeLibDir), pathToNativeLibs, cpuFilters, steps);
+      copyNativeLibrary(
+          getProjectFilesystem(),
+          getResolver().getAbsolutePath(nativeLibDir),
+          pathToNativeLibs,
+          cpuFilters,
+          steps);
     }
 
-    // Copy in the pre-filtered native libraries.
-    for (Map.Entry<Pair<TargetCpuType, String>, SourcePath> entry :
-         filteredNativeLibraries.entrySet()) {
-      Optional<String> abiDirectoryComponent = getAbiDirectoryComponent(entry.getKey().getFirst());
-      Preconditions.checkState(abiDirectoryComponent.isPresent());
-      Path destination =
-          pathToNativeLibs
-              .resolve(abiDirectoryComponent.get())
-              .resolve(entry.getKey().getSecond());
-      NdkCxxPlatform platform =
-          Preconditions.checkNotNull(nativePlatforms.get(entry.getKey().getFirst()));
-      steps.add(new MkdirStep(destination.getParent()));
-      steps.add(
-          new StripStep(
-              platform.getCxxPlatform().getStrip().getCommandPrefix(getResolver()),
-              ImmutableList.of("--strip-unneeded"),
-              getResolver().getPath(entry.getValue()),
-              destination));
-    }
+    addStepsForCopyingStrippedNativeLibrariesOrAssets(
+        getProjectFilesystem(), stripLibRules, pathToNativeLibs, steps);
+
+    addStepsForCopyingStrippedNativeLibrariesOrAssets(
+        getProjectFilesystem(), stripLibAssetRules, pathToNativeLibsAssets, steps);
 
     final Path pathToMetadataTxt = getPathToMetadataTxt();
     steps.add(
         new AbstractExecutionStep("hash_native_libs") {
           @Override
-          public int execute(ExecutionContext context) {
-            ProjectFilesystem filesystem = context.getProjectFilesystem();
+          public StepExecutionResult execute(ExecutionContext context) {
+            ProjectFilesystem filesystem = getProjectFilesystem();
             ImmutableList.Builder<String> metadataLines = ImmutableList.builder();
             try {
-              for (Path nativeLib : filesystem.getFilesUnderPath(pathToNativeLibs)) {
+              for (Path nativeLib : filesystem.getFilesUnderPath(getPathToAllLibsDir())) {
                 String filesha1 = filesystem.computeSha1(nativeLib);
-                Path relativePath = pathToNativeLibs.relativize(nativeLib);
+                Path relativePath = getPathToAllLibsDir().relativize(nativeLib);
                 metadataLines.add(String.format("%s %s", relativePath.toString(), filesha1));
               }
               filesystem.writeLinesToPath(metadataLines.build(), pathToMetadataTxt);
             } catch (IOException e) {
               context.logError(e, "There was an error hashing native libraries.");
-              return 1;
+              return StepExecutionResult.ERROR;
             }
-            return 0;
+            return StepExecutionResult.SUCCESS;
           }
         });
 
     buildableContext.recordArtifact(pathToNativeLibs);
+    buildableContext.recordArtifact(pathToNativeLibsAssets);
     buildableContext.recordArtifact(pathToMetadataTxt);
 
     return steps.build();
@@ -190,7 +219,9 @@ public class CopyNativeLibraries extends AbstractBuildRule implements RuleKeyApp
     return null;
   }
 
-  public static void copyNativeLibrary(Path sourceDir,
+  public static void copyNativeLibrary(
+      final ProjectFilesystem filesystem,
+      Path sourceDir,
       final Path destinationDir,
       ImmutableSet<TargetCpuType> cpuFilters,
       ImmutableList.Builder<Step> steps) {
@@ -198,6 +229,7 @@ public class CopyNativeLibraries extends AbstractBuildRule implements RuleKeyApp
     if (cpuFilters.isEmpty()) {
       steps.add(
           CopyStep.forDirectory(
+              filesystem,
               sourceDir,
               destinationDir,
               CopyStep.DirectoryMode.CONTENTS_ONLY));
@@ -209,22 +241,27 @@ public class CopyNativeLibraries extends AbstractBuildRule implements RuleKeyApp
         final Path libSourceDir = sourceDir.resolve(abiDirectoryComponent.get());
         Path libDestinationDir = destinationDir.resolve(abiDirectoryComponent.get());
 
-        final MkdirStep mkDirStep = new MkdirStep(libDestinationDir);
+        final MkdirStep mkDirStep = new MkdirStep(filesystem, libDestinationDir);
         final CopyStep copyStep = CopyStep.forDirectory(
+            filesystem,
             libSourceDir,
             libDestinationDir,
             CopyStep.DirectoryMode.CONTENTS_ONLY);
         steps.add(
             new Step() {
               @Override
-              public int execute(ExecutionContext context) {
-                if (!context.getProjectFilesystem().exists(libSourceDir)) {
-                  return 0;
+              public StepExecutionResult execute(ExecutionContext context) {
+                // TODO(shs96c): Using a projectfilesystem here is almost definitely wrong.
+                // This is because each library may come from different build rules, which may be in
+                // different cells --- this check works by coincidence.
+                if (!filesystem.exists(libSourceDir)) {
+                  return StepExecutionResult.SUCCESS;
                 }
-                if (mkDirStep.execute(context) == 0 && copyStep.execute(context) == 0) {
-                  return 0;
+                if (mkDirStep.execute(context).isSuccess() &&
+                    copyStep.execute(context).isSuccess()) {
+                  return StepExecutionResult.SUCCESS;
                 }
-                return 1;
+                return StepExecutionResult.ERROR;
               }
 
               @Override
@@ -250,9 +287,7 @@ public class CopyNativeLibraries extends AbstractBuildRule implements RuleKeyApp
     steps.add(
         new AbstractExecutionStep("rename_native_executables") {
           @Override
-          public int execute(ExecutionContext context) {
-
-            ProjectFilesystem filesystem = context.getProjectFilesystem();
+          public StepExecutionResult execute(ExecutionContext context) {
             final ImmutableSet.Builder<Path> executablesBuilder = ImmutableSet.builder();
             try {
               filesystem.walkRelativeFileTree(destinationDir, new SimpleFileVisitor<Path>() {
@@ -273,9 +308,9 @@ public class CopyNativeLibraries extends AbstractBuildRule implements RuleKeyApp
               }
             } catch (IOException e) {
               context.logError(e, "Renaming native executables failed.");
-              return 1;
+              return StepExecutionResult.ERROR;
             }
-            return 0;
+            return StepExecutionResult.SUCCESS;
           }
         });
   }
@@ -287,16 +322,35 @@ public class CopyNativeLibraries extends AbstractBuildRule implements RuleKeyApp
    * not present or not supported, returns Optional.absent();
    */
   private static Optional<String> getAbiDirectoryComponent(TargetCpuType cpuType) {
-    String component = null;
-    if (cpuType.equals(NdkCxxPlatforms.TargetCpuType.ARM)) {
-      component = SdkConstants.ABI_ARMEABI;
-    } else if (cpuType.equals(NdkCxxPlatforms.TargetCpuType.ARMV7)) {
-      component = SdkConstants.ABI_ARMEABI_V7A;
-    } else if (cpuType.equals(NdkCxxPlatforms.TargetCpuType.X86)) {
-      component = SdkConstants.ABI_INTEL_ATOM;
-    } else if (cpuType.equals(NdkCxxPlatforms.TargetCpuType.MIPS)) {
-      component = SdkConstants.ABI_MIPS;
+    switch (cpuType) {
+      case ARM:
+        return Optional.of(SdkConstants.ABI_ARMEABI);
+      case ARMV7:
+        return Optional.of(SdkConstants.ABI_ARMEABI_V7A);
+      case X86:
+        return Optional.of(SdkConstants.ABI_INTEL_ATOM);
+      case X86_64:
+        return Optional.of(SdkConstants.ABI_INTEL_ATOM64);
+      case MIPS:
+        return Optional.of(SdkConstants.ABI_MIPS);
+      default:
+        return Optional.absent();
     }
-    return Optional.fromNullable(component);
+  }
+
+  @Value.Immutable
+  @BuckStyleImmutable
+  abstract static class AbstractStrippedObjectDescription implements RuleKeyAppendable {
+    public abstract SourcePath getSourcePath();
+    public abstract String getStrippedObjectName();
+    public abstract TargetCpuType getTargetCpuType();
+
+    @Override
+    public void appendToRuleKey(RuleKeyObjectSink sink) {
+      sink
+          .setReflectively("sourcePath", getSourcePath())
+          .setReflectively("strippedObjectName", getStrippedObjectName())
+          .setReflectively("targetCpuType", getTargetCpuType());
+    }
   }
 }

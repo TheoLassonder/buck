@@ -59,8 +59,9 @@ public class GenruleBuilder extends AbstractNodeBuilder<GenruleDescription.Arg> 
     return this;
   }
 
-  public GenruleBuilder setDeps(@Nullable ImmutableSortedSet<BuildTarget> deps) {
-    arg.deps = Optional.fromNullable(deps);
+  public GenruleBuilder setTests(ImmutableSortedSet<BuildTarget> tests) {
+    arg.tests = Optional.of(tests);
     return this;
   }
+
 }

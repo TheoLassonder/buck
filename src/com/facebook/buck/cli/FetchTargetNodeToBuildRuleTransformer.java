@@ -20,8 +20,8 @@ import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.parser.NoSuchBuildTargetException;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleResolver;
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.rules.Description;
-import com.facebook.buck.rules.RuleKeyBuilderFactory;
 import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.rules.TargetNode;
 import com.facebook.buck.rules.TargetNodeToBuildRuleTransformer;
@@ -30,26 +30,25 @@ import com.google.common.collect.ImmutableSet;
 class FetchTargetNodeToBuildRuleTransformer implements TargetNodeToBuildRuleTransformer {
 
   private final ImmutableSet<Description<?>> descriptions;
-  // TODO(user): Allow the TargetToActionGraph to be stateless.
+  // TODO(t6015090): Allow the TargetToActionGraph to be stateless.
   private final ImmutableSet.Builder<BuildTarget> downloadableTargets;
-  private final BuildTargetNodeToBuildRuleTransformer delegate;
+  private final DefaultTargetNodeToBuildRuleTransformer delegate;
 
   public FetchTargetNodeToBuildRuleTransformer(
       ImmutableSet<Description<?>> descriptions) {
     this.descriptions = descriptions;
 
     this.downloadableTargets = ImmutableSet.builder();
-    this.delegate = new BuildTargetNodeToBuildRuleTransformer();
+    this.delegate = new DefaultTargetNodeToBuildRuleTransformer();
   }
 
   @Override
   public <T> BuildRule transform(
       TargetGraph targetGraph,
       BuildRuleResolver ruleResolver,
-      TargetNode<T> targetNode,
-      RuleKeyBuilderFactory ruleKeyBuilderFactory) throws NoSuchBuildTargetException {
+      TargetNode<T> targetNode) throws NoSuchBuildTargetException {
     TargetNode<?> node = substituteTargetNodeIfNecessary(targetNode);
-    return delegate.transform(targetGraph, ruleResolver, node, ruleKeyBuilderFactory);
+    return delegate.transform(targetGraph, ruleResolver, node);
   }
 
   public ImmutableSet<BuildTarget> getDownloadableTargets() {

@@ -1,4 +1,5 @@
 from __future__ import print_function
+import glob
 import os
 import platform
 import subprocess
@@ -8,79 +9,106 @@ import textwrap
 
 from timing import monotonic_time_nanos
 from tracing import Tracing
-from buck_tool import BuckTool, which, check_output, JAVA_MAX_HEAP_SIZE_MB
+from buck_tool import BuckTool, check_output, JAVA_MAX_HEAP_SIZE_MB
 from buck_tool import BuckToolException, RestartBuck
+from subprocutils import which
 import buck_version
 
 JAVA_CLASSPATHS = [
     "build/abi_processor/classes",
     "build/classes",
+    "build/src-gen/classes",
+    "build/aosp/classes",
     "build/dx_classes",
     "src",
+    "src-gen",
     "third-party/java/android/sdklib.jar",
+    "third-party/java/android/sdk-common-24.2.3.jar",
+    "third-party/java/android/common-24.2.3.jar",
+    "third-party/java/android/layoutlib-api-24.2.3.jar",
     "third-party/java/aopalliance/aopalliance.jar",
     "third-party/java/args4j/args4j-2.0.30.jar",
     "third-party/java/asm/asm-debug-all-5.0.3.jar",
     "third-party/java/closure-templates/soy-excluding-deps.jar",
     "third-party/java/commons-compress/commons-compress-1.8.1.jar",
+    "third-party/java/commons-logging/commons-logging-1.2.jar",
+    "third-party/java/concurrent-locks/concurrent-locks-1.0.0.jar",
     "third-party/java/dd-plist/dd-plist.jar",
     "third-party/java/ddmlib/ddmlib-22.5.3.jar",
-    "third-party/java/eclipse/org.eclipse.core.contenttype_3.4.200.v20140207-1251.jar",
-    "third-party/java/eclipse/org.eclipse.core.jobs_3.6.1.v20141014-1248.jar",
-    "third-party/java/eclipse/org.eclipse.core.resources_3.9.1.v20140825-1431.jar",
-    "third-party/java/eclipse/org.eclipse.core.runtime_3.10.0.v20140318-2214.jar",
-    "third-party/java/eclipse/org.eclipse.equinox.common_3.6.200.v20130402-1505.jar",
-    "third-party/java/eclipse/org.eclipse.equinox.preferences_3.5.200.v20140224-1527.jar",
+    "third-party/java/eclipse/org.eclipse.core.contenttype_3.5.100.v20160418-1621.jar",
+    "third-party/java/eclipse/org.eclipse.core.jobs_3.8.0.v20160319-0610.jar",
+    "third-party/java/eclipse/org.eclipse.core.resources_3.11.0.v20160422-0304.jar",
+    "third-party/java/eclipse/org.eclipse.core.runtime_3.12.0.v20160427-1901.jar",
+    "third-party/java/eclipse/org.eclipse.equinox.common_3.8.0.v20160422-1942.jar",
+    "third-party/java/eclipse/org.eclipse.equinox.preferences_3.6.0.v20160120-1756.jar",
     "third-party/java/eclipse/org.eclipse.jdt.core.prefs",
-    "third-party/java/eclipse/org.eclipse.jdt.core_3.10.2.v20150120-1634.jar",
-    "third-party/java/eclipse/org.eclipse.osgi_3.10.2.v20150203-1939.jar",
+    "third-party/java/eclipse/org.eclipse.jdt.core_3.12.0.v20160426-1326.jar",
+    "third-party/java/eclipse/org.eclipse.osgi_3.11.0.v20160427-2120.jar",
     "third-party/java/gson/gson-2.2.4.jar",
-    "third-party/java/guava/guava-18.0.jar",
+    "third-party/java/guava/guava-19.0.jar",
     "third-party/java/guice/guice-3.0.jar",
     "third-party/java/guice/guice-assistedinject-3.0.jar",
     "third-party/java/guice/guice-multibindings-3.0.jar",
+    "third-party/java/httpcomponents/httpclient-4.4.1.jar",
+    "third-party/java/httpcomponents/httpcore-4.4.1.jar",
     "third-party/java/icu4j/icu4j-54.1.1.jar",
     "third-party/java/infer-annotations/infer-annotations-1.5.jar",
     "third-party/java/ini4j/ini4j-0.5.2.jar",
-    "third-party/java/jackson/jackson-annotations-2.0.5.jar",
-    "third-party/java/jackson/jackson-core-2.0.5.jar",
-    "third-party/java/jackson/jackson-databind-2.0.5.jar",
+    "third-party/java/jackson/jackson-annotations-2.5.5.jar",
+    "third-party/java/jackson/jackson-core-2.5.5.jar",
+    "third-party/java/jackson/jackson-databind-2.5.5.jar",
     "third-party/java/jackson/jackson-datatype-jdk7-2.5.0.jar",
+    "third-party/java/jackson-datatype-guava/jackson-datatype-guava-2.5.5.jar",
     "third-party/java/jetty/jetty-all-9.2.10.v20150310.jar",
+    "third-party/java/jna/jna-4.2.0.jar",
     "third-party/java/jsr/javax.inject-1.jar",
     "third-party/java/jsr/jsr305.jar",
+    "third-party/java/kxml2/kxml2-2.3.0.jar",
     "third-party/java/nailgun/nailgun-server-0.9.2-SNAPSHOT.jar",
-    "third-party/java/okhttp/okhttp-2.2.0.jar",
-    "third-party/java/okio/okio-1.2.0.jar",
+    "third-party/java/nuprocess/nuprocess-1.0.5-SNAPSHOT.jar",
+    "third-party/java/ObjCBridge/ObjCBridge.jar",
+    "third-party/java/okhttp/okhttp-3.3.0.jar",
+    "third-party/java/okio/okio-1.8.0.jar",
     "third-party/java/servlet-api/javax.servlet-api-3.1.0.jar",
-    "third-party/java/slf4j/slf4j-api-1.7.2.jar",
-    "third-party/java/slf4j/slf4j-log4j12-1.7.2.jar",
+    "third-party/java/slf4j/slf4j-jdk14-1.7.5.jar",
     "third-party/java/stringtemplate/ST-4.0.8.jar",
+    "third-party/java/thrift/libthrift-0.9.3.jar",
     "third-party/java/xz-java-1.3/xz-1.3.jar",
+    # maven/aether libs
+    "third-party/java/aether/aether-api-1.0.2.v20150114.jar",
+    "third-party/java/aether/aether-connector-basic-1.0.2.v20150114.jar",
+    "third-party/java/aether/aether-impl-1.0.0.v20140518.jar",
+    "third-party/java/aether/aether-spi-1.0.2.v20150114.jar",
+    "third-party/java/aether/aether-transport-http-1.0.2.v20150114.jar",
+    "third-party/java/aether/aether-util-1.0.2.v20150114.jar",
+    "third-party/java/maven/maven-aether-provider-3.2.5.jar",
+    "third-party/java/maven/maven-model-3.2.5.jar",
+    "third-party/java/maven/maven-model-builder-3.2.5.jar",
+    "third-party/java/slf4j/slf4j-api-1.7.5.jar",
+    "third-party/java/plexus/plexus-utils-3.0.20.jar",
+    "third-party/java/plexus/plexus-interpolation-1.21.jar",
+    "third-party/java/eden/eden.jar",
+    "third-party/java/eden/java-thrift-dependencies.jar",
 ]
 
 RESOURCES = {
     "abi_processor_classes": "build/abi_processor/classes",
     "android_agent_path": "assets/android/agent.apk",
-    "buck_client": "build/ng",
     "buck_server": "bin/buck",
-    "dx": "third-party/java/dx-from-kitkat/etc/dx",
+    "dx": "third-party/java/dx/etc/dx",
     "jacoco_agent_jar": "third-party/java/jacoco/jacocoagent.jar",
-    "logging_config_file": "config/logging.properties",
+    "libjcocoa.dylib": "third-party/java/ObjCBridge/libjcocoa.dylib",
+    "logging_config_file": "config/logging.properties.st",
     "native_exopackage_fake_path": "assets/android/native-exopackage-fakes.apk",
     "path_to_asm_jar": "third-party/java/asm/asm-debug-all-5.0.3.jar",
     "path_to_buck_py": "src/com/facebook/buck/parser/buck.py",
-    "path_to_compile_asset_catalogs_build_phase_sh": (
-        "src/com/facebook/buck/apple/compile_asset_catalogs_build_phase.sh"),
-    "path_to_compile_asset_catalogs_py": (
-        "src/com/facebook/buck/apple/compile_asset_catalogs.py"),
     "path_to_intellij_py": "src/com/facebook/buck/command/intellij.py",
     "path_to_pathlib_py": "third-party/py/pathlib/pathlib.py",
-    "path_to_pex": "src/com/facebook/buck/python/pex.py",
-    "path_to_python_test_main": "src/com/facebook/buck/python/__test_main__.py",
+    "path_to_pex": "src/com/facebook/buck/python/make_pex.py",
+    "path_to_pywatchman": "third-party/py/pywatchman",
+    "path_to_scandir_py": "third-party/py/scandir/scandir.py",
     "path_to_sh_binary_template": "src/com/facebook/buck/shell/sh_binary_template",
     "path_to_static_content": "webserver/static",
-    "quickstart_origin_dir": "src/com/facebook/buck/cli/quickstart/android",
     "report_generator_jar": "build/report-generator.jar",
     "testrunner_classes": "build/testrunner/classes",
 }
@@ -170,18 +198,6 @@ class BuckRepo(BuckTool):
     def _join_buck_dir(self, relative_path):
         return os.path.join(self._buck_dir, *(relative_path.split('/')))
 
-    def _is_dirty(self):
-        if self._is_buck_repo_dirty_override:
-            return self._is_buck_repo_dirty_override == "1"
-
-        if not self._is_git:
-            return False
-
-        output = check_output(
-            ['git', 'status', '--porcelain'],
-            cwd=self._buck_dir)
-        return bool(output.strip())
-
     def _has_local_changes(self):
         if not self._is_git:
             return False
@@ -257,7 +273,6 @@ class BuckRepo(BuckTool):
                 ant = self._check_for_ant()
                 self._run_ant_clean(ant)
                 self._run_ant(ant)
-                open(self._build_success_file, 'w').close()
                 print("All done, continuing with build.", file=sys.stderr)
 
     def _has_resource(self, resource):
@@ -268,6 +283,18 @@ class BuckRepo(BuckTool):
 
     def _get_buck_version_uid(self):
         with Tracing('BuckRepo._get_buck_version_uid'):
+
+            # Check if the developer has requested that we impersonate some other version.
+            fake_buck_version_file_path = os.path.join(self._buck_dir, ".fakebuckversion")
+            if os.path.exists(fake_buck_version_file_path):
+                with open(fake_buck_version_file_path) as fake_buck_version_file:
+                    fake_buck_version = fake_buck_version_file.read().strip()
+
+                print(textwrap.dedent("""\
+::: Faking buck version %s, despite your buck directory not being that version!
+::: We hope you know what you are doing...""" % fake_buck_version),
+                      file=sys.stderr)
+                return fake_buck_version
 
             # First try to get the "clean" buck version.  If it succeeds,
             # return it.
@@ -316,7 +343,9 @@ class BuckRepo(BuckTool):
             "-Dbuck.git_commit={0}".format(self._get_git_revision()),
             "-Dbuck.git_commit_timestamp={0}".format(
                 self._get_git_commit_timestamp()),
-            "-Dbuck.git_dirty={0}".format(int(self._is_dirty())),
+            "-Dbuck.git_dirty={0}".format(
+                int(self._is_buck_repo_dirty_override == "1" or
+                    buck_version.is_dirty(self._buck_dir))),
         ]
 
     def _get_bootstrap_classpath(self):

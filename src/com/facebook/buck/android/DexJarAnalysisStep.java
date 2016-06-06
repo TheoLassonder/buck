@@ -18,6 +18,7 @@ package com.facebook.buck.android;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -31,20 +32,20 @@ import java.util.zip.ZipFile;
  */
 class DexJarAnalysisStep implements Step {
 
+  private final ProjectFilesystem filesystem;
   private final Path dexPath;
   private final Path dexMetaPath;
 
-  DexJarAnalysisStep(Path dexPath, Path dexMetaPath) {
+  DexJarAnalysisStep(ProjectFilesystem filesystem, Path dexPath, Path dexMetaPath) {
+    this.filesystem = filesystem;
     this.dexPath = dexPath;
     this.dexMetaPath = dexMetaPath;
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
 
-    ProjectFilesystem projectFilesystem = context.getProjectFilesystem();
-
-    try (ZipFile zf = new ZipFile(projectFilesystem.resolve(dexPath).toFile())) {
+    try (ZipFile zf = new ZipFile(filesystem.resolve(dexPath).toFile())) {
       ZipEntry classesDexEntry = zf.getEntry("classes.dex");
       if (classesDexEntry == null) {
         throw new RuntimeException("could not find classes.dex in jar");
@@ -55,17 +56,17 @@ class DexJarAnalysisStep implements Step {
         throw new RuntimeException("classes.dex size should be known");
       }
 
-      projectFilesystem.writeContentsToPath(
+      filesystem.writeContentsToPath(
           String.format(
               "jar:%s dex:%s",
-              projectFilesystem.getFileSize(dexPath),
+              filesystem.getFileSize(dexPath),
               uncompressedSize),
           dexMetaPath);
 
-      return 0;
+      return StepExecutionResult.SUCCESS;
     } catch (IOException e) {
       context.logError(e, "There was an error in smart dexing step.");
-      return 1;
+      return StepExecutionResult.ERROR;
     }
   }
 

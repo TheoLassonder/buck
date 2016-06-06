@@ -26,6 +26,7 @@ import com.facebook.buck.util.MoreIterables;
 import com.google.common.base.Functions;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 
@@ -39,13 +40,11 @@ public class ThriftCompilerStepTest {
   @Test
   public void thriftCompilerStepUsesCorrectCommand() {
     ProjectFilesystem projectFilesystem = new FakeProjectFilesystem();
-    ExecutionContext context = TestExecutionContext.newBuilder()
-        .setProjectFilesystem(projectFilesystem)
-        .build();
+    ExecutionContext context = TestExecutionContext.newInstance();
 
     // Setup some dummy values for inputs to the ThriftCompilerStep
-    Path compiler = Paths.get("compiler");
-    ImmutableList<String> flags = ImmutableList.of("--allow-64-bit");
+    ImmutableMap<String, String> compilerEnvironment = ImmutableMap.<String, String>of();
+    ImmutableList<String> compilerPrefix = ImmutableList.of("compiler", "--allow-64-bit");
     Path outputDir = Paths.get("output-dir");
     Path input = Paths.get("test.thrift");
     String language = "cpp";
@@ -54,8 +53,9 @@ public class ThriftCompilerStepTest {
 
     // Create our ThriftCompilerStep to test.
     ThriftCompilerStep thriftCompilerStep = new ThriftCompilerStep(
-        compiler,
-        flags,
+        projectFilesystem.getRootPath(),
+        compilerEnvironment,
+        compilerPrefix,
         outputDir,
         input,
         language,
@@ -64,8 +64,7 @@ public class ThriftCompilerStepTest {
 
     // Verify it uses the expected command.
     ImmutableList<String> expected = ImmutableList.<String>builder()
-        .add(compiler.toString())
-        .addAll(flags)
+        .addAll(compilerPrefix)
         .add("--gen", String.format("%s:%s", language, Joiner.on(',').join(options)))
         .addAll(
             MoreIterables.zipAndConcat(

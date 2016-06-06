@@ -19,6 +19,7 @@ package com.facebook.buck.android;
 import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.shell.ShellStep;
 import com.facebook.buck.step.ExecutionContext;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.util.Verbosity;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
@@ -28,12 +29,15 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Collection;
 import java.util.EnumSet;
 import java.util.Set;
 
 import javax.annotation.CheckForNull;
+import javax.annotation.Nullable;
 
 public class DxStep extends ShellStep {
 
@@ -43,7 +47,7 @@ public class DxStep extends ShellStep {
       "";
 
   /** Options to pass to {@code dx}. */
-  public static enum Option {
+  public enum Option {
     /** Specify the {@code --no-optimize} flag when running {@code dx}. */
     NO_OPTIMIZE,
 
@@ -72,18 +76,22 @@ public class DxStep extends ShellStep {
     }
   };
 
+  private final ProjectFilesystem filesystem;
   private final Path outputDexFile;
   private final Set<Path> filesToDex;
   private final Set<Option> options;
   private final Supplier<String> getPathToCustomDx;
+
+  @Nullable
+  private Collection<String> resourcesReferencedInCode;
 
   /**
    * @param outputDexFile path to the file where the generated classes.dex should go.
    * @param filesToDex each element in this set is a path to a .class file, a zip file of .class
    *     files, or a directory of .class files.
    */
-  public DxStep(Path outputDexFile, Iterable<Path> filesToDex) {
-    this(outputDexFile, filesToDex, EnumSet.noneOf(DxStep.Option.class));
+  public DxStep(ProjectFilesystem filesystem, Path outputDexFile, Iterable<Path> filesToDex) {
+    this(filesystem, outputDexFile, filesToDex, EnumSet.noneOf(DxStep.Option.class));
   }
 
   /**
@@ -92,13 +100,23 @@ public class DxStep extends ShellStep {
    *     files, or a directory of .class files.
    * @param options to pass to {@code dx}.
    */
-  public DxStep(Path outputDexFile, Iterable<Path> filesToDex, EnumSet<Option> options) {
-    this(outputDexFile, filesToDex, options, DEFAULT_GET_CUSTOM_DX);
+  public DxStep(
+      ProjectFilesystem filesystem,
+      Path outputDexFile,
+      Iterable<Path> filesToDex,
+      EnumSet<Option> options) {
+    this(filesystem, outputDexFile, filesToDex, options, DEFAULT_GET_CUSTOM_DX);
   }
 
   @VisibleForTesting
-  DxStep(Path outputDexFile, Iterable<Path> filesToDex, EnumSet<Option> options,
+  DxStep(
+      ProjectFilesystem filesystem,
+      Path outputDexFile,
+      Iterable<Path> filesToDex,
+      EnumSet<Option> options,
       Supplier<String> getPathToCustomDx) {
+    super(filesystem.getRootPath());
+    this.filesystem = filesystem;
     this.outputDexFile = outputDexFile;
     this.filesToDex = ImmutableSet.copyOf(filesToDex);
     this.options = Sets.immutableEnumSet(options);
@@ -150,19 +168,18 @@ public class DxStep extends ShellStep {
       builder.add("--verbose");
     }
 
-    ProjectFilesystem projectFilesystem = context.getProjectFilesystem();
-    builder.add("--output", projectFilesystem.resolve(outputDexFile).toString());
+    builder.add("--output", filesystem.resolve(outputDexFile).toString());
     for (Path fileToDex : filesToDex) {
-      builder.add(projectFilesystem.resolve(fileToDex).toString());
+      builder.add(filesystem.resolve(fileToDex).toString());
     }
 
     return builder.build();
   }
 
   @Override
-  public int execute(ExecutionContext context) throws InterruptedException {
+  public StepExecutionResult execute(ExecutionContext context) throws InterruptedException {
     if (options.contains(Option.RUN_IN_PROCESS)) {
-      return executeInProcess(context);
+      return StepExecutionResult.of(executeInProcess(context));
     } else {
       return super.execute(context);
     }
@@ -173,16 +190,22 @@ public class DxStep extends ShellStep {
 
     // The first arguments should be ".../dx --dex" ("...\dx.bat --dex on Windows).  Strip them off
     // because we bypass the dispatcher and go straight to the dexer.
-    Preconditions.checkState(argv.get(0).endsWith("/dx") || argv.get(0).endsWith("\\dx.bat"));
+    Preconditions.checkState(
+        argv.get(0).endsWith(File.separator + "dx") || argv.get(0).endsWith("\\dx.bat"));
     Preconditions.checkState(argv.get(1).equals("--dex"));
     ImmutableList<String> args = argv.subList(2, argv.size());
 
     try {
-      return new com.android.dx.command.dexer.Main().run(
+      com.android.dx.command.dexer.Main dexer = new com.android.dx.command.dexer.Main();
+      int returncode = dexer.run(
           args.toArray(new String[args.size()]),
           context.getStdOut(),
           context.getStdErr()
       );
+      if (returncode == 0) {
+        resourcesReferencedInCode = dexer.getReferencedResourceNames();
+      }
+      return returncode;
     } catch (IOException e) {
       e.printStackTrace(context.getStdErr());
       return 1;
@@ -204,4 +227,15 @@ public class DxStep extends ShellStep {
     return "dx";
   }
 
+  /**
+   * Return the names of resources referenced in the code that was dexed.
+   * This is only valid after the step executes successfully and
+   * only when in-process dexing is used.
+   * It only returns resources referenced in java classes being dexed,
+   * not merged dex files.
+   */
+  @Nullable
+  Collection<String> getResourcesReferencedInCode() {
+    return resourcesReferencedInCode;
+  }
 }

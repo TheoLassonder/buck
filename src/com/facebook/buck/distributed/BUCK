@@ -1,0 +1,8 @@
+standard_java_library(
+  immutable_types = [
+    'DistBuildStatus',
+  ],
+  tests = [
+    '//test/com/facebook/buck/distributed:distributed',
+  ],
+)

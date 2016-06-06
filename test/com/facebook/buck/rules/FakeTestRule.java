@@ -19,7 +19,7 @@ import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
 import com.facebook.buck.test.TestResults;
-import com.facebook.buck.test.selectors.TestSelectorList;
+import com.facebook.buck.test.TestRunningOptions;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -43,7 +43,7 @@ public class FakeTestRule extends AbstractBuildRule implements TestRule {
       ImmutableSortedSet<BuildRule> deps) {
     this(
         new FakeBuildRuleParamsBuilder(target)
-            .setDeps(deps)
+            .setDeclaredDeps(deps)
             .build(),
         resolver,
         labels
@@ -97,18 +97,15 @@ public class FakeTestRule extends AbstractBuildRule implements TestRule {
   }
 
   @Override
-  public boolean hasTestResultFiles(ExecutionContext executionContext) {
+  public boolean hasTestResultFiles() {
     return false;
   }
 
   @Override
   public ImmutableList<Step> runTests(
-      BuildContext buildContext,
       ExecutionContext executionContext,
-      boolean isDryRun,
-      boolean isShufflingTests,
-      TestSelectorList testSelectorList,
-      TestRule.TestReportingCallback testReportingCallback) {
+      TestRunningOptions options,
+      TestReportingCallback testReportingCallback) {
     return testSteps;
   }
 

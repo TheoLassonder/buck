@@ -29,16 +29,17 @@ public class AssumeAndroidPlatform {
   private AssumeAndroidPlatform() {}
 
   public static void assumeNdkIsAvailable() {
-    assumeNotNull(getAndroidDirectoryResolver().findAndroidNdkDir().orNull());
+    assumeNotNull(getAndroidDirectoryResolver().getNdkOrAbsent().orNull());
   }
 
   public static void assumeSdkIsAvailable() {
-    assumeNotNull(getAndroidDirectoryResolver().findAndroidSdkDirSafe().orNull());
+    assumeNotNull(getAndroidDirectoryResolver().getSdkOrAbsent().orNull());
   }
 
   private static AndroidDirectoryResolver getAndroidDirectoryResolver() {
-    ProjectFilesystem projectFilesystem = new ProjectFilesystem(Paths.get("."));
+    ProjectFilesystem projectFilesystem = new ProjectFilesystem(Paths.get(".").toAbsolutePath());
     return new DefaultAndroidDirectoryResolver(projectFilesystem,
+        Optional.<String>absent(),
         Optional.<String>absent(),
         new DefaultPropertyFinder(projectFilesystem, ImmutableMap.copyOf(System.getenv())));
   }

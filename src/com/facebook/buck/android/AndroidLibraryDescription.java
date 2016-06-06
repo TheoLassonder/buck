@@ -16,12 +16,14 @@
 
 package com.facebook.buck.android;
 
-import com.facebook.buck.android.AndroidLibraryGraphEnhancer.ResourceDependencyMode;
-import com.facebook.buck.java.AnnotationProcessingParams;
-import com.facebook.buck.java.JavaLibrary;
-import com.facebook.buck.java.JavaLibraryDescription;
-import com.facebook.buck.java.JavaSourceJar;
-import com.facebook.buck.java.JavacOptions;
+import com.facebook.buck.jvm.common.ResourceValidator;
+import com.facebook.buck.jvm.java.CalculateAbi;
+import com.facebook.buck.jvm.java.JavaLibrary;
+import com.facebook.buck.jvm.java.JavaLibraryDescription;
+import com.facebook.buck.jvm.java.JavaSourceJar;
+import com.facebook.buck.jvm.java.JavacOptionsFactory;
+import com.facebook.buck.jvm.java.JavacOptions;
+import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.Flavor;
 import com.facebook.buck.model.Flavored;
 import com.facebook.buck.rules.BuildRule;
@@ -29,10 +31,13 @@ import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.BuildRuleType;
 import com.facebook.buck.rules.BuildRules;
+import com.facebook.buck.rules.BuildTargetSourcePath;
 import com.facebook.buck.rules.Description;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.rules.SourcePaths;
+import com.facebook.buck.rules.TargetGraph;
+import com.facebook.buck.util.DependencyMode;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.base.Optional;
 import com.google.common.base.Suppliers;
@@ -68,34 +73,31 @@ public class AndroidLibraryDescription
 
   @Override
   public <A extends Arg> BuildRule createBuildRule(
+      TargetGraph targetGraph,
       BuildRuleParams params,
       BuildRuleResolver resolver,
       A args) {
     SourcePathResolver pathResolver = new SourcePathResolver(resolver);
     if (params.getBuildTarget().getFlavors().contains(JavaLibrary.SRC_JAR)) {
-      return new JavaSourceJar(params, pathResolver, args.srcs.get());
+      return new JavaSourceJar(params, pathResolver, args.srcs.get(), args.mavenCoords);
     }
 
-    JavacOptions.Builder javacOptionsBuilder =
-        JavaLibraryDescription.getJavacOptions(
-            pathResolver,
-            args,
-            defaultOptions);
-
-    AnnotationProcessingParams annotationParams = args.buildAnnotationProcessingParams(
-        params.getBuildTarget(),
-        params.getProjectFilesystem(),
-        resolver);
-    javacOptionsBuilder.setAnnotationProcessingParams(annotationParams);
-
-    JavacOptions javacOptions = javacOptionsBuilder.build();
+    JavacOptions javacOptions = JavacOptionsFactory.create(
+        defaultOptions,
+        params,
+        resolver,
+        pathResolver,
+        args
+    );
 
     AndroidLibraryGraphEnhancer graphEnhancer = new AndroidLibraryGraphEnhancer(
         params.getBuildTarget(),
         params.copyWithExtraDeps(
             Suppliers.ofInstance(resolver.getAllRules(args.exportedDeps.get()))),
         javacOptions,
-        ResourceDependencyMode.FIRST_ORDER);
+        DependencyMode.FIRST_ORDER,
+        /* forceFinalResourceIds */ false,
+        args.resourceUnionPackage);
 
     boolean hasDummyRDotJavaFlavor =
         params.getBuildTarget().getFlavors().contains(DUMMY_R_DOT_JAVA_FLAVOR);
@@ -108,42 +110,57 @@ public class AndroidLibraryDescription
     } else {
       ImmutableSet<Path> additionalClasspathEntries = ImmutableSet.of();
       if (dummyRDotJava.isPresent()) {
-        additionalClasspathEntries = ImmutableSet.of(dummyRDotJava.get().getRDotJavaBinFolder());
+        additionalClasspathEntries = ImmutableSet.of(dummyRDotJava.get().getPathToOutput());
         ImmutableSortedSet<BuildRule> newDeclaredDeps = ImmutableSortedSet.<BuildRule>naturalOrder()
-            .addAll(params.getDeclaredDeps())
+            .addAll(params.getDeclaredDeps().get())
             .add(dummyRDotJava.get())
             .build();
         params = params.copyWithDeps(
             Suppliers.ofInstance(newDeclaredDeps),
-            Suppliers.ofInstance(params.getExtraDeps()));
+            params.getExtraDeps());
       }
 
+      BuildTarget abiJarTarget = params.getBuildTarget().withAppendedFlavors(CalculateAbi.FLAVOR);
+
       ImmutableSortedSet<BuildRule> exportedDeps = resolver.getAllRules(args.exportedDeps.get());
-      return new AndroidLibrary(
-          params.appendExtraDeps(
-              Iterables.concat(
-                  BuildRules.getExportedRules(
+      AndroidLibrary library =
+          resolver.addToIndex(
+              new AndroidLibrary(
+                  params.appendExtraDeps(
                       Iterables.concat(
-                          params.getDeclaredDeps(),
-                          exportedDeps,
-                          resolver.getAllRules(args.providedDeps.get()))),
-                  pathResolver.filterBuildRuleInputs(
-                      javacOptions.getInputs(pathResolver)))),
-          pathResolver,
-          args.srcs.get(),
-          JavaLibraryDescription.validateResources(
+                          BuildRules.getExportedRules(
+                              Iterables.concat(
+                                  params.getDeclaredDeps().get(),
+                                  exportedDeps,
+                                  resolver.getAllRules(args.providedDeps.get()))),
+                          pathResolver.filterBuildRuleInputs(
+                              javacOptions.getInputs(pathResolver)))),
+                  pathResolver,
+                  args.srcs.get(),
+                  ResourceValidator.validateResources(
+                      pathResolver,
+                      params.getProjectFilesystem(), args.resources.get()),
+                  args.proguardConfig.transform(
+                      SourcePaths.toSourcePath(params.getProjectFilesystem())),
+                  args.postprocessClassesCommands.get(),
+                  exportedDeps,
+                  resolver.getAllRules(args.providedDeps.get()),
+                  new BuildTargetSourcePath(abiJarTarget),
+                  additionalClasspathEntries,
+                  javacOptions,
+                  args.resourcesRoot,
+                  args.mavenCoords,
+                  args.manifest,
+                  args.tests.get()));
+
+      resolver.addToIndex(
+          CalculateAbi.of(
+              abiJarTarget,
               pathResolver,
-              args,
-              params.getProjectFilesystem()),
-          args.proguardConfig.transform(SourcePaths.toSourcePath(params.getProjectFilesystem())),
-          args.postprocessClassesCommands.get(),
-          exportedDeps,
-          resolver.getAllRules(args.providedDeps.get()),
-          additionalClasspathEntries,
-          javacOptions,
-          args.resourcesRoot,
-          args.manifest,
-          /* isPrebuiltAar */ false);
+              params,
+              new BuildTargetSourcePath(library.getBuildTarget())));
+
+      return library;
     }
   }
 
@@ -157,5 +174,6 @@ public class AndroidLibraryDescription
   @SuppressFieldNotInitialized
   public static class Arg extends JavaLibraryDescription.Arg {
     public Optional<SourcePath> manifest;
+    public Optional<String> resourceUnionPackage;
   }
 }

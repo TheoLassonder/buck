@@ -1,43 +1,36 @@
-RAW_PARSER_SRCS = [
-  'RawParser.java',
+RULES_SRCS = [
+  'JsonConcatenate.java',
 ]
-
 java_library(
-  name = 'raw_parser',
-  srcs = RAW_PARSER_SRCS,
-  deps = [
-    '//third-party/java/guava:guava',
-    '//third-party/java/jsr:jsr305',
-    '//third-party/java/gson:gson',
-  ],
-  visibility = [
-    'PUBLIC',
-  ],
+  name = 'rules',
+  srcs = RULES_SRCS,
+  autodeps = True,
+  visibility = [ 'PUBLIC' ],
 )
 
+STEPS_SRCS = [
+  'JsonConcatenateStep.java',
+]
 java_library(
+  name = 'steps',
+  srcs = STEPS_SRCS,
+  autodeps = True,
+  visibility = [ 'PUBLIC' ],
+)
+
+java_immutables_library(
   name = 'json',
-  srcs = glob(['*.java'], excludes = RAW_PARSER_SRCS),
+  srcs = glob(['*.java'], excludes = RULES_SRCS + STEPS_SRCS),
+  immutable_types = [
+    'ProjectBuildFileParserOptions',
+  ],
+  tests = [
+    '//test/com/facebook/buck/json:json',
+  ],
   resources = [
-    "buck.py",
+    'buck.py',
   ],
-  deps = [
-    ':raw_parser',
-    '//src/com/facebook/buck/event:event',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/log:api',
-    '//src/com/facebook/buck/parser:config',
-    '//src/com/facebook/buck/rules:build_rule',
-    '//src/com/facebook/buck/util/environment:environment',
-    '//src/com/facebook/buck/util:constants',
-    '//src/com/facebook/buck/util:escaper',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/util:io',
-    '//src/com/facebook/buck/util:util',
-    '//third-party/java/gson:gson',
-    '//third-party/java/guava:guava',
-    '//third-party/java/jsr:jsr305',
-  ],
+  autodeps = True,
   visibility = [
     'PUBLIC',
   ],
@@ -50,6 +43,8 @@ python_library(
   ],
   deps = [
     '//third-party/py/pathlib:pathlib',
+    '//third-party/py/pywatchman:pywatchman',
+    '//third-party/py/scandir:scandir',
   ],
 )
 

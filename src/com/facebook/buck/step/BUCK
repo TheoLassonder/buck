@@ -1,22 +1,8 @@
-java_immutables_library(
-  name = 'step',
-  srcs = glob(['*.java']),
-  deps = [
-    '//src/com/facebook/buck/android:exceptions',
-    '//src/com/facebook/buck/android:utils',
-    '//src/com/facebook/buck/event:event',
-    '//src/com/facebook/buck/io:io',
-    '//src/com/facebook/buck/java:packagefinder',
-    '//src/com/facebook/buck/log:api',
-    '//src/com/facebook/buck/model:model',
-    '//src/com/facebook/buck/util:exceptions',
-    '//src/com/facebook/buck/util:io',
-    '//src/com/facebook/buck/util:util',
-    '//src/com/facebook/buck/util/environment:platform',
-    '//src/com/facebook/buck/util/concurrent:concurrent',
-    '//third-party/java/guava:guava',
-    '//third-party/java/jsr:jsr305',
-    '//third-party/java/jackson:jackson',
+standard_java_library(
+  immutable_types = [
+    'ExecutionContext',
   ],
-  visibility = [ 'PUBLIC' ],
+  tests = [
+    '//test/com/facebook/buck/step:step',
+  ],
 )

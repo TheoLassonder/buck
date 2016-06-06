@@ -18,17 +18,21 @@ package com.facebook.buck.cxx;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
+import com.facebook.buck.model.BuildTargetFactory;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.FakeBuildRule;
+import com.facebook.buck.rules.FakeSourcePath;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.facebook.buck.rules.TestSourcePath;
-import com.google.common.base.Optional;
+import com.facebook.buck.rules.TargetGraph;
+import com.facebook.buck.rules.args.StringArg;
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSortedMap;
+import com.google.common.collect.ImmutableSortedSet;
 
 import org.hamcrest.Matchers;
 import org.junit.Test;
@@ -37,21 +41,42 @@ public class NativeLinkablesTest {
 
   private static class FakeNativeLinkable extends FakeBuildRule implements NativeLinkable {
 
+    private final Iterable<NativeLinkable> deps;
+    private final Iterable<NativeLinkable> exportedDeps;
+    private final NativeLinkable.Linkage preferredLinkage;
     private final NativeLinkableInput nativeLinkableInput;
-    private final Optional<Linker.LinkableDepType> preferredLinkage;
     private final ImmutableMap<String, SourcePath> sharedLibraries;
 
     public FakeNativeLinkable(
         String target,
-        SourcePathResolver resolver,
+        Iterable<? extends NativeLinkable> deps,
+        Iterable<? extends NativeLinkable> exportedDeps,
+        NativeLinkable.Linkage preferredLinkage,
         NativeLinkableInput nativeLinkableInput,
-        Optional<Linker.LinkableDepType> preferredLinkage,
         ImmutableMap<String, SourcePath> sharedLibraries,
-        BuildRule... deps) {
-      super(target, resolver, deps);
-      this.nativeLinkableInput = nativeLinkableInput;
+        BuildRule... ruleDeps) {
+      super(
+          BuildTargetFactory.newInstance(target),
+          new SourcePathResolver(
+              new BuildRuleResolver(
+                  TargetGraph.EMPTY,
+                  new DefaultTargetNodeToBuildRuleTransformer())),
+          ImmutableSortedSet.copyOf(ruleDeps));
+      this.deps = ImmutableList.copyOf(deps);
+      this.exportedDeps = ImmutableList.copyOf(exportedDeps);
       this.preferredLinkage = preferredLinkage;
+      this.nativeLinkableInput = nativeLinkableInput;
       this.sharedLibraries =  sharedLibraries;
+    }
+
+    @Override
+    public Iterable<NativeLinkable> getNativeLinkableDeps(CxxPlatform cxxPlatform) {
+      return deps;
+    }
+
+    @Override
+    public Iterable<NativeLinkable> getNativeLinkableExportedDeps(CxxPlatform cxxPlatform) {
+      return exportedDeps;
     }
 
     @Override
@@ -62,156 +87,234 @@ public class NativeLinkablesTest {
     }
 
     @Override
-    public Optional<Linker.LinkableDepType> getPreferredLinkage(CxxPlatform cxxPlatform) {
+    public NativeLinkable.Linkage getPreferredLinkage(CxxPlatform cxxPlatform) {
       return preferredLinkage;
     }
 
     @Override
-    public ImmutableMap<String, SourcePath> getSharedLibraries(CxxPlatform cxxPlatform) {
+    public ImmutableMap<String, SourcePath> getSharedLibraries(
+        CxxPlatform cxxPlatform) {
       return sharedLibraries;
     }
 
   }
 
-  /**
-   * Consider the following graph of C/C++ library dependencies of a python binary rule.  In this
-   * case we dynamically link all C/C++ library deps except for ones that request static linkage
-   * via the `force_static` parameter (e.g. library `C` in this example):
-   *
-   *           Python Binary
-   *                |
-   *                |
-   *           A (shared)
-   *               / \
-   *              /   \
-   *             /     \
-   *            /       \
-   *       B (shared)   ...
-   *         /    \
-   *        /      \
-   *       /      ...
-   *   C (static)
-   *       \
-   *        \
-   *         \
-   *          \
-   *        D (shared)
-   *
-   * Handling this force static dep is tricky -- we need to make sure we *only* statically link it
-   * into the shared lib `B` and that it does *not* contribute to the link line formed for `A`.
-   * What's more, we need to make sure `D` still contributes to the link for `A`.
-   *
-   */
   @Test
-  public void doNotPullInStaticLibsAcrossSharedLibs() {
-    SourcePathResolver resolver = new SourcePathResolver(new BuildRuleResolver());
-
-    BuildRule d = new FakeNativeLinkable(
-        "//:d",
-        resolver,
-        NativeLinkableInput.builder()
-            .addArgs("d")
-            .build(),
-        Optional.<Linker.LinkableDepType>absent(),
-        ImmutableMap.<String, SourcePath>of());
-
-    BuildRule c = new FakeNativeLinkable(
-        "//:c",
-        resolver,
-        NativeLinkableInput.builder()
-            .addArgs("c")
-            .build(),
-        Optional.of(Linker.LinkableDepType.STATIC),
-        ImmutableMap.<String, SourcePath>of(),
-        d);
-
-    BuildRule b = new FakeNativeLinkable(
-        "//:b",
-        resolver,
-        NativeLinkableInput.builder()
-            .addArgs("b")
-            .build(),
-        Optional.<Linker.LinkableDepType>absent(),
-        ImmutableMap.<String, SourcePath>of(),
-        c);
-
-    BuildRule a = new FakeNativeLinkable(
-        "//:a",
-        resolver,
-        NativeLinkableInput.builder()
-            .addArgs("a")
-            .build(),
-        Optional.<Linker.LinkableDepType>absent(),
-        ImmutableMap.<String, SourcePath>of(),
-        b);
-
-    // Collect the transitive native linkable input for the top-level rule (e.g. the imaginary
-    // python binary rule) and verify that we do *not* pull in input from `C`.
-    NativeLinkableInput inputForTop =
-        NativeLinkables.getTransitiveNativeLinkableInput(
+  public void regularDepsUsingSharedLinkageAreNotTransitive() {
+    FakeNativeLinkable b =
+        new FakeNativeLinkable(
+            "//:b",
+            ImmutableList.<NativeLinkable>of(),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.ANY,
+            NativeLinkableInput.builder()
+                .addAllArgs(StringArg.from("b"))
+                .build(),
+            ImmutableMap.<String, SourcePath>of());
+    FakeNativeLinkable a =
+        new FakeNativeLinkable(
+            "//:a",
+            ImmutableList.of(b),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.ANY,
+            NativeLinkableInput.builder()
+                .addAllArgs(StringArg.from("a"))
+                .build(),
+            ImmutableMap.<String, SourcePath>of());
+    assertThat(
+        NativeLinkables.getNativeLinkables(
             CxxPlatformUtils.DEFAULT_PLATFORM,
             ImmutableList.of(a),
-            Linker.LinkableDepType.SHARED,
-            /* reverse */ false);
-    assertThat(inputForTop.getArgs(), Matchers.containsInAnyOrder("a", "b", "d"));
-    assertThat(inputForTop.getArgs(), Matchers.not(Matchers.contains("c")));
-
-    // However, when collecting the transitive native linkable input for `B`, we *should* have
-    // input from `C`.
-    NativeLinkableInput inputForB =
-        NativeLinkables.getTransitiveNativeLinkableInput(
-            CxxPlatformUtils.DEFAULT_PLATFORM,
-            ImmutableList.of(c),
-            Linker.LinkableDepType.SHARED,
-            /* reverse */ false);
-    assertThat(inputForB.getArgs(), Matchers.containsInAnyOrder("c", "d"));
+            Linker.LinkableDepType.SHARED).keySet(),
+        Matchers.not(Matchers.hasItem(b.getBuildTarget())));
   }
 
   @Test
-  public void gatherTransitiveSharedLibraries() {
-    SourcePathResolver resolver = new SourcePathResolver(new BuildRuleResolver());
-
-    BuildRule c =
-        new FakeNativeLinkable(
-            "//:c",
-            resolver,
-            NativeLinkableInput.builder().build(),
-            Optional.<Linker.LinkableDepType>absent(),
-            ImmutableMap.<String, SourcePath>of("libc.so", new TestSourcePath("libc.so")));
-
-    BuildRule b =
+  public void exportedDepsUsingSharedLinkageAreTransitive() {
+    FakeNativeLinkable b =
         new FakeNativeLinkable(
             "//:b",
-            resolver,
-            NativeLinkableInput.builder().build(),
-            Optional.of(Linker.LinkableDepType.STATIC),
-            // Should be ignored, since this library supposed to be linked statically.
-            ImmutableMap.<String, SourcePath>of("libb.so", new TestSourcePath("libb.so")),
-            c);
-
-    BuildRule a =
+            ImmutableList.<NativeLinkable>of(),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.ANY,
+            NativeLinkableInput.builder()
+                .addAllArgs(StringArg.from("b"))
+                .build(),
+            ImmutableMap.<String, SourcePath>of());
+    FakeNativeLinkable a =
         new FakeNativeLinkable(
             "//:a",
-            resolver,
-            NativeLinkableInput.builder().build(),
-            Optional.<Linker.LinkableDepType>absent(),
-            ImmutableMap.<String, SourcePath>of("liba.so", new TestSourcePath("liba.so")),
-            b);
+            ImmutableList.<NativeLinkable>of(),
+            ImmutableList.of(b),
+            NativeLinkable.Linkage.ANY,
+            NativeLinkableInput.builder()
+                .addAllArgs(StringArg.from("a"))
+                .build(),
+            ImmutableMap.<String, SourcePath>of());
+    assertThat(
+        NativeLinkables.getNativeLinkables(
+            CxxPlatformUtils.DEFAULT_PLATFORM,
+            ImmutableList.of(a),
+            Linker.LinkableDepType.SHARED).keySet(),
+        Matchers.hasItem(b.getBuildTarget()));
+  }
 
-    // However, when collecting the transitive native linkable input for `B`, we *should* have
-    // input from `C`.
+  @Test
+  public void regularDepsFromStaticLibsUsingSharedLinkageAreTransitive() {
+    FakeNativeLinkable b =
+        new FakeNativeLinkable(
+            "//:b",
+            ImmutableList.<NativeLinkable>of(),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.ANY,
+            NativeLinkableInput.builder()
+                .addAllArgs(StringArg.from("b"))
+                .build(),
+            ImmutableMap.<String, SourcePath>of());
+    FakeNativeLinkable a =
+        new FakeNativeLinkable(
+            "//:a",
+            ImmutableList.of(b),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.STATIC,
+            NativeLinkableInput.builder()
+                .addAllArgs(StringArg.from("a"))
+                .build(),
+            ImmutableMap.<String, SourcePath>of());
+    assertThat(
+        NativeLinkables.getNativeLinkables(
+            CxxPlatformUtils.DEFAULT_PLATFORM,
+            ImmutableList.of(a),
+            Linker.LinkableDepType.SHARED).keySet(),
+        Matchers.hasItem(b.getBuildTarget()));
+  }
+
+  @Test
+  public void regularDepsUsingStaticLinkageAreTransitive() {
+    FakeNativeLinkable b =
+        new FakeNativeLinkable(
+            "//:b",
+            ImmutableList.<NativeLinkable>of(),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.ANY,
+            NativeLinkableInput.builder()
+                .addAllArgs(StringArg.from("b"))
+                .build(),
+            ImmutableMap.<String, SourcePath>of());
+    FakeNativeLinkable a =
+        new FakeNativeLinkable(
+            "//:a",
+            ImmutableList.of(b),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.ANY,
+            NativeLinkableInput.builder()
+                .addAllArgs(StringArg.from("a"))
+                .build(),
+            ImmutableMap.<String, SourcePath>of());
+    assertThat(
+        NativeLinkables.getNativeLinkables(
+            CxxPlatformUtils.DEFAULT_PLATFORM,
+            ImmutableList.of(a),
+            Linker.LinkableDepType.STATIC).keySet(),
+        Matchers.hasItem(b.getBuildTarget()));
+  }
+
+  @Test
+  public void gatherTransitiveSharedLibraries() throws Exception {
+    FakeNativeLinkable c =
+        new FakeNativeLinkable(
+            "//:c",
+            ImmutableList.<NativeLinkable>of(),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.ANY,
+            NativeLinkableInput.builder().build(),
+            ImmutableMap.<String, SourcePath>of("libc.so", new FakeSourcePath("libc.so")));
+    FakeNativeLinkable b =
+        new FakeNativeLinkable(
+            "//:b",
+            ImmutableList.of(c),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.STATIC,
+            NativeLinkableInput.builder().build(),
+            ImmutableMap.<String, SourcePath>of("libb.so", new FakeSourcePath("libb.so")));
+    FakeNativeLinkable a =
+        new FakeNativeLinkable(
+            "//:a",
+            ImmutableList.of(b),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.ANY,
+            NativeLinkableInput.builder().build(),
+            ImmutableMap.<String, SourcePath>of("liba.so", new FakeSourcePath("liba.so")));
     ImmutableSortedMap<String, SourcePath> sharedLibs =
         NativeLinkables.getTransitiveSharedLibraries(
             CxxPlatformUtils.DEFAULT_PLATFORM,
             ImmutableList.of(a),
-            Linker.LinkableDepType.SHARED,
             Predicates.instanceOf(NativeLinkable.class));
     assertThat(
         sharedLibs,
         Matchers.equalTo(
             ImmutableSortedMap.<String, SourcePath>of(
-                "liba.so", new TestSourcePath("liba.so"),
-                "libc.so", new TestSourcePath("libc.so"))));
+                "liba.so", new FakeSourcePath("liba.so"),
+                "libc.so", new FakeSourcePath("libc.so"))));
+  }
+
+  @Test
+  public void nonNativeLinkableDepsAreIgnored() {
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
+    SourcePathResolver pathResolver = new SourcePathResolver(resolver);
+    FakeNativeLinkable c =
+        new FakeNativeLinkable(
+            "//:c",
+            ImmutableList.<NativeLinkable>of(),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.ANY,
+            NativeLinkableInput.builder()
+                .addAllArgs(StringArg.from("c"))
+                .build(),
+            ImmutableMap.<String, SourcePath>of());
+    FakeBuildRule b =
+        new FakeBuildRule(
+            "//:b",
+            pathResolver,
+            c);
+    FakeNativeLinkable a =
+        new FakeNativeLinkable(
+            "//:a",
+            ImmutableList.<NativeLinkable>of(),
+            ImmutableList.<NativeLinkable>of(),
+            NativeLinkable.Linkage.ANY,
+            NativeLinkableInput.builder()
+                .addAllArgs(StringArg.from("a"))
+                .build(),
+            ImmutableMap.<String, SourcePath>of(),
+            b);
+    assertThat(a.getDeps(), Matchers.hasItem(b));
+    assertThat(
+        NativeLinkables.getNativeLinkables(
+            CxxPlatformUtils.DEFAULT_PLATFORM,
+            ImmutableList.of(a),
+            Linker.LinkableDepType.STATIC).keySet(),
+        Matchers.not(Matchers.hasItem(c.getBuildTarget())));
+  }
+
+  @Test
+  public void getLinkStyle() {
+    assertThat(
+        NativeLinkables.getLinkStyle(
+            NativeLinkable.Linkage.STATIC,
+            Linker.LinkableDepType.SHARED),
+        Matchers.equalTo(Linker.LinkableDepType.STATIC_PIC));
+    assertThat(
+        NativeLinkables.getLinkStyle(
+            NativeLinkable.Linkage.SHARED,
+            Linker.LinkableDepType.STATIC),
+        Matchers.equalTo(Linker.LinkableDepType.SHARED));
+    assertThat(
+        NativeLinkables.getLinkStyle(
+            NativeLinkable.Linkage.ANY,
+            Linker.LinkableDepType.STATIC),
+        Matchers.equalTo(Linker.LinkableDepType.STATIC));
   }
 
 }

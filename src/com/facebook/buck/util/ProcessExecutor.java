@@ -29,10 +29,13 @@ import com.google.common.collect.Iterables;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStreamWriter;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.io.PrintStream;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Executes a {@link Process} and blocks until it is finished.
@@ -44,7 +47,7 @@ public class ProcessExecutor {
   /**
    * Options for {@link ProcessExecutor#execute(Process, Set, Optional, Optional, Optional)}.
    */
-  public static enum Option {
+  public enum Option {
     PRINT_STD_OUT,
     PRINT_STD_ERR,
 
@@ -183,7 +186,10 @@ public class ProcessExecutor {
     if (params.getRedirectError().isPresent()) {
       pb.redirectError(params.getRedirectError().get());
     }
-    return pb.start();
+    if (params.getRedirectErrorStream().isPresent()) {
+      pb.redirectErrorStream(params.getRedirectErrorStream().get());
+    }
+    return BgProcessKiller.startProcess(pb);
   }
 
   /**
@@ -234,11 +240,14 @@ public class ProcessExecutor {
 
   /**
    * Waits up to {@code millis} milliseconds for the given process to finish.
+   *
+   * @return whether the wait has timed out.
    */
-  private void waitForTimeout(
+  private boolean waitForTimeout(
       final Process process,
       long millis,
       final Optional<Function<Process, Void>> timeOutHandler) throws InterruptedException {
+    final AtomicBoolean timedOut = new AtomicBoolean(false);
     Thread waiter =
         new Thread(
             new Runnable() {
@@ -247,6 +256,7 @@ public class ProcessExecutor {
                 try {
                   process.waitFor();
                 } catch (InterruptedException e) {
+                  timedOut.set(true);
                   if (timeOutHandler.isPresent()) {
                     try {
                       timeOutHandler.get().apply(process);
@@ -261,6 +271,7 @@ public class ProcessExecutor {
     waiter.join(millis);
     waiter.interrupt();
     waiter.join();
+    return timedOut.get();
   }
 
   /**
@@ -290,10 +301,10 @@ public class ProcessExecutor {
         stdOutStream : new CapturingPrintStream();
     InputStreamConsumer stdOut = new InputStreamConsumer(
         process.getInputStream(),
-        stdOutToWriteTo,
-        ansi,
-        /* flagOutputWrittenToStream */ !shouldPrintStdOut && !expectingStdOut,
-        Optional.<InputStreamConsumer.Handler>absent());
+        InputStreamConsumer.createAnsiHighlightingHandler(
+            /* flagOutputWrittenToStream */ !shouldPrintStdOut && !expectingStdOut,
+            stdOutToWriteTo,
+            ansi));
 
     boolean shouldPrintStdErr = options.contains(Option.PRINT_STD_ERR);
     boolean expectingStdErr = options.contains(Option.EXPECTING_STD_ERR);
@@ -301,22 +312,28 @@ public class ProcessExecutor {
         stdErrStream : new CapturingPrintStream();
     InputStreamConsumer stdErr = new InputStreamConsumer(
         process.getErrorStream(),
-        stdErrToWriteTo,
-        ansi,
-        /* flagOutputWrittenToStream */ !shouldPrintStdErr && !expectingStdErr,
-        Optional.<InputStreamConsumer.Handler>absent());
+        InputStreamConsumer.createAnsiHighlightingHandler(
+            /* flagOutputWrittenToStream */ !shouldPrintStdErr && !expectingStdErr,
+            stdErrToWriteTo,
+            ansi));
 
     // Consume the streams so they do not deadlock.
-    Thread stdOutConsumer = Threads.namedThread("ProcessExecutor (stdOut)", stdOut);
+    FutureTask<Void> stdOutTerminationFuture = new FutureTask<>(stdOut);
+    Thread stdOutConsumer = Threads.namedThread(
+        "ProcessExecutor (stdOut)",
+        stdOutTerminationFuture);
     stdOutConsumer.start();
-    Thread stdErrConsumer = Threads.namedThread("ProcessExecutor (stdErr)", stdErr);
+
+    FutureTask<Void> stdErrTerminationFuture = new FutureTask<>(stdErr);
+    Thread stdErrConsumer = Threads.namedThread(
+        "ProcessExecutor (stdErr)",
+        stdErrTerminationFuture);
     stdErrConsumer.start();
 
     boolean timedOut = false;
 
     // Block until the Process completes.
     try {
-
       // If a stdin string was specific, then write that first.  This shouldn't cause
       // deadlocks, as the stdout/stderr consumers are running in separate threads.
       if (stdin.isPresent()) {
@@ -329,19 +346,17 @@ public class ProcessExecutor {
       // for it to finish then force kill it.  If no timeout was given, just wait for it using
       // the regular `waitFor` method.
       if (timeOutMs.isPresent()) {
-        waitForTimeout(process, timeOutMs.get(), timeOutHandler);
+        timedOut = waitForTimeout(process, timeOutMs.get(), timeOutHandler);
         if (!finished(process)) {
-          timedOut = true;
           process.destroy();
         }
       } else {
         process.waitFor();
       }
 
-      stdOutConsumer.join();
-      stdErrConsumer.join();
-
-    } catch (IOException e) {
+      stdOutTerminationFuture.get();
+      stdErrTerminationFuture.get();
+    } catch (ExecutionException | IOException e) {
       // Buck was killed while waiting for the consumers to finish or while writing stdin
       // to the process. This means either the user killed the process or a step failed
       // causing us to kill all other running steps. Neither of these is an exceptional

@@ -16,9 +16,11 @@
 
 package com.facebook.buck.apple;
 
+import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.shell.ShellStep;
 import com.facebook.buck.step.ExecutionContext;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -36,13 +38,24 @@ import java.util.List;
  * @see <a href="http://wiki.dwarfstd.org/index.php?title=Apple%27s_%22Lazy%22_DWARF_Scheme">
  *   Information on DWARF and DSYM on Macs</a>
  */
-public class DsymStep extends ShellStep {
+class DsymStep extends ShellStep {
 
+  private final ProjectFilesystem filesystem;
+  private final ImmutableMap<String, String> environment;
   private final ImmutableList<String> command;
   private final Path input;
   private final Path output;
 
-  public DsymStep(List<String> command, Path input, Path output) {
+  public DsymStep(
+      ProjectFilesystem filesystem,
+      ImmutableMap<String, String> environment,
+      List<String> command,
+      Path input,
+      Path output) {
+    super(filesystem.getRootPath());
+
+    this.filesystem = filesystem;
+    this.environment = environment;
     this.command = ImmutableList.copyOf(command);
     this.input = input;
     this.output = output;
@@ -54,10 +67,15 @@ public class DsymStep extends ShellStep {
 
     commandBuilder.addAll(command);
     commandBuilder.add(
-        "-o", context.getProjectFilesystem().resolve(output).toString(),
-        context.getProjectFilesystem().resolve(input).toString());
+        "-o", filesystem.resolve(output).toString(),
+        filesystem.resolve(input).toString());
 
     return commandBuilder.build();
+  }
+
+  @Override
+  public ImmutableMap<String, String> getEnvironmentVariables(ExecutionContext context) {
+    return environment;
   }
 
   @Override

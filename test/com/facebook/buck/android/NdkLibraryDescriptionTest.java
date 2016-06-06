@@ -18,6 +18,7 @@ package com.facebook.buck.android;
 
 import static org.hamcrest.junit.MatcherAssert.assertThat;
 
+import com.facebook.buck.rules.DefaultTargetNodeToBuildRuleTransformer;
 import com.facebook.buck.cxx.CxxPlatform;
 import com.facebook.buck.cxx.Linker;
 import com.facebook.buck.cxx.NativeLinkable;
@@ -30,7 +31,9 @@ import com.facebook.buck.rules.BuildTargetSourcePath;
 import com.facebook.buck.rules.FakeBuildRule;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
-import com.google.common.base.Optional;
+import com.facebook.buck.rules.TargetGraph;
+import com.facebook.buck.rules.args.SourcePathArg;
+import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableMap;
 
 import org.hamcrest.Matchers;
@@ -52,33 +55,48 @@ public class NdkLibraryDescriptionTest {
     }
 
     @Override
+    public Iterable<NativeLinkable> getNativeLinkableDeps(CxxPlatform cxxPlatform) {
+      return FluentIterable.from(getDeclaredDeps())
+          .filter(NativeLinkable.class);
+    }
+
+    @Override
+    public Iterable<NativeLinkable> getNativeLinkableExportedDeps(CxxPlatform cxxPlatform) {
+      return FluentIterable.from(getDeclaredDeps())
+          .filter(NativeLinkable.class);
+    }
+
+    @Override
     public NativeLinkableInput getNativeLinkableInput(
         CxxPlatform cxxPlatform,
         Linker.LinkableDepType type) {
       return NativeLinkableInput.builder()
-          .addInputs(input)
+          .addArgs(new SourcePathArg(getResolver(), input))
           .build();
     }
 
     @Override
-    public Optional<Linker.LinkableDepType> getPreferredLinkage(CxxPlatform cxxPlatform) {
-      return Optional.absent();
+    public NativeLinkable.Linkage getPreferredLinkage(CxxPlatform cxxPlatform) {
+      return Linkage.ANY;
     }
 
     @Override
-    public ImmutableMap<String, SourcePath> getSharedLibraries(CxxPlatform cxxPlatform) {
+    public ImmutableMap<String, SourcePath> getSharedLibraries(
+        CxxPlatform cxxPlatform) {
       return ImmutableMap.of();
     }
 
   }
 
   @Test
-  public void transitiveCxxLibraryDepsBecomeFirstOrderDepsOfNdkBuildRule() {
-    BuildRuleResolver resolver = new BuildRuleResolver();
+  public void transitiveCxxLibraryDepsBecomeFirstOrderDepsOfNdkBuildRule() throws Exception {
+    BuildRuleResolver resolver =
+        new BuildRuleResolver(TargetGraph.EMPTY, new DefaultTargetNodeToBuildRuleTransformer());
     SourcePathResolver pathResolver = new SourcePathResolver(resolver);
 
     FakeBuildRule transitiveInput = resolver.addToIndex(
         new FakeBuildRule("//:transitive_input", pathResolver));
+    transitiveInput.setOutputFile("out");
     FakeNativeLinkable transitiveDep =
         resolver.addToIndex(
             new FakeNativeLinkable(
@@ -87,6 +105,7 @@ public class NdkLibraryDescriptionTest {
                 new BuildTargetSourcePath(transitiveInput.getBuildTarget())));
     FakeBuildRule firstOrderInput = resolver.addToIndex(
         new FakeBuildRule("//:first_order_input", pathResolver));
+    firstOrderInput.setOutputFile("out");
     FakeNativeLinkable firstOrderDep =
         resolver.addToIndex(
             new FakeNativeLinkable(

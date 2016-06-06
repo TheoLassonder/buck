@@ -1,23 +1,22 @@
 /*
  * Copyright 2015-present Facebook, Inc.
  *
- *  Licensed under the Apache License, Version 2.0 (the "License"); you may
- *  not use this file except in compliance with the License. You may obtain
- *  a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may
+ * not use this file except in compliance with the License. You may obtain
+ * a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- *  WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- *  License for the specific language governing permissions and limitations
- *  under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
  */
 
 package com.facebook.buck.js;
 
 import com.facebook.buck.io.MorePaths;
-import com.facebook.buck.io.ProjectFilesystem;
 import com.facebook.buck.model.BuildTargets;
 import com.facebook.buck.rules.AbstractBuildRule;
 import com.facebook.buck.rules.AddToRuleKey;
@@ -31,10 +30,11 @@ import com.facebook.buck.rules.Sha1HashCode;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.rules.SourcePaths;
-import com.facebook.buck.shell.ShellStep;
+import com.facebook.buck.rules.Tool;
 import com.facebook.buck.step.AbstractExecutionStep;
 import com.facebook.buck.step.ExecutionContext;
 import com.facebook.buck.step.Step;
+import com.facebook.buck.step.StepExecutionResult;
 import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
@@ -67,22 +67,32 @@ public class ReactNativeDeps extends AbstractBuildRule
   private final ReactNativePlatform platform;
 
   @AddToRuleKey
-  private final SourcePath jsPackager;
+  private final Optional<String> packagerFlags;
+
+  @AddToRuleKey
+  private final Tool jsPackager;
+
+  private final Path outputDir;
+  private final Path inputsHashFile;
 
   private final BuildOutputInitializer<BuildOutput> outputInitializer;
 
   public ReactNativeDeps(
       BuildRuleParams ruleParams,
       SourcePathResolver resolver,
-      SourcePath jsPackager,
+      Tool jsPackager,
       ImmutableSortedSet<SourcePath> srcs,
       SourcePath entryPath,
-      ReactNativePlatform platform) {
+      ReactNativePlatform platform,
+      Optional<String> packagerFlags) {
     super(ruleParams, resolver);
     this.jsPackager = jsPackager;
     this.srcs = srcs;
     this.entryPath = entryPath;
     this.platform = platform;
+    this.packagerFlags = packagerFlags;
+    this.outputDir = BuildTargets.getGenPath(getProjectFilesystem(), getBuildTarget(), "%s");
+    this.inputsHashFile = outputDir.resolve("inputs_hash.txt");
     this.outputInitializer = new BuildOutputInitializer<>(ruleParams.getBuildTarget(), this);
   }
 
@@ -92,46 +102,30 @@ public class ReactNativeDeps extends AbstractBuildRule
       final BuildableContext buildableContext) {
     ImmutableList.Builder<Step> steps = ImmutableList.builder();
 
-    final Path output = BuildTargets.getScratchPath(getBuildTarget(), "__%s/deps.txt");
-    steps.add(new MakeCleanDirectoryStep(output.getParent()));
+    final Path output =
+        BuildTargets.getScratchPath(getProjectFilesystem(), getBuildTarget(), "__%s/deps.txt");
+    steps.add(new MakeCleanDirectoryStep(getProjectFilesystem(), output.getParent()));
 
-    steps.add(new ShellStep() {
-      @Override
-      protected ImmutableList<String> getShellCommandInternal(ExecutionContext context) {
-        ProjectFilesystem filesystem = context.getProjectFilesystem();
+    appendWorkerSteps(steps, output);
 
-        return ImmutableList.of(
-            getResolver().getPath(jsPackager).toString(),
-            "list-dependencies",
-            platform.toString(),
-            filesystem.resolve(getResolver().getPath(entryPath)).toString(),
-            "--output",
-            filesystem.resolve(output).toString());
-      }
-
-      @Override
-      public String getShortName() {
-        return "react-native-deps";
-      }
-    });
+    steps.add(new MakeCleanDirectoryStep(getProjectFilesystem(), outputDir));
 
     steps.add(new AbstractExecutionStep("hash_js_inputs") {
       @Override
-      public int execute(ExecutionContext context) {
-        ProjectFilesystem filesystem = context.getProjectFilesystem();
+      public StepExecutionResult execute(ExecutionContext context) throws IOException {
         ImmutableList<Path> paths;
         try {
-          paths = FluentIterable.from(filesystem.readLines(output))
+          paths = FluentIterable.from(getProjectFilesystem().readLines(output))
               .transform(MorePaths.TO_PATH)
-              .transform(filesystem.getRelativizer())
+              .transform(getProjectFilesystem().getRelativizer())
               .toSortedList(Ordering.natural());
         } catch (IOException e) {
           context.logError(e, "Error reading output of the 'react-native-deps' step.");
-          return 1;
+          return StepExecutionResult.ERROR;
         }
 
         FluentIterable<SourcePath> unlistedSrcs =
-            FluentIterable.from(paths).transform(SourcePaths.toSourcePath(filesystem))
+            FluentIterable.from(paths).transform(SourcePaths.toSourcePath(getProjectFilesystem()))
                 .filter(Predicates.not(Predicates.in(srcs)));
         if (!unlistedSrcs.isEmpty()) {
           context.logError(
@@ -140,35 +134,48 @@ public class ReactNativeDeps extends AbstractBuildRule
                   "included in 'srcs':\n%s",
               entryPath,
               Joiner.on('\n').join(unlistedSrcs));
-          return 1;
+          return StepExecutionResult.ERROR;
         }
 
         Hasher hasher = Hashing.sha1().newHasher();
         for (Path path : paths) {
           try {
-            hasher.putUnencodedChars(filesystem.computeSha1(path));
+            hasher.putUnencodedChars(getProjectFilesystem().computeSha1(path));
           } catch (IOException e) {
             context.logError(e, "Error hashing input file: %s", path);
-            return 1;
+            return StepExecutionResult.ERROR;
           }
         }
 
-        buildableContext.addMetadata(METADATA_KEY_FOR_INPUTS_HASH, hasher.hash().toString());
-        return 0;
+        String inputsHash = hasher.hash().toString();
+        buildableContext.addMetadata(METADATA_KEY_FOR_INPUTS_HASH, inputsHash);
+        getProjectFilesystem().writeContentsToPath(inputsHash, inputsHashFile);
+        return StepExecutionResult.SUCCESS;
       }
     });
 
     return steps.build();
   }
 
+  private void appendWorkerSteps(ImmutableList.Builder<Step> stepBuilder, Path outputFile) {
+    final Path tmpDir =
+        BuildTargets.getScratchPath(getProjectFilesystem(), getBuildTarget(), "%s__tmp");
+    stepBuilder.add(new MakeCleanDirectoryStep(getProjectFilesystem(), tmpDir));
+    ReactNativeDepsWorkerStep workerStep = new ReactNativeDepsWorkerStep(
+        getProjectFilesystem(),
+        tmpDir,
+        jsPackager.getCommandPrefix(getResolver()),
+        packagerFlags,
+        platform,
+        getProjectFilesystem().resolve(getResolver().getAbsolutePath(entryPath)),
+        getProjectFilesystem().resolve(outputFile));
+    stepBuilder.add(workerStep);
+  }
+
   @Override
   @Nullable
   public Path getPathToOutput() {
-    // We don't want to cache the output because
-    // 1. the output file will contain absolute paths (fixable but not worth it), and
-    // 2. we only care about the hash of files listed in the output file, which we record in the
-    //    "hash_js_inputs" step.
-    return null;
+    return outputDir;
   }
 
   public Sha1HashCode getInputsHash() {

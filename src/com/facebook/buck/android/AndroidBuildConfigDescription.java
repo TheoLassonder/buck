@@ -16,18 +16,22 @@
 
 package com.facebook.buck.android;
 
-import com.facebook.buck.java.JavacOptions;
+import com.facebook.buck.jvm.java.CalculateAbi;
+import com.facebook.buck.jvm.java.JavacOptions;
 import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.model.Flavor;
 import com.facebook.buck.model.ImmutableFlavor;
+import com.facebook.buck.rules.AbstractDescriptionArg;
 import com.facebook.buck.rules.BuildRule;
 import com.facebook.buck.rules.BuildRuleParams;
 import com.facebook.buck.rules.BuildRuleResolver;
 import com.facebook.buck.rules.BuildRuleType;
+import com.facebook.buck.rules.BuildTargetSourcePath;
 import com.facebook.buck.rules.Description;
 import com.facebook.buck.rules.Hint;
 import com.facebook.buck.rules.SourcePath;
 import com.facebook.buck.rules.SourcePathResolver;
+import com.facebook.buck.rules.TargetGraph;
 import com.facebook.buck.rules.coercer.BuildConfigFields;
 import com.facebook.infer.annotation.SuppressFieldNotInitialized;
 import com.google.common.base.Optional;
@@ -59,6 +63,7 @@ public class AndroidBuildConfigDescription
 
   @Override
   public <A extends Arg> BuildRule createBuildRule(
+      TargetGraph targetGraph,
       BuildRuleParams params,
       BuildRuleResolver resolver,
       A args) {
@@ -109,27 +114,21 @@ public class AndroidBuildConfigDescription
     if (!params.getBuildTarget().isFlavored()) {
       // android_build_config() case.
       Preconditions.checkArgument(!useConstantExpressions);
-      buildConfigBuildTarget =
-          BuildTarget.builder(params.getBuildTarget().getUnflavoredBuildTarget())
-          .addFlavors(GEN_JAVA_FLAVOR)
-          .build();
+      buildConfigBuildTarget = params.getBuildTarget().withFlavors(GEN_JAVA_FLAVOR);
     } else {
       // android_binary() graph enhancement case.
       Preconditions.checkArgument(useConstantExpressions);
-      buildConfigBuildTarget =
-          BuildTarget.builder(params.getBuildTarget().getUnflavoredBuildTarget())
-          .addFlavors(
-              ImmutableFlavor.of(GEN_JAVA_FLAVOR.getName() + '_' + javaPackage.replace('.', '_')))
-          .build();
+      buildConfigBuildTarget = params.getBuildTarget().withFlavors(
+          ImmutableFlavor.of(GEN_JAVA_FLAVOR.getName() + '_' + javaPackage.replace('.', '_')));
     }
 
     // Create one build rule to generate BuildConfig.java.
     BuildRuleParams buildConfigParams = params.copyWithChanges(
         buildConfigBuildTarget,
-        Suppliers.ofInstance(params.getDeclaredDeps()),
+        params.getDeclaredDeps(),
         /* extraDeps */ Suppliers.ofInstance(
             ImmutableSortedSet.<BuildRule>naturalOrder()
-                .addAll(params.getExtraDeps())
+                .addAll(params.getExtraDeps().get())
                 .addAll(pathResolver.filterBuildRuleInputs(valuesFile.asSet()))
                 .build()));
     AndroidBuildConfig androidBuildConfig = new AndroidBuildConfig(
@@ -141,21 +140,35 @@ public class AndroidBuildConfigDescription
         useConstantExpressions);
     ruleResolver.addToIndex(androidBuildConfig);
 
+    BuildTarget abiJarTarget = params.getBuildTarget().withAppendedFlavors(CalculateAbi.FLAVOR);
+
     // Create a second build rule to compile BuildConfig.java and expose it as a JavaLibrary.
     BuildRuleParams javaLibraryParams = params.copyWithChanges(
         params.getBuildTarget(),
         /* declaredDeps */ Suppliers.ofInstance(
             ImmutableSortedSet.<BuildRule>of(androidBuildConfig)),
         /* extraDeps */ Suppliers.ofInstance(ImmutableSortedSet.<BuildRule>of()));
-    return new AndroidBuildConfigJavaLibrary(
-        javaLibraryParams,
-        pathResolver,
-        javacOptions,
-        androidBuildConfig);
+    AndroidBuildConfigJavaLibrary library =
+        ruleResolver.addToIndex(
+            new AndroidBuildConfigJavaLibrary(
+                javaLibraryParams,
+                pathResolver,
+                javacOptions,
+                new BuildTargetSourcePath(abiJarTarget),
+                androidBuildConfig));
+
+    ruleResolver.addToIndex(
+        CalculateAbi.of(
+            abiJarTarget,
+            pathResolver,
+            params,
+            new BuildTargetSourcePath(library.getBuildTarget())));
+
+    return library;
   }
 
   @SuppressFieldNotInitialized
-  public static class Arg {
+  public static class Arg extends AbstractDescriptionArg {
     @Hint(name = "package")
     public String javaPackage;
 

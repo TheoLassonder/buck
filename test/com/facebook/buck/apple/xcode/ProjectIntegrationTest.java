@@ -21,12 +21,20 @@ import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
 import com.facebook.buck.testutil.integration.TestDataHelper;
 import com.facebook.buck.util.HumanReadableException;
+import com.facebook.buck.util.environment.Platform;
 
+import static org.junit.Assert.assertThat;
+import static org.junit.Assume.assumeTrue;
+
+import org.hamcrest.Matchers;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 public class ProjectIntegrationTest {
 
@@ -35,6 +43,11 @@ public class ProjectIntegrationTest {
 
   @Rule
   public DebuggableTemporaryFolder temporaryFolder = new DebuggableTemporaryFolder();
+
+  @Before
+  public void setUp() {
+    assumeTrue(Platform.detect() == Platform.MACOS || Platform.detect() == Platform.LINUX);
+  }
 
   @Test
   public void testBuckProjectGeneratedSchemeOnlyIncludesDependenciesWithoutTests()
@@ -177,6 +190,23 @@ public class ProjectIntegrationTest {
   }
 
   @Test
+  public void generatingRootDirectoryProject() throws IOException {
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this,
+        "generating_root_directory_project",
+        temporaryFolder);
+    workspace.setUp();
+
+    ProjectWorkspace.ProcessResult result = workspace.runBuckCommand(
+        "project",
+        "//:bundle");
+    result.assertSuccess();
+
+    workspace.verify();
+  }
+
+
+  @Test
   public void generatingCombinedProjectWithTests() throws IOException {
     ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
         this,
@@ -203,6 +233,8 @@ public class ProjectIntegrationTest {
         "project",
         "//bin:app");
     result.assertSuccess();
+    Files.exists(workspace.resolve("bin/app.xcworkspace/contents.xcworkspacedata"));
+    Files.exists(workspace.resolve("bin/bin.xcodeproj/project.pbxproj"));
   }
 
   @Test
@@ -215,21 +247,22 @@ public class ProjectIntegrationTest {
         "project",
         "//lib:lib");
     result.assertSuccess();
+    Files.exists(workspace.resolve("lib/lib.xcworkspace/contents.xcworkspacedata"));
+    Files.exists(workspace.resolve("lib/lib.xcodeproj/project.pbxproj"));
   }
 
   @Test
-  public void testAttemptingToGenerateWorkspaceFromBinaryTargetIsABuildError() throws IOException {
-    thrown.expect(HumanReadableException.class);
-    thrown.expectMessage(
-        "//bin:bin must be a xcode_workspace_config, apple_bundle, or apple_library");
-
+  public void testGeneratesWorkspaceFromBinary() throws IOException {
     ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
         this, "project_implicit_workspace_generation", temporaryFolder);
     workspace.setUp();
 
-    workspace.runBuckCommand(
+    ProjectWorkspace.ProcessResult result = workspace.runBuckCommand(
         "project",
         "//bin:bin");
+    result.assertSuccess();
+    Files.exists(workspace.resolve("bin/bin.xcworkspace/contents.xcworkspacedata"));
+    Files.exists(workspace.resolve("bin/bin.xcodeproj/project.pbxproj"));
   }
 
   @Test
@@ -237,7 +270,7 @@ public class ProjectIntegrationTest {
       throws IOException {
     thrown.expect(HumanReadableException.class);
     thrown.expectMessage(
-        "//res:res must be a xcode_workspace_config, apple_bundle, or apple_library");
+        "//res:res must be a xcode_workspace_config, apple_binary, apple_bundle, or apple_library");
 
     ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
         this, "project_implicit_workspace_generation", temporaryFolder);
@@ -274,5 +307,27 @@ public class ProjectIntegrationTest {
 
     BuckBuildLog buildLog = workspace.getBuildLog();
     buildLog.assertTargetBuiltLocally("//app:GenResource");
+  }
+
+  @Test
+  public void testGeneratingWorkspaceForXcodeWithoutSettingIde() throws IOException {
+    // .buckconfig has no ide set, so buck should correctly guess that
+    // apple_stuff requires Xcode workspace
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this,
+        "generating_workspace_for_xcode_without_setting_ide",
+        temporaryFolder);
+    workspace.setUp();
+
+    ProjectWorkspace.ProcessResult result = workspace.runBuckCommand(
+        "project",
+        "//App:TestAppBinary");
+    result.assertSuccess();
+
+    String workspacePathString = temporaryFolder.getRootPath().toString();
+    workspacePathString += "/App/TestAppBinary.xcworkspace";
+    Path workspacePath = temporaryFolder.getRootPath().resolve(workspacePathString);
+
+    assertThat(Files.exists(workspacePath), Matchers.equalTo(true));
   }
 }

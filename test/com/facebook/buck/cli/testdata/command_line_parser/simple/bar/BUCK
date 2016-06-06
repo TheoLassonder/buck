@@ -1,5 +1,0 @@
-genrule(
-  name = 'bar',
-  out = 'bar',
-  cmd = 'touch $OUT',
-)

@@ -17,9 +17,12 @@
 package com.facebook.buck.cli;
 
 import static org.junit.Assume.assumeThat;
+import static org.junit.Assume.assumeTrue;
+import static org.junit.Assume.assumeFalse;
 
 import static org.hamcrest.Matchers.is;
 
+import com.facebook.buck.testutil.integration.FakeAppleDeveloperEnvironment;
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
 import com.facebook.buck.testutil.integration.ProjectWorkspace.ProcessResult;
@@ -28,9 +31,11 @@ import com.facebook.buck.util.environment.Platform;
 
 import java.io.IOException;
 
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 
+@Ignore("Disabled due to timeouts installing into the simulator")
 public class InstallCommandIntegrationTest {
   @Rule
   public DebuggableTemporaryFolder tmp = new DebuggableTemporaryFolder();
@@ -46,9 +51,11 @@ public class InstallCommandIntegrationTest {
     ProcessResult result = workspace.runBuckCommand(
         "install",
         "//:DemoApp");
+
+    assumeFalse(result.getStderr().contains("no appropriate simulator found"));
     result.assertSuccess();
 
-    // TODO(user): If we make the install command output the UDID of the
+    // TODO(bhamiltoncx): If we make the install command output the UDID of the
     // simulator, we could poke around in
     // ~/Library/Developer/CoreSimulator/[UDID] to see if the bits were installed.
   }
@@ -65,6 +72,50 @@ public class InstallCommandIntegrationTest {
         "install",
         "-r",
         "//:DemoApp");
+
+    assumeFalse(result.getStderr().contains("no appropriate simulator found"));
+    result.assertSuccess();
+  }
+
+  @Test
+  public void appleBundleInstallsInDeviceWithHelperAsPath() throws IOException,
+      InterruptedException {
+    assumeThat(Platform.detect(), is(Platform.MACOS));
+    assumeTrue(FakeAppleDeveloperEnvironment.supportsBuildAndInstallToDevice());
+
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "apple_app_bundle", tmp);
+    workspace.setUp();
+
+    assumeTrue(FakeAppleDeveloperEnvironment.hasDeviceCurrentlyConnected(workspace.getPath(
+                "iOSConsole/iOSConsole"
+            )));
+
+
+    ProcessResult result = workspace.runBuckCommand(
+        "install",
+        "//:DemoApp#iphoneos-arm64");
+    result.assertSuccess();
+  }
+
+  @Test
+  public void appleBundleInstallsInDeviceWithHelperAsTarget() throws IOException,
+      InterruptedException {
+    assumeThat(Platform.detect(), is(Platform.MACOS));
+    assumeTrue(FakeAppleDeveloperEnvironment.supportsBuildAndInstallToDevice());
+
+    ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
+        this, "apple_app_bundle_with_device_helper_as_target", tmp);
+    workspace.setUp();
+
+    assumeTrue(FakeAppleDeveloperEnvironment.hasDeviceCurrentlyConnected(workspace.getPath(
+                "iOSConsole/iOSConsole"
+            )));
+
+
+    ProcessResult result = workspace.runBuckCommand(
+        "install",
+        "//:DemoApp#iphoneos-arm64");
     result.assertSuccess();
   }
 }

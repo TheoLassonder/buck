@@ -1,5 +1,8 @@
 prebuilt_jar(
   name = 'processor',
-  binary_jar = 'value-2.0.11.jar',
+  binary_jar = 'value-2.1.18.jar',
+  licenses = [
+    'COPYING',
+  ],
   visibility = ['PUBLIC'],
 )

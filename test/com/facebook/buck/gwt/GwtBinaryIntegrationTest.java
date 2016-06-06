@@ -16,20 +16,16 @@
 
 package com.facebook.buck.gwt;
 
-import static org.junit.Assume.assumeThat;
-
 import com.facebook.buck.testutil.integration.DebuggableTemporaryFolder;
 import com.facebook.buck.testutil.integration.ProjectWorkspace;
 import com.facebook.buck.testutil.integration.TestDataHelper;
 import com.facebook.buck.testutil.integration.ZipInspector;
-import com.facebook.buck.util.environment.Platform;
 
-import org.hamcrest.Matchers;
 import org.junit.Rule;
 import org.junit.Test;
 
-import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 
 public class GwtBinaryIntegrationTest {
 
@@ -38,8 +34,6 @@ public class GwtBinaryIntegrationTest {
 
   @Test(timeout = (2 * 60 * 1000)) // two minutes because CI times out on heavily loaded machines
   public void shouldBeAbleToBuildAGwtBinary() throws IOException {
-    // Temporary as we investigate Mac OOM failures. t7687684
-    assumeThat(Platform.detect(), Matchers.not(Platform.MACOS));
     ProjectWorkspace workspace = TestDataHelper.createProjectWorkspaceForScenario(
         this,
         "gwt_binary",
@@ -50,7 +44,7 @@ public class GwtBinaryIntegrationTest {
 
     result.assertSuccess();
 
-    File zip = workspace.buildAndReturnOutput("//:binary");
+    Path zip = workspace.buildAndReturnOutput("//:binary");
     ZipInspector inspector = new ZipInspector(zip);
     inspector.assertFileExists("a/a.devmode.js");
     inspector.assertFileExists("a/a.nocache.js");

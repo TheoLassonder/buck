@@ -16,11 +16,15 @@
 
 package com.facebook.buck.rules.coercer;
 
+import com.facebook.buck.model.BuildTarget;
 import com.facebook.buck.rules.SourcePath;
+import com.facebook.buck.rules.SourcePathResolver;
 import com.facebook.buck.util.immutables.BuckStyleImmutable;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.ImmutableSortedSet;
 
 import org.immutables.value.Value;
@@ -28,6 +32,9 @@ import org.immutables.value.Value;
 @Value.Immutable
 @BuckStyleImmutable
 abstract class AbstractSourceList {
+
+  public static final SourceList EMPTY =
+      SourceList.ofUnnamedSources(ImmutableSortedSet.<SourcePath>of());
 
   public enum Type {
     UNNAMED,
@@ -41,7 +48,7 @@ abstract class AbstractSourceList {
   public abstract Optional<ImmutableSortedSet<SourcePath>> getUnnamedSources();
 
   @Value.Parameter
-  public abstract Optional<ImmutableMap<String, SourcePath>> getNamedSources();
+  public abstract Optional<ImmutableSortedMap<String, SourcePath>> getNamedSources();
 
   @Value.Check
   protected void check() {
@@ -61,14 +68,58 @@ abstract class AbstractSourceList {
     return SourceList.of(
         Type.UNNAMED,
         Optional.of(unnamedSources),
-        Optional.<ImmutableMap<String, SourcePath>>absent());
+        Optional.<ImmutableSortedMap<String, SourcePath>>absent());
   }
 
-  public static SourceList ofNamedSources(ImmutableMap<String, SourcePath> namedSources) {
+  public static SourceList ofNamedSources(ImmutableSortedMap<String, SourcePath> namedSources) {
     return SourceList.of(
         Type.NAMED,
         Optional.<ImmutableSortedSet<SourcePath>>absent(),
         Optional.of(namedSources));
+  }
+
+  public boolean isEmpty() {
+    switch (getType()) {
+      case UNNAMED:
+        return getUnnamedSources().get().isEmpty();
+      case NAMED:
+        return getNamedSources().get().isEmpty();
+      default:
+        throw new IllegalStateException("unexpected type: " + getType());
+    }
+  }
+
+  public ImmutableMap<String, SourcePath> toNameMap(
+      BuildTarget buildTarget,
+      SourcePathResolver pathResolver,
+      String parameterName) {
+    ImmutableMap.Builder<String, SourcePath> sources = ImmutableMap.builder();
+    switch (getType()) {
+      case NAMED:
+        sources.putAll(getNamedSources().get());
+        break;
+      case UNNAMED:
+        sources.putAll(
+            pathResolver.getSourcePathNames(
+                buildTarget,
+                parameterName,
+                getUnnamedSources().get()));
+        break;
+    }
+    return sources.build();
+  }
+
+  public ImmutableList<SourcePath> getPaths() {
+    ImmutableList.Builder<SourcePath> sources = ImmutableList.builder();
+    switch (getType()) {
+      case NAMED:
+        sources.addAll(getNamedSources().get().values());
+        break;
+      case UNNAMED:
+        sources.addAll(getUnnamedSources().get());
+        break;
+    }
+    return sources.build();
   }
 
 }
