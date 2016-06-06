@@ -140,6 +140,12 @@ public class AaptStep extends ShellStep {
 
     builder.add("--ignore-assets", IGNORE_ASSETS_PATTERN);
 
+    // This flag is added by gradle, too.
+    //
+    // This flag is only available for build tools >= 23.0.0 so should test for that
+    // but don't know how.
+    builder.add("--no-version-vectors");
+
     if (manifestEntries.getMinSdkVersion().isPresent()) {
       builder.add("--min-sdk-version", manifestEntries.getMinSdkVersion().get().toString());
     }
